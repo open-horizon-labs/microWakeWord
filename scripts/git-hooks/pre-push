@@ -1,0 +1,20 @@
+#!/bin/sh
+#
+# Pre-push hook to prevent pushes to main branch
+#
+
+protected_branch='main'
+
+while read local_ref local_sha remote_ref remote_sha
+do
+    if [ "$remote_ref" = "refs/heads/$protected_branch" ]; then
+        echo "🚫 ERROR: Push to main branch is not allowed!"
+        echo "Please push to a feature branch and create a pull request instead."
+        echo ""
+        echo "To push to a different branch:"
+        echo "  git push origin your-branch-name"
+        exit 1
+    fi
+done
+
+exit 0
