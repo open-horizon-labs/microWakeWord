@@ -2,19 +2,45 @@
 
 This document explains how to set up branch protection to prevent direct commits to the main branch.
 
-## Local Git Hooks (✅ Already Configured)
+## Local Git Hooks
 
-The following hooks have been set up in `.git/hooks/`:
+Git hooks are included in this repository to prevent direct commits to the main branch.
 
-### Pre-commit Hook
-- **File**: `.git/hooks/pre-commit`
+### Quick Installation
+
+Run the installation script to set up the hooks:
+
+```bash
+./scripts/install-git-hooks.sh
+```
+
+### Manual Installation
+
+If you prefer to install manually:
+
+```bash
+# Copy hooks to your local .git/hooks directory
+cp scripts/git-hooks/pre-commit .git/hooks/pre-commit
+cp scripts/git-hooks/pre-push .git/hooks/pre-push
+
+# Make them executable
+chmod +x .git/hooks/pre-commit
+chmod +x .git/hooks/pre-push
+```
+
+### Hook Details
+
+#### Pre-commit Hook
+- **File**: `scripts/git-hooks/pre-commit` → `.git/hooks/pre-commit`
 - **Purpose**: Prevents commits directly to the main branch
 - **Action**: Blocks commit and provides helpful instructions
 
-### Pre-push Hook
-- **File**: `.git/hooks/pre-push`  
+#### Pre-push Hook
+- **File**: `scripts/git-hooks/pre-push` → `.git/hooks/pre-push`
 - **Purpose**: Prevents pushes directly to the main branch
 - **Action**: Blocks push and provides helpful instructions
+
+**Note**: Git hooks are local to each repository clone and must be installed by each team member.
 
 ## GitHub Branch Protection Rules
 
