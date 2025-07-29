@@ -10,7 +10,7 @@ microWakeWord is a TensorFlow-based wake word detection training framework that 
 
 ### Installation
 ```bash
-# Install microWakeWord (requires Python 3.10)
+# Install microWakeWord (requires Python 3.10+)
 pip install -e .
 
 # macOS users need to install a forked version of pymicro-features first:
@@ -94,6 +94,6 @@ The project uses the `microwakeword.test` module for accuracy evaluation. Tests 
 - Models are trained with a 16kHz sample rate
 - Window duration: 30ms, stride: 10ms
 - Default clip duration: 1500ms maximum
-- Python 3.10 is required (not 3.11+)
+- Python 3.10+ is required (supports 3.10, 3.11, 3.12)
 - Training requires significant experimentation with hyperparameters
 - The `basic_training_notebook.ipynb` provides a starting point but won't produce production-ready models without tuning
