@@ -1,0 +1,32 @@
+# Testing dependencies for microWakeWord
+
+# Core testing framework
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
+pytest-timeout>=2.1.0
+pytest-xdist>=3.3.0  # For parallel test execution
+
+# For mocking and testing
+unittest-mock>=1.5.0
+responses>=0.23.0  # For mocking HTTP requests
+freezegun>=1.2.0  # For mocking time
+
+# For testing TensorFlow code
+pytest-tensorflow>=0.1.0  # If available
+numpy>=1.24.0  # Should match main requirements
+scipy>=1.10.0  # For audio testing
+
+# Code quality
+flake8>=6.0.0
+black>=23.0.0
+isort>=5.12.0
+
+# Type checking
+mypy>=1.4.0
+types-PyYAML
+types-requests
+
+# Performance testing
+memory-profiler>=0.61.0
+pytest-benchmark>=4.0.0
