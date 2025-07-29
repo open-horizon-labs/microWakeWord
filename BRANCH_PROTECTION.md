@@ -6,10 +6,16 @@ This document explains how to set up branch protection to prevent direct commits
 
 Git hooks are included in this repository to prevent direct commits to the main branch.
 
-### Quick Installation
+### Setup After Cloning
 
-Run the installation script to set up the hooks:
+**One command setup (recommended):**
+```bash
+git config core.hooksPath scripts/git-hooks
+```
 
+That's it! Git will now automatically use the hooks from the repository.
+
+**Alternative: Use the installation script**
 ```bash
 ./scripts/install-git-hooks.sh
 ```
@@ -18,6 +24,13 @@ Run the installation script to set up the hooks:
 
 If you prefer to install manually:
 
+**Method 1: Git core.hooksPath (recommended)**
+```bash
+# Tell Git to use hooks from scripts/git-hooks directory
+git config core.hooksPath scripts/git-hooks
+```
+
+**Method 2: Copy hooks (traditional)**
 ```bash
 # Copy hooks to your local .git/hooks directory
 cp scripts/git-hooks/pre-commit .git/hooks/pre-commit

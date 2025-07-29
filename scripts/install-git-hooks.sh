@@ -24,23 +24,16 @@ if [ ! -d "$HOOKS_DIR" ]; then
     exit 1
 fi
 
-# Install pre-commit hook
-if [ -f "$HOOKS_DIR/pre-commit" ]; then
-    cp "$HOOKS_DIR/pre-commit" "$GIT_HOOKS_DIR/pre-commit"
-    chmod +x "$GIT_HOOKS_DIR/pre-commit"
-    echo "✅ Installed pre-commit hook"
-else
-    echo "⚠️  Warning: pre-commit hook not found"
-fi
+# Default to core.hooksPath (recommended method)
+echo "Using Git's core.hooksPath feature (recommended)..."
+git config core.hooksPath scripts/git-hooks
+echo "✅ Configured Git to use hooks from scripts/git-hooks/"
+echo "✅ Hooks are now active!"
 
-# Install pre-push hook
-if [ -f "$HOOKS_DIR/pre-push" ]; then
-    cp "$HOOKS_DIR/pre-push" "$GIT_HOOKS_DIR/pre-push"
-    chmod +x "$GIT_HOOKS_DIR/pre-push"
-    echo "✅ Installed pre-push hook"
-else
-    echo "⚠️  Warning: pre-push hook not found"
-fi
+echo ""
+echo "Alternative: If you prefer the traditional method (copying files):"
+echo "  cp scripts/git-hooks/* .git/hooks/"
+echo "  chmod +x .git/hooks/pre-*"
 
 echo ""
 echo "🎉 Git hooks installation complete!"
