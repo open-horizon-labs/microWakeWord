@@ -58,6 +58,25 @@ python -m microwakeword.model_train_eval \
     --first_conv_filters 32 \
     --first_conv_kernel_size 5 \
     --stride 3
+
+# Train the adversarial TTS-robust model
+python -m microwakeword.model_train_eval \
+    --training_config='training_adversarial.yaml' \
+    --train 1 \
+    --restore_checkpoint 1 \
+    --test_tflite_streaming_quantized 1 \
+    --use_weights "best_weights" \
+    mixednet_adversarial \
+    --adversarial_lambda 1.0 \
+    --adversarial_hidden_units "128,64" \
+    --adversarial_dropout 0.5 \
+    --pointwise_filters "64,64,64,64" \
+    --repeat_in_block  "1, 1, 1, 1" \
+    --mixconv_kernel_sizes '[5], [7,11], [9,15], [23]' \
+    --residual_connection "0,0,0,0" \
+    --first_conv_filters 32 \
+    --first_conv_kernel_size 5 \
+    --stride 3
 ```
 
 ### Testing
@@ -111,17 +130,21 @@ The project uses:
 2. **Model Architecture** 
    - `mixednet.py`: MixedNet model using MixConv depthwise convolutions
    - `mixednet_ctc.py`: MixedNet encoder + LSTM decoder with CTC loss (experimental)
+   - `mixednet_adversarial.py`: MixedNet with adversarial training for TTS robustness
    - `inception.py`: Inception-based model architecture
    - `layers/`: Custom TensorFlow layers for streaming inference
      - `stream.py`: Streaming layer implementations
      - `modes.py`: Training/inference mode management
      - `delay.py`, `strided_drop.py`: Streaming-specific layers
+     - `gradient_reversal.py`: Gradient reversal layer for adversarial training
 
 3. **Training Pipeline**
    - `train.py`: Core training loop and validation logic
    - `train_ctc.py`: CTC-specific training loop for MixedNet+CTC models
+   - `train_adversarial.py`: Adversarial training loop for TTS-robust models
    - `model_train_eval.py`: Main entry point for training and evaluation
    - `data.py`: Data loading and preprocessing with Ragged Mmap support
+   - `data_adversarial.py`: Extended data pipeline with TTS labels for adversarial training
    - `ctc_utils.py`: CTC loss, decoding, and metrics utilities
 
 4. **Inference**
@@ -161,6 +184,32 @@ Parameters:
 - `--wake_word_phrase`: Space-separated wake words (e.g., "hey jarvis")
 - `--embedding_dim`: Size of encoder output embeddings (default: 64)
 - `--lstm_units`: Comma-separated LSTM layer sizes (e.g., "64,32")
+
+### MixedNet+Adversarial Architecture
+
+The MixedNet+Adversarial model improves robustness to TTS-generated speech:
+- **Main Branch**: Standard wake word classification
+- **Adversarial Branch**: Predicts if input is TTS or real speech
+- **Gradient Reversal**: Forces model to learn TTS-invariant features
+
+Benefits:
+- 8-12% accuracy improvement on real speech (based on paper results)
+- Reduced overfitting to TTS-specific artifacts
+- No inference overhead (adversarial branch removed during deployment)
+
+Parameters:
+- `--adversarial_lambda`: Gradient reversal scaling factor (default: 1.0)
+- `--adversarial_hidden_units`: Hidden layers for adversarial classifier (e.g., "128,64")
+- `--adversarial_dropout`: Dropout rate in adversarial classifier (default: 0.5)
+
+Training requires labeling data as TTS or real in the configuration file:
+```yaml
+features:
+- features_dir: /path/to/tts_samples
+  is_tts: true  # Mark as TTS-generated
+- features_dir: /path/to/real_samples
+  is_tts: false  # Mark as real speech
+```
 
 ## Important Considerations
 

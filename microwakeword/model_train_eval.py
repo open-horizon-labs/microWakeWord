@@ -30,8 +30,9 @@ if os.environ.get("CUDA_VISIBLE_DEVICES") == "-1" or (
 ):
     tf.config.set_visible_devices([], "GPU")
 
-from microwakeword import inception, mixednet, mixednet_ctc, test, train, train_ctc, utils
+from microwakeword import inception, mixednet, mixednet_ctc, mixednet_adversarial, test, train, train_ctc, train_adversarial, utils, utils_adversarial
 import microwakeword.data as input_data
+import microwakeword.data_adversarial as adversarial_data
 from microwakeword.layers import modes
 
 
@@ -124,6 +125,60 @@ def train_model(config, model, data_processor, restore_checkpoint, flags=None):
     if hasattr(model, 'vocab') and hasattr(model, 'encoder_steps'):
         # This is a CTC model
         train_ctc.train_ctc_model(model, config, data_processor, flags)
+    elif flags and flags.model_name == "mixednet_adversarial":
+        # Adversarial model training
+        epochs = config.get("training_steps", [12000])[0] // (data_processor.get_mode_size("training") // config["batch_size"])
+        
+        # Setup optimizer
+        learning_rate = config.get("learning_rates", [0.001])[0]
+        optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+        
+        # Setup losses
+        losses = {
+            "wake_word": tf.keras.losses.BinaryCrossentropy(),
+            "tts_classifier": tf.keras.losses.BinaryCrossentropy()
+        }
+        
+        # Setup metrics
+        metrics = {
+            "wake_word": [
+                tf.keras.metrics.BinaryAccuracy(name="accuracy"),
+                tf.keras.metrics.Recall(name="recall"),
+                tf.keras.metrics.Precision(name="precision"),
+                tf.keras.metrics.AUC(name="auc")
+            ],
+            "tts_classifier": [
+                tf.keras.metrics.BinaryAccuracy(name="accuracy")
+            ]
+        }
+        
+        # Setup class weights
+        class_weights = {
+            "wake_word": {
+                0: config.get("negative_class_weight", [1])[0],
+                1: config.get("positive_class_weight", [1])[0]
+            },
+            "tts_classifier": {0: 1.0, 1: 1.0}  # Equal weight for TTS classification
+        }
+        
+        # Train the adversarial model
+        train_adversarial.train_adversarial_model(
+            model=model,
+            epochs=epochs,
+            batch_size=config["batch_size"],
+            flags=flags,
+            config=config,
+            data_processor=data_processor,
+            checkpoint_path=os.path.join(config["train_dir"], "best_weights"),
+            best_checkpoint_path=os.path.join(config["train_dir"], "best_weights"),
+            tensorboard_path=config["summaries_dir"],
+            optimizer=optimizer,
+            losses=losses,
+            metrics=metrics,
+            weighted_metrics=None,
+            restore_checkpoint=restore_checkpoint,
+            class_weights=class_weights,
+        )
     else:
         # Regular binary classification model
         train.train(model, config, data_processor)
@@ -196,6 +251,20 @@ def evaluate_model(
                 for key, value in metrics.items():
                     f.write(f"{key}: {value}\n")
             logging.info(f"CTC model metrics: {metrics}")
+        elif config["flags"].get("model_name") == "mixednet_adversarial":
+            # Adversarial model validation
+            metrics = train_adversarial.validate_adversarial_nonstreaming(
+                config, data_processor, model, "testing"
+            )
+            # Save metrics
+            metrics_file = os.path.join(config["train_dir"], "testing_set_metrics.txt")
+            with open(metrics_file, "w") as f:
+                for key, value in metrics.items():
+                    f.write(f"{key}: {value}\n")
+            logging.info(f"Adversarial model metrics: {metrics}")
+            
+            # For TFLite conversion, extract wake word only model
+            model = utils_adversarial.extract_wake_word_model(model)
         else:
             # Regular validation
             folder_name = "non_stream"
@@ -405,6 +474,10 @@ if __name__ == "__main__":
     parser_mixednet_ctc = subparsers.add_parser("mixednet_ctc")
     mixednet_ctc.model_parameters(parser_mixednet_ctc)
 
+    # mixednet_adversarial model settings
+    parser_mixednet_adversarial = subparsers.add_parser("mixednet_adversarial")
+    mixednet_adversarial.model_parameters(parser_mixednet_adversarial)
+
     flags, unparsed = parser.parse_known_args()
     if unparsed:
         raise ValueError(f"Unknown argument: {unparsed}")
@@ -415,6 +488,8 @@ if __name__ == "__main__":
         model_module = mixednet
     elif flags.model_name == "mixednet_ctc":
         model_module = mixednet_ctc
+    elif flags.model_name == "mixednet_adversarial":
+        model_module = mixednet_adversarial
     else:
         raise ValueError(f"Unknown model type: {flags.model_name}")
 
@@ -422,7 +497,30 @@ if __name__ == "__main__":
 
     config = load_config(flags, model_module)
 
-    data_processor = input_data.FeatureHandler(config)
+    # Use adversarial data processor for adversarial models
+    if flags.model_name == "mixednet_adversarial":
+        # Create adversarial data processor with TTS labels
+        feature_providers = []
+        for feature_config in config["features"]:
+            # Determine if this is TTS data based on directory name or config
+            is_tts = feature_config.get("is_tts", "generated" in feature_config["features_dir"])
+            
+            provider = adversarial_data.AdversarialFeatureSetProvider(
+                path=feature_config["features_dir"],
+                label=feature_config["truth"],
+                is_tts=is_tts,
+                sampling_weight=feature_config["sampling_weight"],
+                penalty_weight=feature_config["penalty_weight"],
+                truncation_strategy=feature_config["truncation_strategy"],
+                stride=config["stride"],
+                step=config["window_step_ms"] / 1000.0,
+            )
+            feature_providers.append(provider)
+        
+        data_processor = adversarial_data.AdversarialDataProcessor(config)
+        data_processor.feature_providers = feature_providers
+    else:
+        data_processor = input_data.FeatureHandler(config)
 
     if flags.train:
         model = model_module.model(
