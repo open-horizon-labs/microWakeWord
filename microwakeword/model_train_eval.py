@@ -30,7 +30,7 @@ if os.environ.get("CUDA_VISIBLE_DEVICES") == "-1" or (
 ):
     tf.config.set_visible_devices([], "GPU")
 
-from microwakeword import inception, mixednet, mixednet_ctc, mixednet_adversarial, test, train, train_ctc, train_adversarial, train_adversarial_keras3, train_adversarial_simple, utils, utils_adversarial
+from microwakeword import inception, mixednet, mixednet_ctc, mixednet_adversarial, test, train, train_ctc, utils, utils_adversarial
 import microwakeword.data as input_data
 import microwakeword.data_adversarial as adversarial_data
 from microwakeword.layers import modes
@@ -125,87 +125,9 @@ def train_model(config, model, data_processor, restore_checkpoint, flags=None):
     if hasattr(model, 'vocab') and hasattr(model, 'encoder_steps'):
         # This is a CTC model
         train_ctc.train_ctc_model(model, config, data_processor, flags)
-    elif flags and flags.model_name == "mixednet_adversarial":
-        # Adversarial model training
-        epochs = config.get("training_steps", [12000])[0] // (data_processor.get_mode_size("training") // config["batch_size"])
-
-        # Setup optimizer
-        learning_rate = config.get("learning_rates", [0.001])[0]
-        optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-
-        # Setup losses
-        losses = {
-            "wake_word": tf.keras.losses.BinaryCrossentropy(),
-            "tts_classifier": tf.keras.losses.BinaryCrossentropy()
-        }
-
-        # Setup metrics
-        metrics = {
-            "wake_word": [
-                tf.keras.metrics.BinaryAccuracy(name="accuracy"),
-                tf.keras.metrics.Recall(name="recall"),
-                tf.keras.metrics.Precision(name="precision"),
-                tf.keras.metrics.AUC(name="auc"),
-                tf.keras.metrics.TruePositives(name="tp"),
-                tf.keras.metrics.FalsePositives(name="fp"),
-                tf.keras.metrics.FalseNegatives(name="fn")
-            ],
-            "tts_classifier": [
-                tf.keras.metrics.BinaryAccuracy(name="accuracy")
-            ]
-        }
-
-        # Setup class weights
-        class_weights = {
-            "wake_word": {
-                0: config.get("negative_class_weight", [1])[0],
-                1: config.get("positive_class_weight", [1])[0]
-            },
-            "tts_classifier": {0: 1.0, 1: 1.0}  # Equal weight for TTS classification
-        }
-
-        # Check Keras version and use appropriate training function
-        keras_version = tuple(map(int, tf.keras.__version__.split('.')[:2]))
-        if keras_version >= (3, 0):
-            # Use simple custom training loop for Keras 3.x
-            logging.info("Using simplified adversarial training for Keras 3.x")
-            train_adversarial_simple.train_adversarial_simple(
-                model=model,
-                epochs=epochs,
-                batch_size=config["batch_size"],
-                flags=flags,
-                config=config,
-                data_processor=data_processor,
-                checkpoint_path=os.path.join(config["train_dir"], "checkpoint.weights.h5"),
-                best_checkpoint_path=os.path.join(config["train_dir"], "best_weights.weights.h5"),
-                tensorboard_path=config["summaries_dir"],
-                optimizer=optimizer,
-                losses=losses,
-                metrics=metrics,
-                restore_checkpoint=restore_checkpoint,
-                class_weights=class_weights,
-            )
-        else:
-            # Use standard training for older Keras versions
-            train_adversarial.train_adversarial_model(
-                model=model,
-                epochs=epochs,
-                batch_size=config["batch_size"],
-                flags=flags,
-                config=config,
-                data_processor=data_processor,
-                checkpoint_path=os.path.join(config["train_dir"], "checkpoint.weights.h5"),
-                best_checkpoint_path=os.path.join(config["train_dir"], "best_weights.weights.h5"),
-                tensorboard_path=config["summaries_dir"],
-                optimizer=optimizer,
-                losses=losses,
-                metrics=metrics,
-                weighted_metrics=None,
-                restore_checkpoint=restore_checkpoint,
-                class_weights=class_weights,
-            )
     else:
-        # Regular binary classification model
+        # Regular binary classification model OR adversarial model
+        # The modified train.py now handles both cases automatically
         train.train(model, config, data_processor)
 
 
