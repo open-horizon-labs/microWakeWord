@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Alternative training approach for Keras 3.x compatibility."""
+"""Simplified adversarial training without Keras fit() API."""
 
 import os
 import numpy as np
@@ -22,62 +22,7 @@ from absl import logging
 from microwakeword.train_adversarial import validate_adversarial_nonstreaming
 
 
-def create_training_step_function(model, optimizer, loss_fns, loss_weights=None):
-    """Create a custom training step function for adversarial training.
-    
-    This bypasses Keras's built-in training loop to avoid sample weight issues.
-    """
-    if loss_weights is None:
-        loss_weights = {"wake_word": 1.0, "tts_classifier": 1.0}
-    
-    @tf.function
-    def train_step(x, y_wake, y_tts, sample_weights_wake):
-        with tf.GradientTape() as tape:
-            # Forward pass
-            outputs = model(x, training=True)
-            y_wake_pred = outputs[0]
-            y_tts_pred = outputs[1]
-            
-            # Calculate losses
-            wake_loss = loss_fns["wake_word"](y_wake, y_wake_pred)
-            tts_loss = loss_fns["tts_classifier"](y_tts, y_tts_pred)
-            
-            # Apply sample weights to wake word loss
-            wake_loss = wake_loss * sample_weights_wake
-            wake_loss = tf.reduce_mean(wake_loss)
-            tts_loss = tf.reduce_mean(tts_loss)
-            
-            # Combined loss
-            total_loss = (loss_weights["wake_word"] * wake_loss + 
-                         loss_weights["tts_classifier"] * tts_loss)
-        
-        # Backward pass
-        gradients = tape.gradient(total_loss, model.trainable_variables)
-        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-        
-        # Update metrics manually for Keras 3.x
-        # The model.metrics list contains metrics for both outputs
-        for metric in model.metrics:
-            if metric.name.startswith('wake_word_'):
-                # This is a wake word metric
-                metric.update_state(y_wake, y_wake_pred)
-            elif metric.name.startswith('tts_classifier_'):
-                # This is a TTS classifier metric
-                metric.update_state(y_tts, y_tts_pred)
-            elif metric.name == 'loss':
-                # Skip the loss metric as we handle it separately
-                continue
-        
-        return {
-            "loss": total_loss,
-            "wake_loss": wake_loss,
-            "tts_loss": tts_loss
-        }
-    
-    return train_step
-
-
-def train_adversarial_keras3(
+def train_adversarial_simple(
     model,
     epochs,
     batch_size,
@@ -93,19 +38,16 @@ def train_adversarial_keras3(
     restore_checkpoint,
     class_weights,
 ):
-    """Alternative training function for Keras 3.x compatibility.
+    """Simple adversarial training that bypasses Keras fit() entirely."""
     
-    This function uses a custom training loop to avoid sample weight issues.
-    """
-    # Compile model without sample weight
-    model.compile(
-        optimizer=optimizer,
-        loss=losses,
-        metrics=metrics,
-    )
+    # Initialize optimizer if needed
+    if optimizer is None:
+        learning_rate = config.get("learning_rates", [0.001])[0]
+        optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
     
-    # Create custom training step
-    train_step = create_training_step_function(model, optimizer, losses)
+    # Loss functions
+    wake_loss_fn = losses["wake_word"]
+    tts_loss_fn = losses["tts_classifier"]
     
     # Restore checkpoint if requested
     if restore_checkpoint and os.path.exists(checkpoint_path):
@@ -119,15 +61,15 @@ def train_adversarial_keras3(
     training_samples = data_processor.get_mode_size("training")
     steps_per_epoch = training_samples // batch_size
     
+    logging.info(f"Starting training: {epochs} epochs, {steps_per_epoch} steps per epoch")
+    
     # Training loop
     for epoch in range(epochs):
-        logging.info(f"Epoch {epoch + 1}/{epochs}")
+        logging.info(f"\nEpoch {epoch + 1}/{epochs}")
         
-        # Reset metrics
-        model.reset_metrics()
-        
-        # Training for one epoch
-        epoch_losses = []
+        epoch_wake_loss = 0.0
+        epoch_tts_loss = 0.0
+        epoch_total_loss = 0.0
         
         for step in range(steps_per_epoch):
             # Get batch of training data
@@ -158,29 +100,88 @@ def train_adversarial_keras3(
                 else:
                     wake_word_sample_weights[i] *= class_weights["wake_word"][0]
             
-            # Convert to tensors
-            x_batch = tf.constant(train_fingerprints, dtype=tf.float32)
-            y_wake_batch = tf.constant(train_ground_truth.reshape(-1, 1), dtype=tf.float32)
-            y_tts_batch = tf.constant(train_tts_labels.reshape(-1, 1), dtype=tf.float32)
-            sample_weights_batch = tf.constant(wake_word_sample_weights, dtype=tf.float32)
+            # Reshape labels
+            train_ground_truth = train_ground_truth.reshape(-1, 1)
+            train_tts_labels = train_tts_labels.reshape(-1, 1)
             
-            # Execute training step
-            step_losses = train_step(x_batch, y_wake_batch, y_tts_batch, sample_weights_batch)
-            epoch_losses.append(step_losses["loss"].numpy())
+            # Training step
+            with tf.GradientTape() as tape:
+                # Forward pass
+                outputs = model(train_fingerprints, training=True)
+                wake_pred = outputs[0]
+                tts_pred = outputs[1]
+                
+                # Calculate losses
+                wake_loss = wake_loss_fn(train_ground_truth, wake_pred)
+                tts_loss = tts_loss_fn(train_tts_labels, tts_pred)
+                
+                # Apply sample weights to wake word loss
+                wake_loss = tf.reduce_mean(wake_loss * wake_word_sample_weights.reshape(-1, 1))
+                tts_loss = tf.reduce_mean(tts_loss)
+                
+                # Total loss
+                total_loss = wake_loss + tts_loss
+            
+            # Backward pass
+            gradients = tape.gradient(total_loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            
+            # Track losses
+            epoch_wake_loss += float(wake_loss)
+            epoch_tts_loss += float(tts_loss)
+            epoch_total_loss += float(total_loss)
             
             # Log progress
-            if step % 100 == 0:
-                metrics_values = {}
-                for m in model.metrics:
-                    if m.name != 'loss':  # Skip loss metric
-                        metrics_values[m.name] = float(m.result().numpy())
-                logging.info(f"Step {step}/{steps_per_epoch} - loss: {float(step_losses['loss']):.4f} - metrics: {metrics_values}")
+            if step % 100 == 0 and step > 0:
+                avg_wake_loss = epoch_wake_loss / (step + 1)
+                avg_tts_loss = epoch_tts_loss / (step + 1)
+                avg_total_loss = epoch_total_loss / (step + 1)
+                logging.info(
+                    f"Step {step}/{steps_per_epoch} - "
+                    f"loss: {avg_total_loss:.4f} - "
+                    f"wake_loss: {avg_wake_loss:.4f} - "
+                    f"tts_loss: {avg_tts_loss:.4f}"
+                )
+        
+        # End of epoch summary
+        avg_wake_loss = epoch_wake_loss / steps_per_epoch
+        avg_tts_loss = epoch_tts_loss / steps_per_epoch
+        avg_total_loss = epoch_total_loss / steps_per_epoch
+        logging.info(
+            f"Epoch {epoch + 1} completed - "
+            f"avg_loss: {avg_total_loss:.4f} - "
+            f"avg_wake_loss: {avg_wake_loss:.4f} - "
+            f"avg_tts_loss: {avg_tts_loss:.4f}"
+        )
         
         # Save checkpoint
         model.save_weights(checkpoint_path)
         
         # Validate every eval_step_interval epochs
         if (epoch + 1) % config.get("eval_step_interval", 500) == 0:
+            logging.info("Running validation...")
+            
+            # Need to compile model for validation metrics
+            if not hasattr(model, 'compiled'):
+                model.compile(
+                    optimizer=optimizer,
+                    loss=losses,
+                    metrics={
+                        "wake_word": [
+                            tf.keras.metrics.BinaryAccuracy(name="accuracy"),
+                            tf.keras.metrics.Recall(name="recall"),
+                            tf.keras.metrics.Precision(name="precision"),
+                            tf.keras.metrics.AUC(name="auc"),
+                            tf.keras.metrics.TruePositives(name="tp"),
+                            tf.keras.metrics.FalsePositives(name="fp"),
+                            tf.keras.metrics.FalseNegatives(name="fn")
+                        ],
+                        "tts_classifier": [
+                            tf.keras.metrics.BinaryAccuracy(name="accuracy")
+                        ]
+                    }
+                )
+            
             val_metrics = validate_adversarial_nonstreaming(
                 config, data_processor, model, "validation"
             )

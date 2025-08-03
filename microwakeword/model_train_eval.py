@@ -30,7 +30,7 @@ if os.environ.get("CUDA_VISIBLE_DEVICES") == "-1" or (
 ):
     tf.config.set_visible_devices([], "GPU")
 
-from microwakeword import inception, mixednet, mixednet_ctc, mixednet_adversarial, test, train, train_ctc, train_adversarial, train_adversarial_keras3, utils, utils_adversarial
+from microwakeword import inception, mixednet, mixednet_ctc, mixednet_adversarial, test, train, train_ctc, train_adversarial, train_adversarial_keras3, train_adversarial_simple, utils, utils_adversarial
 import microwakeword.data as input_data
 import microwakeword.data_adversarial as adversarial_data
 from microwakeword.layers import modes
@@ -167,9 +167,9 @@ def train_model(config, model, data_processor, restore_checkpoint, flags=None):
         # Check Keras version and use appropriate training function
         keras_version = tuple(map(int, tf.keras.__version__.split('.')[:2]))
         if keras_version >= (3, 0):
-            # Use custom training loop for Keras 3.x
-            logging.info("Using Keras 3.x compatible training loop")
-            train_adversarial_keras3.train_adversarial_keras3(
+            # Use simple custom training loop for Keras 3.x
+            logging.info("Using simplified adversarial training for Keras 3.x")
+            train_adversarial_simple.train_adversarial_simple(
                 model=model,
                 epochs=epochs,
                 batch_size=config["batch_size"],
