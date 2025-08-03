@@ -496,17 +496,14 @@ def train(model, config, data_processor):
         # Print the running statistics in the current validation epoch
         if is_adversarial:
             print(
-                "Validation Batch #{:d}: Acc={:.3f} (avg={:.3f}); Rec={:.3f} (avg={:.3f}); Prec={:.3f} (avg={:.3f}); Loss={:.4f} (avg={:.4f}); TTS_Acc={:.3f} (avg={:.3f}); Mini-Batch #{:d}/{:d}".format(
+                "Validation Batch #{:d}: Acc={:.3f}; Rec={:.3f}; Prec={:.3f}; Loss={:.4f} (wake={:.4f}, tts={:.4f}); TTS_Acc={:.3f}; Mini-Batch #{:d}/{:d}".format(
                     (training_step // config["eval_step_interval"] + 1),
-                    wake_accuracy,
                     avg_wake_accuracy,
-                    wake_recall,
                     avg_wake_recall,
-                    wake_precision,
                     avg_wake_precision,
-                    total_loss,
                     avg_total_loss,
-                    tts_accuracy,
+                    avg_wake_loss,
+                    avg_tts_loss,
                     avg_tts_accuracy,
                     mini_batch_num,
                     config["eval_step_interval"],
@@ -515,15 +512,11 @@ def train(model, config, data_processor):
             )
         else:
             print(
-                "Validation Batch #{:d}: Acc={:.3f} (avg={:.3f}); Rec={:.3f} (avg={:.3f}); Prec={:.3f} (avg={:.3f}); Loss={:.4f} (avg={:.4f}); Mini-Batch #{:d}/{:d}".format(
+                "Validation Batch #{:d}: Acc={:.3f}; Rec={:.3f}; Prec={:.3f}; Loss={:.4f}; Mini-Batch #{:d}/{:d}".format(
                     (training_step // config["eval_step_interval"] + 1),
-                    wake_accuracy,
                     avg_wake_accuracy,
-                    wake_recall,
                     avg_wake_recall,
-                    wake_precision,
                     avg_wake_precision,
-                    wake_loss,
                     avg_wake_loss,
                     mini_batch_num,
                     config["eval_step_interval"],
