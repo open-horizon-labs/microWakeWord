@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 Kevin Ahrendt.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -39,7 +38,6 @@ class SpectrogramGeneration:
         split_spectrogram_duration_s: float | None = None,
         slide_frames: int | None = None,
     ):
-
         self.clips = clips
         self.augmenter = augmenter
         self.step_ms = step_ms

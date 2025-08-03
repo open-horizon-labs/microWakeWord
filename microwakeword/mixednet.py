@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 Kevin Ahrendt.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,11 +14,11 @@
 
 """Model based on 1D depthwise MixedConvs and 1x1 convolutions in time + residual."""
 
-from microwakeword.layers import stream
-from microwakeword.layers import strided_drop
-
 import ast
+
 import tensorflow as tf
+
+from microwakeword.layers import stream, strided_drop
 
 
 def parse(text):
@@ -162,7 +161,6 @@ class ChannelSplit(tf.keras.layers.Layer):
             new_shape[self.axis] = split
             output_shapes.append(tuple(new_shape))
         return output_shapes
-
 
 
 class MixConv:

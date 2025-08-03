@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 The Google Research Authors.
 # Modifications copyright 2024 Kevin Ahrendt.
 #
@@ -15,14 +14,12 @@
 # limitations under the License.
 
 """Inception - reduced version of keras/applications/inception_v3.py ."""
+
 import ast
+
 import tensorflow as tf
 
-
-from microwakeword.layers import delay
-from microwakeword.layers import stream
-from microwakeword.layers import strided_drop
-from microwakeword.layers import sub_spectral_normalization
+from microwakeword.layers import delay, stream, strided_drop, sub_spectral_normalization
 
 
 def parse(text):

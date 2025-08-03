@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 The Google Research Authors.
 # Modifications copyright 2024 Kevin Ahrendt.
 #
@@ -14,15 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import platform
 import contextlib
+import os
 
 from absl import logging
-
 import numpy as np
 import tensorflow as tf
-
 from tensorflow.python.util import tf_decorator
 
 
@@ -108,8 +104,8 @@ def validate_nonstreaming(config, data_processor, model, test_set):
         metrics["auc"] = ambient_predictions["auc"]
         metrics["loss"] = ambient_predictions["loss"]
 
-        recall_at_cutoffs = (
-            all_true_positives / (all_true_positives + all_false_negatives)
+        recall_at_cutoffs = all_true_positives / (
+            all_true_positives + all_false_negatives
         )
         faph_at_cutoffs = ambient_false_positives / duration_of_ambient_set
 

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 Kevin Ahrendt.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -32,7 +31,7 @@ class StridedDrop(tf.keras.layers.Layer):
     def __init__(
         self, time_slices_to_drop, mode=modes.Modes.NON_STREAM_INFERENCE, **kwargs
     ):
-        super(StridedDrop, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.time_slices_to_drop = time_slices_to_drop
         self.mode = mode
         self.state_shape = []
@@ -48,7 +47,7 @@ class StridedDrop(tf.keras.layers.Layer):
             "time_slices_to_drop": self.time_slices_to_drop,
             "mode": self.mode,
         }
-        base_config = super(StridedDrop, self).get_config()
+        base_config = super().get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
     def get_input_state(self):
@@ -72,7 +71,7 @@ class StridedKeep(tf.keras.layers.Layer):
     def __init__(
         self, time_slices_to_keep, mode=modes.Modes.NON_STREAM_INFERENCE, **kwargs
     ):
-        super(StridedKeep, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.time_slices_to_keep = max(time_slices_to_keep, 1)
         self.mode = mode
         self.state_shape = []
@@ -88,7 +87,7 @@ class StridedKeep(tf.keras.layers.Layer):
             "time_slices_to_keep": self.time_slices_to_keep,
             "mode": self.mode,
         }
-        base_config = super(StridedKeep, self).get_config()
+        base_config = super().get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
     def get_input_state(self):

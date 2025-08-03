@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 Kevin Ahrendt.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,15 +13,13 @@
 # limitations under the License.
 
 import numpy as np
+from pymicro_features import MicroFrontend
+from scipy.io import wavfile
 import tensorflow as tf
-import webrtcvad
-
 from tensorflow.lite.experimental.microfrontend.python.ops import (
     audio_microfrontend_op as frontend_op,
 )
-from scipy.io import wavfile
-
-from pymicro_features import MicroFrontend
+import webrtcvad
 
 
 def generate_features_for_clip(

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,6 +13,7 @@
 # limitations under the License.
 
 """Convolutional AveragePooling2D."""
+
 import numpy as np
 import tensorflow as tf
 
@@ -48,7 +48,7 @@ class AveragePooling2D(tf.keras.layers.Layer):
     def __init__(
         self, kernel_size, strides=None, padding="valid", dilation_rate=None, **kwargs
     ):
-        super(AveragePooling2D, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.kernel_size = kernel_size
         self.strides = strides
         self.padding = padding
@@ -60,7 +60,7 @@ class AveragePooling2D(tf.keras.layers.Layer):
             self.dilation_rate = [1, 1]
 
     def build(self, input_shape):
-        super(AveragePooling2D, self).build(input_shape)
+        super().build(input_shape)
         # expand filters shape with the last dimension
         filter_shape = self.kernel_size + (input_shape[-1],)
         self.filters = self.add_weight("kernel", shape=filter_shape)
@@ -84,7 +84,7 @@ class AveragePooling2D(tf.keras.layers.Layer):
         )
 
     def get_config(self):
-        config = super(AveragePooling2D, self).get_config()
+        config = super().get_config()
         config.update(
             {
                 "kernel_size": self.kernel_size,

@@ -10,9 +10,9 @@ Usage:
     python run_tests.py coverage     # Run with coverage report
 """
 
-import sys
-import subprocess
 import os
+import subprocess
+import sys
 
 
 def run_command(cmd):
@@ -23,51 +23,48 @@ def run_command(cmd):
 
 def main():
     # Ensure we're in the project root
-    if not os.path.exists('microwakeword'):
+    if not os.path.exists("microwakeword"):
         print("Error: Must run from project root directory")
         sys.exit(1)
-    
+
     # Parse command line arguments
-    if len(sys.argv) > 1:
-        mode = sys.argv[1].lower()
-    else:
-        mode = 'all'
-    
+    mode = sys.argv[1].lower() if len(sys.argv) > 1 else "all"
+
     # Install test dependencies if needed
-    if not os.path.exists('tests'):
+    if not os.path.exists("tests"):
         print("Setting up test environment...")
         run_command("pip install -r requirements-test.txt")
-    
+
     # Run tests based on mode
-    if mode == 'unit':
+    if mode == "unit":
         print("\n=== Running unit tests ===")
         exit_code = run_command("pytest tests/unit -v")
-    
-    elif mode == 'integration':
+
+    elif mode == "integration":
         print("\n=== Running integration tests ===")
         exit_code = run_command("pytest tests/integration -v")
-    
-    elif mode == 'fast':
+
+    elif mode == "fast":
         print("\n=== Running fast tests only ===")
         exit_code = run_command('pytest -v -m "not slow"')
-    
-    elif mode == 'coverage':
+
+    elif mode == "coverage":
         print("\n=== Running tests with coverage ===")
         exit_code = run_command(
             "pytest --cov=microwakeword --cov-report=html --cov-report=term"
         )
         if exit_code == 0:
             print("\nCoverage report generated in htmlcov/index.html")
-    
-    elif mode == 'all':
+
+    elif mode == "all":
         print("\n=== Running all tests ===")
         exit_code = run_command("pytest -v")
-    
+
     else:
         print(f"Unknown mode: {mode}")
         print(__doc__)
         sys.exit(1)
-    
+
     # Run linting if tests passed
     if exit_code == 0:
         print("\n=== Running linting ===")
@@ -76,9 +73,9 @@ def main():
         )
         if lint_code != 0:
             print("Warning: Linting issues found")
-    
+
     sys.exit(exit_code)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

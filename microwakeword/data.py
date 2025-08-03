@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 Kevin Ahrendt.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,16 +15,15 @@
 """Functions and classes for loading/augmenting spectrograms"""
 
 import os
+from pathlib import Path
 import random
 
+from absl import logging
+from mmap_ninja.ragged import RaggedMmap
 import numpy as np
 
-from absl import logging
-from pathlib import Path
-from mmap_ninja.ragged import RaggedMmap
-
-from microwakeword.audio.clips import Clips
 from microwakeword.audio.augmentation import Augmentation
+from microwakeword.audio.clips import Clips
 from microwakeword.audio.spectrograms import SpectrogramGeneration
 
 
@@ -118,7 +116,7 @@ def fixed_length_spectrogram(
     return spectrogram[features_offset : (features_offset + features_length)]
 
 
-class MmapFeatureGenerator(object):
+class MmapFeatureGenerator:
     """A class that handles loading spectrograms from Ragged MMaps for training or testing.
 
     Args:
@@ -321,7 +319,7 @@ class MmapFeatureGenerator(object):
                     yield fixed_spectrogram
 
 
-class ClipsHandlerWrapperGenerator(object):
+class ClipsHandlerWrapperGenerator:
     """A class that handles loading spectrograms from audio files on the disk to use while training. This generates spectrograms with random augmentations applied during the training process.
 
     Args:
@@ -398,11 +396,10 @@ class ClipsHandlerWrapperGenerator(object):
         truncation_strategy="default",
     ):
         """Function to maintain compatability with the MmapFeatureGenerator class."""
-        for x in []:
-            yield x
+        yield from []
 
 
-class FeatureHandler(object):
+class FeatureHandler:
     """Class that handles loading spectrogram features and providing them to the training and testing functions.
 
     Args:
@@ -530,7 +527,7 @@ class FeatureHandler(object):
 
         if mode == "training":
             sample_count = batch_size
-        elif (mode == "validation") or (mode == "testing"):
+        elif mode in ("validation", "testing"):
             sample_count = self.get_mode_size(mode)
 
         data = []
@@ -590,7 +587,7 @@ class FeatureHandler(object):
 
         indices = np.arange(labels.shape[0])
 
-        if mode == "testing" or "validation":
+        if True:
             # Randomize the order of the data, weights, and labels
             np.random.shuffle(indices)
 

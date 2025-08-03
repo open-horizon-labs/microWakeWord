@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +15,7 @@
 """Modes the model can be in and its input data shape."""
 
 
-class Modes(object):
+class Modes:
     """Definition of the mode the model is functioning in."""
 
     # Model is in a training state. No streaming is done.
@@ -54,11 +53,11 @@ def get_input_data_shape(config, mode):
         Modes.STREAM_INTERNAL_STATE_INFERENCE,
         Modes.STREAM_EXTERNAL_STATE_INFERENCE,
     ):
-        raise ValueError('Unknown mode "%s" ' % config["mode"])
+        raise ValueError('Unknown mode "{}" '.format(config["mode"]))
 
     if mode in (Modes.TRAINING, Modes.NON_STREAM_INFERENCE):
         data_shape = (config["spectrogram_length"], 40)
     else:
-        stride = config['stride']
+        stride = config["stride"]
         data_shape = (stride, 40)
     return data_shape

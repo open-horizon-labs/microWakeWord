@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 The Google Research Authors.
 # Modifications copyright 2024 Kevin Ahrendt.
 #
@@ -18,13 +17,12 @@
 
 import os
 
+from absl import logging
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 import tensorflow as tf
 
-from absl import logging
-from typing import List
 from microwakeword.inference import Model
-from numpy.lib.stride_tricks import sliding_window_view
 
 
 def compute_metrics(true_positives, true_negatives, false_positives, false_negatives):
@@ -92,7 +90,7 @@ def metrics_to_string(metrics):
 
 
 def compute_false_accepts_per_hour(
-    streaming_probabilities_list: List[np.ndarray],
+    streaming_probabilities_list: list[np.ndarray],
     cutoffs: np.array,
     ignore_slices_after_accept: int = 75,
     stride: int = 1,
@@ -254,11 +252,10 @@ def tf_model_accuracy(
                     true_positives += 1
                 else:
                     true_negatives += 1
+            elif sample_ground_truth:
+                false_negatives += 1
             else:
-                if sample_ground_truth:
-                    false_negatives += 1
-                else:
-                    false_positives += 1
+                false_positives += 1
 
             metrics = compute_metrics(
                 true_positives, true_negatives, false_positives, false_negatives
@@ -285,7 +282,7 @@ def tf_model_accuracy(
     )
 
     path = os.path.join(config["train_dir"], folder)
-    with open(os.path.join(path, accuracy_name), "wt") as fd:
+    with open(os.path.join(path, accuracy_name), "w") as fd:
         fd.write(metrics_string)
     return metrics
 
@@ -387,16 +384,14 @@ def tflite_streaming_model_roc(
     )
 
     path = os.path.join(config["train_dir"], folder)
-    with open(os.path.join(path, accuracy_name), "wt") as fd:
+    with open(os.path.join(path, accuracy_name), "w") as fd:
         auc = np.trapz(y_coordinates, x_coordinates)
-        auc_string = "AUC {:.5f}".format(auc)
+        auc_string = f"AUC {auc:.5f}"
         logging.info(auc_string)
         fd.write(auc_string + "\n")
 
         for i in range(0, x_coordinates.shape[0]):
-            cutoff_string = "Cutoff {:.2f}: frr={:.4f}; faph={:.3f}".format(
-                cutoffs_at_points[i], y_coordinates[i], x_coordinates[i]
-            )
+            cutoff_string = f"Cutoff {cutoffs_at_points[i]:.2f}: frr={y_coordinates[i]:.4f}; faph={x_coordinates[i]:.3f}"
             logging.info(cutoff_string)
             fd.write(cutoff_string + "\n")
 
@@ -444,7 +439,7 @@ def tflite_model_accuracy(
         truncation_strategy=truncation_strategy,
     )
 
-    logging.info("Testing TFLite model on the {data_set} set".format(data_set=data_set))
+    logging.info(f"Testing TFLite model on the {data_set} set")
 
     true_positives = 0.0
     true_negatives = 0.0
@@ -466,11 +461,10 @@ def tflite_model_accuracy(
                     true_positives += 1
                 else:
                     true_negatives += 1
+            elif sample_ground_truth:
+                false_negatives += 1
             else:
-                if sample_ground_truth:
-                    false_negatives += 1
-                else:
-                    false_positives += 1
+                false_positives += 1
         else:
             previous_probability = 0
             last_positive_index = 0
@@ -512,6 +506,6 @@ def tflite_model_accuracy(
 
     logging.info("Final TFLite model on the " + data_set + " set: " + metrics_string)
     path = os.path.join(config["train_dir"], folder)
-    with open(os.path.join(path, accuracy_name), "wt") as fd:
+    with open(os.path.join(path, accuracy_name), "w") as fd:
         fd.write(metrics_string)
     return metrics

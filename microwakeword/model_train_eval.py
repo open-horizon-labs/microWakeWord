@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 The Google Research Authors.
 # Modifications copyright 2024 Kevin Ahrendt.
 #
@@ -16,12 +15,12 @@
 
 import argparse
 import os
-import sys
-import yaml
 import platform
-from absl import logging
+import sys
 
+from absl import logging
 import tensorflow as tf
+import yaml
 
 # Disable GPU by default on ARM Macs, it's slower than just using the CPU
 if os.environ.get("CUDA_VISIBLE_DEVICES") == "-1" or (
@@ -31,14 +30,8 @@ if os.environ.get("CUDA_VISIBLE_DEVICES") == "-1" or (
 ):
     tf.config.set_visible_devices([], "GPU")
 
+from microwakeword import inception, mixednet, test, train, utils
 import microwakeword.data as input_data
-import microwakeword.train as train
-import microwakeword.test as test
-import microwakeword.utils as utils
-
-import microwakeword.inception as inception
-import microwakeword.mixednet as mixednet
-
 from microwakeword.layers import modes
 
 
@@ -53,7 +46,8 @@ def load_config(flags, model_module):
         dict: dictionary containing training configuration
     """
     config_filename = flags.training_config
-    config = yaml.load(open(config_filename, "r").read(), yaml.Loader)
+    with open(config_filename) as f:
+        config = yaml.load(f.read(), yaml.Loader)
 
     config["summaries_dir"] = os.path.join(config["train_dir"], "logs/")
 
@@ -116,7 +110,7 @@ def train_model(config, model, data_processor, restore_checkpoint):
             pass
         else:
             raise ValueError(
-                "model already exists in folder %s" % config["train_dir"]
+                "model already exists in folder {}".format(config["train_dir"])
             ) from None
     config_fname = os.path.join(config["train_dir"], "training_config.yaml")
 
@@ -252,7 +246,9 @@ def evaluate_model(
         utils.convert_saved_model_to_tflite(
             config,
             audio_processor=data_processor,
-            path_to_model=os.path.join(config["train_dir"], tflite_config["source_folder"]),
+            path_to_model=os.path.join(
+                config["train_dir"], tflite_config["source_folder"]
+            ),
             folder=os.path.join(config["train_dir"], tflite_config["output_folder"]),
             fname=tflite_config["filename"],
             quantize=tflite_config["quantize"],
@@ -386,14 +382,14 @@ if __name__ == "__main__":
 
     flags, unparsed = parser.parse_known_args()
     if unparsed:
-        raise ValueError("Unknown argument: {}".format(unparsed))
+        raise ValueError(f"Unknown argument: {unparsed}")
 
     if flags.model_name == "inception":
         model_module = inception
     elif flags.model_name == "mixednet":
         model_module = mixednet
     else:
-        raise ValueError("Unknown model type: {}".format(flags.model_name))
+        raise ValueError(f"Unknown model type: {flags.model_name}")
 
     logging.set_verbosity(flags.verbosity)
 
@@ -407,9 +403,8 @@ if __name__ == "__main__":
         )
         logging.info(model.summary())
         train_model(config, model, data_processor, flags.restore_checkpoint)
-    else:
-        if not os.path.isdir(config["train_dir"]):
-            raise ValueError('model is not trained set "--train 1" and retrain it')
+    elif not os.path.isdir(config["train_dir"]):
+        raise ValueError('model is not trained set "--train 1" and retrain it')
 
     if (
         flags.test_tf_nonstreaming

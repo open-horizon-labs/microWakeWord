@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 The Google Research Authors.
 # Modifications copyright 2024 Kevin Ahrendt.
 #
@@ -19,6 +18,7 @@
 # imports
 import numpy as np
 import tensorflow as tf
+
 from microwakeword.audio.audio_utils import generate_features_for_clip
 
 

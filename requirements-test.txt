@@ -17,10 +17,9 @@ pytest-tensorflow>=0.1.0  # If available
 numpy>=1.24.0  # Should match main requirements
 scipy>=1.10.0  # For audio testing
 
-# Code quality
-flake8>=6.0.0
-black>=23.0.0
-isort>=5.12.0
+# Code quality and formatting
+ruff>=0.5.0
+pre-commit>=3.0.0
 
 # Type checking
 mypy>=1.4.0

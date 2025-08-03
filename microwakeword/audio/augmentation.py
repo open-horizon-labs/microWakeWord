@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 Kevin Ahrendt.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,12 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import audiomentations
 import warnings
 
+import audiomentations
 import numpy as np
-
-from typing import List
 
 
 class Augmentation:
@@ -54,8 +51,8 @@ class Augmentation:
             "GainTransition": 0.25,
             "RIR": 0.5,
         },
-        impulse_paths: List[str] = [],
-        background_paths: List[str] = [],
+        impulse_paths: list[str] = [],
+        background_paths: list[str] = [],
         background_min_snr_db: int = -10,
         background_max_snr_db: int = 10,
         color_min_snr_db: int = 10,

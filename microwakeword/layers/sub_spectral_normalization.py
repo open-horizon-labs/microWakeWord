@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 The Google Research Authors.
 # Modifications copyright 2024 Kevin Ahrendt.
 #
@@ -16,7 +15,6 @@
 # limitations under the License.
 
 """Sub spectral normalization layer."""
-from typing import Any, Dict
 
 import tensorflow as tf
 
@@ -30,7 +28,7 @@ class SubSpectralNormalization(tf.keras.layers.Layer):
     """
 
     def __init__(self, sub_groups, **kwargs):
-        super(SubSpectralNormalization, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.sub_groups = sub_groups
 
         self.batch_norm = tf.keras.layers.BatchNormalization()
@@ -63,5 +61,5 @@ class SubSpectralNormalization(tf.keras.layers.Layer):
 
     def get_config(self):
         config = {"sub_groups": self.sub_groups}
-        base_config = super(SubSpectralNormalization, self).get_config()
+        base_config = super().get_config()
         return dict(list(base_config.items()) + list(config.items()))

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,9 +15,9 @@
 """Wrapper for streaming inference."""
 
 from absl import logging
-from microwakeword.layers import average_pooling2d
-from microwakeword.layers import modes
 import tensorflow as tf
+
+from microwakeword.layers import average_pooling2d, modes
 
 
 def frequeny_pad(inputs, dilation, stride, kernel_size):
@@ -117,7 +116,7 @@ class Stream(tf.keras.layers.Layer):
         transposed_conv_crop_output=True,
         **kwargs,
     ):
-        super(Stream, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         if pad_freq_dim not in ["same", "valid"]:
             raise ValueError(f"Unsupported padding in frequency, `{pad_freq_dim}`.")
@@ -201,21 +200,18 @@ class Stream(tf.keras.layers.Layer):
             if self.mode not in (
                 modes.Modes.TRAINING,
                 modes.Modes.NON_STREAM_INFERENCE,
-            ):
-                if padding != "valid":
-                    raise ValueError(padding_error)
+            ) and padding != "valid":
+                raise ValueError(padding_error)
 
             if self.mode not in (
                 modes.Modes.TRAINING,
                 modes.Modes.NON_STREAM_INFERENCE,
-            ):
-                if self.use_one_step:
-                    if strides[0] > 1:
-                        raise ValueError(
-                            "Stride in time dim greater than 1 "
-                            "in streaming mode with use_one_step=True "
-                            "is not supported, set use_one_step=False"
-                        )
+            ) and self.use_one_step and strides[0] > 1:
+                raise ValueError(
+                    "Stride in time dim greater than 1 "
+                    "in streaming mode with use_one_step=True "
+                    "is not supported, set use_one_step=False"
+                )
 
             dilation_rate = wrapped_cell.get_config()["dilation_rate"]
             kernel_size = wrapped_cell.get_config()["kernel_size"]
@@ -318,7 +314,7 @@ class Stream(tf.keras.layers.Layer):
         if not isinstance(input_shape, tf.TensorShape):
             # Ensure input_shape is TensorShape
             input_shape = tf.TensorShape(input_shape)
-        super(Stream, self).build(input_shape)
+        super().build(input_shape)
 
         wrapped_cell = self.get_core_layer()
         if isinstance(wrapped_cell, tf.keras.layers.Layer) and not wrapped_cell.built:
@@ -482,7 +478,7 @@ class Stream(tf.keras.layers.Layer):
             raise ValueError(f"Encountered unexpected mode `{self.mode}`.")
 
     def get_config(self):
-        config = super(Stream, self).get_config()
+        config = super().get_config()
         config.update(
             {
                 "inference_batch_size": self.inference_batch_size,
@@ -548,51 +544,44 @@ class Stream(tf.keras.layers.Layer):
                 # need to access bias of the cell layer,
                 # where cell can be wrapped by wrapper layer
                 bias = self.get_core_layer().bias
-                new_state = (
-                    outputs[:, -self.ring_buffer_size_in_time_dim :, :] - bias
-                )  # pylint: disable=invalid-unary-operand-type
+                new_state = outputs[:, -self.ring_buffer_size_in_time_dim :, :] - bias  # pylint: disable=invalid-unary-operand-type
             else:
-                new_state = outputs[
-                    :, -self.ring_buffer_size_in_time_dim :, :
-                ]  # pylint: disable=invalid-unary-operand-type
+                new_state = outputs[:, -self.ring_buffer_size_in_time_dim :, :]  # pylint: disable=invalid-unary-operand-type
             assign_states = self.states.assign(new_state)
 
             with tf.control_dependencies([assign_states]):
                 if self.transposed_conv_crop_output:
-                    return tf.keras.layers.Identity()(outputs[:, 0 : self.output_time_dim, :])
+                    return tf.keras.layers.Identity()(
+                        outputs[:, 0 : self.output_time_dim, :]
+                    )
                 else:
                     return tf.keras.layers.Identity()(outputs)
+        elif self.use_one_step:
+            # The time dimenstion always has to equal 1 in streaming mode.
+            if inputs.shape[1] != 1:
+                raise ValueError("inputs.shape[1]: %d must be 1 " % inputs.shape[1])
+
+            # remove latest row [batch_size, (memory_size-1), feature_dim, channel]
+            memory = self.states[:, 1 : self.ring_buffer_size_in_time_dim, :]
+
+            # add new row [batch_size, memory_size, feature_dim, channel]
+            memory = tf.keras.layers.concatenate([memory, inputs], 1)
+
+            assign_states = self.states.assign(memory)
+
+            with tf.control_dependencies([assign_states]):
+                return self.cell(memory)
+        elif self.ring_buffer_size_in_time_dim:
+            memory = tf.keras.layers.concatenate([self.states, inputs], 1)
+
+            state_update = memory[:, -self.ring_buffer_size_in_time_dim :, :]  # pylint: disable=invalid-unary-operand-type
+
+            assign_states = self.states.assign(state_update)
+
+            with tf.control_dependencies([assign_states]):
+                return self.cell(memory)
         else:
-            if self.use_one_step:
-                # The time dimenstion always has to equal 1 in streaming mode.
-                if inputs.shape[1] != 1:
-                    raise ValueError("inputs.shape[1]: %d must be 1 " % inputs.shape[1])
-
-                # remove latest row [batch_size, (memory_size-1), feature_dim, channel]
-                memory = self.states[:, 1 : self.ring_buffer_size_in_time_dim, :]
-
-                # add new row [batch_size, memory_size, feature_dim, channel]
-                memory = tf.keras.layers.concatenate([memory, inputs], 1)
-
-                assign_states = self.states.assign(memory)
-
-                with tf.control_dependencies([assign_states]):
-                    return self.cell(memory)
-            else:
-                # add new row [batch_size, memory_size, feature_dim, channel]
-                if self.ring_buffer_size_in_time_dim:
-                    memory = tf.keras.layers.concatenate([self.states, inputs], 1)
-
-                    state_update = memory[
-                        :, -self.ring_buffer_size_in_time_dim :, :
-                    ]  # pylint: disable=invalid-unary-operand-type
-
-                    assign_states = self.states.assign(state_update)
-
-                    with tf.control_dependencies([assign_states]):
-                        return self.cell(memory)
-                else:
-                    return self.cell(inputs)
+            return self.cell(inputs)
 
     def _streaming_external_state(self, inputs, state):
         state = [] if state is None else state
@@ -615,41 +604,34 @@ class Stream(tf.keras.layers.Layer):
                 # where cell can be wrapped by wrapper layer
                 bias = self.get_core_layer().bias
 
-                new_state = (
-                    outputs[:, -self.ring_buffer_size_in_time_dim :, :] - bias
-                )  # pylint: disable=invalid-unary-operand-type
+                new_state = outputs[:, -self.ring_buffer_size_in_time_dim :, :] - bias  # pylint: disable=invalid-unary-operand-type
             else:
-                new_state = outputs[
-                    :, -self.ring_buffer_size_in_time_dim :, :
-                ]  # pylint: disable=invalid-unary-operand-type
+                new_state = outputs[:, -self.ring_buffer_size_in_time_dim :, :]  # pylint: disable=invalid-unary-operand-type
 
             if self.transposed_conv_crop_output:
                 outputs = outputs[:, 0 : self.output_time_dim, :]
             return outputs, new_state
+        elif self.use_one_step:
+            # The time dimenstion always has to equal 1 in streaming mode.
+            if inputs.shape[1] != 1:
+                raise ValueError("inputs.shape[1]: %d must be 1 " % inputs.shape[1])
+
+            # remove latest row [batch_size, (memory_size-1), feature_dim, channel]
+            memory = state[:, 1 : self.ring_buffer_size_in_time_dim, :]
+
+            # add new row [batch_size, memory_size, feature_dim, channel]
+            memory = tf.keras.layers.concatenate([memory, inputs], 1)
+
+            output = self.cell(memory)
+            return output, memory
         else:
-            if self.use_one_step:
-                # The time dimenstion always has to equal 1 in streaming mode.
-                if inputs.shape[1] != 1:
-                    raise ValueError("inputs.shape[1]: %d must be 1 " % inputs.shape[1])
+            # add new row [batch_size, memory_size, feature_dim, channel]
+            memory = tf.keras.layers.concatenate([state, inputs], 1)
 
-                # remove latest row [batch_size, (memory_size-1), feature_dim, channel]
-                memory = state[:, 1 : self.ring_buffer_size_in_time_dim, :]
+            state_update = memory[:, -self.ring_buffer_size_in_time_dim :, :]  # pylint: disable=invalid-unary-operand-type
 
-                # add new row [batch_size, memory_size, feature_dim, channel]
-                memory = tf.keras.layers.concatenate([memory, inputs], 1)
-
-                output = self.cell(memory)
-                return output, memory
-            else:
-                # add new row [batch_size, memory_size, feature_dim, channel]
-                memory = tf.keras.layers.concatenate([state, inputs], 1)
-
-                state_update = memory[
-                    :, -self.ring_buffer_size_in_time_dim :, :
-                ]  # pylint: disable=invalid-unary-operand-type
-
-                output = self.cell(memory)
-                return output, state_update
+            output = self.cell(memory)
+            return output, state_update
 
     def _non_streaming(self, inputs):
         # transposed conv is a special case

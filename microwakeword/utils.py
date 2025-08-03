@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 The Google Research Authors.
 # Modifications copyright 2024 Kevin Ahrendt.
 #
@@ -15,11 +14,11 @@
 # limitations under the License.
 
 """Utility functions for operations on Model."""
+
 import os.path
+
 import numpy as np
 import tensorflow as tf
-
-from absl import logging
 
 from microwakeword.layers import modes, stream, strided_drop
 
@@ -42,9 +41,8 @@ def _set_mode(model, mode):
         # with any mode of inference - training is False
         if "training" in config:
             layer.training = False
-        if mode == modes.Modes.NON_STREAM_INFERENCE:
-            if "unroll" in config:
-                layer.unroll = True
+        if mode == modes.Modes.NON_STREAM_INFERENCE and "unroll" in config:
+            layer.unroll = True
 
     for layer in model.layers:
         _recursive_set_layer_mode(layer, mode)
@@ -138,9 +136,7 @@ def save_model_summary(model, path, file_name="model_summary.txt"):
     """
     with tf.io.gfile.GFile(os.path.join(path, file_name), "w") as fd:
         stringlist = []
-        model.summary(
-            print_fn=lambda x: stringlist.append(x)
-        )  # pylint: disable=unnecessary-lambda
+        model.summary(print_fn=lambda x: stringlist.append(x))  # pylint: disable=unnecessary-lambda
         model_summary = "\n".join(stringlist)
         fd.write(model_summary)
 
@@ -275,7 +271,7 @@ def model_to_saved(
         modes.Modes.STREAM_INTERNAL_STATE_INFERENCE,
         modes.Modes.NON_STREAM_INFERENCE,
     ):
-        raise ValueError("mode %s is not supported " % mode)
+        raise ValueError(f"mode {mode} is not supported ")
 
     if mode == modes.Modes.NON_STREAM_INFERENCE:
         model = model_non_stream
@@ -305,12 +301,12 @@ def convert_saved_model_to_tflite(
             "training", 500, features_length=config["spectrogram_length"]
         )
 
-        sample_fingerprints[0][
-            0, 0
-        ] = 0.0  # guarantee one pixel is the preprocessor min
-        sample_fingerprints[0][
-            0, 1
-        ] = 26.0  # guarantee one pixel is the preprocessor max
+        sample_fingerprints[0][0, 0] = (
+            0.0  # guarantee one pixel is the preprocessor min
+        )
+        sample_fingerprints[0][0, 1] = (
+            26.0  # guarantee one pixel is the preprocessor max
+        )
 
         # for spectrogram in sample_fingerprints:
         #     yield spectrogram
@@ -375,7 +371,9 @@ def convert_model_saved(model, config, folder, mode):
     export_archive.add_endpoint(
         name="serve",
         fn=converted_model.call,
-        input_signature=[tf.TensorSpec(shape=converted_model.input.shape, dtype=tf.float32)],
+        input_signature=[
+            tf.TensorSpec(shape=converted_model.input.shape, dtype=tf.float32)
+        ],
     )
     export_archive.write_out(path_model)
 

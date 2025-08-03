@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 Kevin Ahrendt.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,16 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import audio_metadata
-import datasets
 import math
 import os
+from pathlib import Path
 import random
 import wave
 
+import audio_metadata
+import datasets
 import numpy as np
-
-from pathlib import Path
 
 from microwakeword.audio.audio_utils import remove_silence_webrtc
 
@@ -83,54 +81,49 @@ class Clips:
         if (self.min_clip_duration_s == 0) and (math.isinf(self.max_clip_duration_s)):
             # No durations specified, so do not filter by length
             filtered_paths = paths_to_clips
+        elif file_pattern.endswith("wav"):
+            # If it is a wave file, assume all wave files have the same parameters and filter by file size.
+            # Based on openWakeWord's estimate_clip_duration and filter_audio_paths in data.py, accessed March 2, 2024.
+            with wave.open(paths_to_clips[0], "rb") as input_wav:
+                channels = input_wav.getnchannels()
+                sample_width = input_wav.getsampwidth()
+                sample_rate = input_wav.getframerate()
+                frames = input_wav.getnframes()
+
+            sizes = []
+            sizes.extend([os.path.getsize(i) for i in paths_to_clips])
+
+            # Correct for the wav file header bytes. Assumes all files in the directory have same parameters.
+            header_correction = (
+                os.path.getsize(paths_to_clips[0]) - frames * sample_width * channels
+            )
+
+            durations = [
+                (size - header_correction) / (sample_rate * sample_width * channels)
+                for size in sizes
+            ]
+
+            filtered_paths = [
+                path_to_clip
+                for path_to_clip, duration in zip(paths_to_clips, durations)
+                if (self.min_clip_duration_s < duration)
+                and (duration < self.max_clip_duration_s)
+            ]
         else:
-            # Filter audio clips by length
-            if file_pattern.endswith("wav"):
-                # If it is a wave file, assume all wave files have the same parameters and filter by file size.
-                # Based on openWakeWord's estimate_clip_duration and filter_audio_paths in data.py, accessed March 2, 2024.
-                with wave.open(paths_to_clips[0], "rb") as input_wav:
-                    channels = input_wav.getnchannels()
-                    sample_width = input_wav.getsampwidth()
-                    sample_rate = input_wav.getframerate()
-                    frames = input_wav.getnframes()
+            # If not a wave file, use the audio_metadata package to analyze audio file headers for the duration.
+            # This is slower!
+            filtered_paths = []
 
-                sizes = []
-                sizes.extend([os.path.getsize(i) for i in paths_to_clips])
-
-                # Correct for the wav file header bytes. Assumes all files in the directory have same parameters.
-                header_correction = (
-                    os.path.getsize(paths_to_clips[0])
-                    - frames * sample_width * channels
-                )
-
-                durations = []
-                for size in sizes:
-                    durations.append(
-                        (size - header_correction)
-                        / (sample_rate * sample_width * channels)
-                    )
-
-                filtered_paths = [
-                    path_to_clip
-                    for path_to_clip, duration in zip(paths_to_clips, durations)
-                    if (self.min_clip_duration_s < duration)
-                    and (duration < self.max_clip_duration_s)
-                ]
-            else:
-                # If not a wave file, use the audio_metadata package to analyze audio file headers for the duration.
-                # This is slower!
-                filtered_paths = []
-
-                if (self.min_clip_duration_s > 0) or (
-                    not math.isinf(self.max_clip_duration_s)
-                ):
-                    for audio_file in paths_to_clips:
-                        metadata = audio_metadata.load(audio_file)
-                        duration = metadata["streaminfo"]["duration"]
-                        if (self.min_clip_duration_s < duration) and (
-                            duration < self.max_clip_duration_s
-                        ):
-                            filtered_paths.append(audio_file)
+            if (self.min_clip_duration_s > 0) or (
+                not math.isinf(self.max_clip_duration_s)
+            ):
+                for audio_file in paths_to_clips:
+                    metadata = audio_metadata.load(audio_file)
+                    duration = metadata["streaminfo"]["duration"]
+                    if (self.min_clip_duration_s < duration) and (
+                        duration < self.max_clip_duration_s
+                    ):
+                        filtered_paths.append(audio_file)
 
         # Load all filtered clips
         audio_dataset = datasets.Dataset.from_dict(
@@ -168,10 +161,7 @@ class Clips:
         Yields:
             numpy.ndarray: Array with the audio clip's samples.
         """
-        if split is None:
-            clip_list = self.clips
-        else:
-            clip_list = self.split_clips[split]
+        clip_list = self.clips if split is None else self.split_clips[split]
         for _ in range(repeat):
             for clip in clip_list:
                 clip_audio = clip["audio"]["array"]

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,8 +14,9 @@
 
 """Dealy layer."""
 
-from microwakeword.layers import modes
 import tensorflow as tf
+
+from microwakeword.layers import modes
 
 
 class Delay(tf.keras.layers.Layer):
@@ -42,7 +42,7 @@ class Delay(tf.keras.layers.Layer):
         also_in_non_streaming=False,
         **kwargs,
     ):
-        super(Delay, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.mode = mode
         self.delay = delay
         self.inference_batch_size = inference_batch_size
@@ -52,7 +52,7 @@ class Delay(tf.keras.layers.Layer):
             raise ValueError("delay (%d) must be non-negative" % delay)
 
     def build(self, input_shape):
-        super(Delay, self).build(input_shape)
+        super().build(input_shape)
 
         if self.delay > 0:
             self.state_shape = [
@@ -100,7 +100,7 @@ class Delay(tf.keras.layers.Layer):
             raise ValueError(f"Encountered unexpected mode `{self.mode}`.")
 
     def get_config(self):
-        config = super(Delay, self).get_config()
+        config = super().get_config()
         config.update(
             {
                 "mode": self.mode,
