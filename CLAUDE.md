@@ -43,7 +43,41 @@ python -m microwakeword.model_train_eval \
 ```
 
 ### Testing
-The project uses the `microwakeword.test` module for accuracy evaluation. Tests are typically run during the training process.
+```bash
+# Run unit tests
+pytest tests/unit -v
+
+# Run integration tests (fast only)
+pytest tests/integration -v -m "not slow"
+
+# Run all tests
+pytest
+
+# Run with coverage
+pytest tests/unit -v --cov=microwakeword --cov-report=term
+```
+
+The project uses pytest for testing with unit and integration test suites. Slow integration tests are marked and can be excluded.
+
+### Code Quality Tools
+```bash
+# Run linting
+ruff check .
+
+# Run formatting
+ruff format .
+
+# Install pre-commit hooks (recommended)
+./scripts/install-git-hooks.sh
+
+# Run pre-commit checks manually
+pre-commit run --all-files
+```
+
+The project uses:
+- **Ruff** for linting and code formatting
+- **Pre-commit hooks** for automated code quality checks
+- **Git hooks** to prevent direct commits to main branch
 
 ## Architecture
 
@@ -97,3 +131,13 @@ The project uses the `microwakeword.test` module for accuracy evaluation. Tests 
 - Python 3.10+ is required (supports 3.10, 3.11, 3.12)
 - Training requires significant experimentation with hyperparameters
 - The `basic_training_notebook.ipynb` provides a starting point but won't produce production-ready models without tuning
+
+## Development Workflow
+
+1. **Branch Protection**: Direct commits to main are blocked. Use feature branches and pull requests.
+2. **Pre-commit Hooks**: Automatically run linting and formatting checks before commits.
+3. **CI/CD Pipeline**: 
+   - GitHub Actions run tests on Python 3.10, 3.11, and 3.12
+   - Linting with Ruff is enforced on all PRs
+   - Slow integration tests run only on main branch pushes
+4. **Testing**: Write unit tests for new features and integration tests for end-to-end workflows
