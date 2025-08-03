@@ -16,6 +16,7 @@
 
 import contextlib
 import os
+import random
 
 from absl import logging
 import numpy as np
@@ -245,7 +246,7 @@ def train_adversarial_model(
         callbacks.append(tensorboard_callback)
     
     # Restore checkpoint if requested
-    if restore_checkpoint and os.path.exists(checkpoint_path + '.index'):
+    if restore_checkpoint and os.path.exists(checkpoint_path):
         logging.info(f"Restoring from checkpoint: {checkpoint_path}")
         model.load_weights(checkpoint_path)
     
