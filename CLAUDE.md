@@ -25,7 +25,7 @@ python3 piper-sample-generator/generate_samples.py "wake_word" \
     --batch-size 100 \
     --output-dir generated_samples
 
-# Train the model using the configuration
+# Train the standard MixedNet model using the configuration
 python -m microwakeword.model_train_eval \
     --training_config='training_parameters.yaml' \
     --train 1 \
@@ -33,6 +33,24 @@ python -m microwakeword.model_train_eval \
     --test_tflite_streaming_quantized 1 \
     --use_weights "best_weights" \
     mixednet \
+    --pointwise_filters "64,64,64,64" \
+    --repeat_in_block  "1, 1, 1, 1" \
+    --mixconv_kernel_sizes '[5], [7,11], [9,15], [23]' \
+    --residual_connection "0,0,0,0" \
+    --first_conv_filters 32 \
+    --first_conv_kernel_size 5 \
+    --stride 3
+
+# Train the MixedNet+CTC model (experimental)
+python -m microwakeword.model_train_eval \
+    --training_config='training_parameters.yaml' \
+    --train 1 \
+    --restore_checkpoint 0 \
+    --use_weights "best_weights" \
+    mixednet_ctc \
+    --wake_word_phrase "hey jarvis" \
+    --embedding_dim 64 \
+    --lstm_units "64,32" \
     --pointwise_filters "64,64,64,64" \
     --repeat_in_block  "1, 1, 1, 1" \
     --mixconv_kernel_sizes '[5], [7,11], [9,15], [23]' \
@@ -92,6 +110,7 @@ The project uses:
 
 2. **Model Architecture** 
    - `mixednet.py`: MixedNet model using MixConv depthwise convolutions
+   - `mixednet_ctc.py`: MixedNet encoder + LSTM decoder with CTC loss (experimental)
    - `inception.py`: Inception-based model architecture
    - `layers/`: Custom TensorFlow layers for streaming inference
      - `stream.py`: Streaming layer implementations
@@ -100,11 +119,14 @@ The project uses:
 
 3. **Training Pipeline**
    - `train.py`: Core training loop and validation logic
+   - `train_ctc.py`: CTC-specific training loop for MixedNet+CTC models
    - `model_train_eval.py`: Main entry point for training and evaluation
    - `data.py`: Data loading and preprocessing with Ragged Mmap support
+   - `ctc_utils.py`: CTC loss, decoding, and metrics utilities
 
 4. **Inference**
    - `inference.py`: Model class for loading and running inference
+   - `streaming_ctc.py`: Streaming inference support for CTC models
    - Converts non-streaming models to streaming for real-time detection
    - Supports quantization for embedded deployment
 
@@ -122,6 +144,23 @@ The project uses:
 3. Two-stage optimization: minimize false accepts, then maximize accuracy
 4. Converts to streaming model after training
 5. Quantizes for embedded deployment
+
+### MixedNet+CTC Architecture (Experimental)
+
+The MixedNet+CTC model combines:
+- **Encoder**: MixedNet CNN that outputs embeddings instead of binary classification
+- **Decoder**: LSTM layers that process embeddings sequentially
+- **CTC Loss**: Enables training without precise temporal alignment of wake words
+
+Benefits:
+- No need for careful alignment of wake word samples in training data
+- Better handling of variable-length wake words
+- Word-level understanding of the wake phrase
+
+Parameters:
+- `--wake_word_phrase`: Space-separated wake words (e.g., "hey jarvis")
+- `--embedding_dim`: Size of encoder output embeddings (default: 64)
+- `--lstm_units`: Comma-separated LSTM layer sizes (e.g., "64,32")
 
 ## Important Considerations
 

@@ -30,7 +30,7 @@ if os.environ.get("CUDA_VISIBLE_DEVICES") == "-1" or (
 ):
     tf.config.set_visible_devices([], "GPU")
 
-from microwakeword import inception, mixednet, test, train, utils
+from microwakeword import inception, mixednet, mixednet_ctc, test, train, train_ctc, utils
 import microwakeword.data as input_data
 from microwakeword.layers import modes
 
@@ -90,7 +90,7 @@ def load_config(flags, model_module):
     return config
 
 
-def train_model(config, model, data_processor, restore_checkpoint):
+def train_model(config, model, data_processor, restore_checkpoint, flags=None):
     """Trains a model.
 
     Args:
@@ -98,6 +98,7 @@ def train_model(config, model, data_processor, restore_checkpoint):
         model (Keras model): model architecture to train
         data_processor (FeatureHandler): feature handler that loads spectrogram data
         restore_checkpoint (bool): Whether to restore from checkpoint if model exists
+        flags: Model flags/parameters (needed for CTC models)
 
     Raises:
         ValueError: If the model exists but the training flag isn't set
@@ -119,7 +120,13 @@ def train_model(config, model, data_processor, restore_checkpoint):
 
     utils.save_model_summary(model, config["train_dir"])
 
-    train.train(model, config, data_processor)
+    # Check if this is a CTC model
+    if hasattr(model, 'vocab') and hasattr(model, 'encoder_steps'):
+        # This is a CTC model
+        train_ctc.train_ctc_model(model, config, data_processor, flags)
+    else:
+        # Regular binary classification model
+        train.train(model, config, data_processor)
 
 
 def evaluate_model(
@@ -177,14 +184,28 @@ def evaluate_model(
     if test_tf_nonstreaming:
         logging.info("Testing nonstreaming model")
 
-        folder_name = "non_stream"
-        test.tf_model_accuracy(
-            config,
-            folder_name,
-            data_processor,
-            data_set="testing",
-            accuracy_name="testing_set_metrics.txt",
-        )
+        # Check if this is a CTC model
+        if hasattr(model, 'vocab') and hasattr(model, 'encoder_steps'):
+            # Use CTC validation
+            metrics = train_ctc.validate_ctc_nonstreaming(
+                config, data_processor, model, "testing"
+            )
+            # Save metrics
+            metrics_file = os.path.join(config["train_dir"], "testing_set_metrics.txt")
+            with open(metrics_file, "w") as f:
+                for key, value in metrics.items():
+                    f.write(f"{key}: {value}\n")
+            logging.info(f"CTC model metrics: {metrics}")
+        else:
+            # Regular validation
+            folder_name = "non_stream"
+            test.tf_model_accuracy(
+                config,
+                folder_name,
+                data_processor,
+                data_set="testing",
+                accuracy_name="testing_set_metrics.txt",
+            )
 
     tflite_configs = []
 
@@ -380,6 +401,10 @@ if __name__ == "__main__":
     parser_mixednet = subparsers.add_parser("mixednet")
     mixednet.model_parameters(parser_mixednet)
 
+    # mixednet_ctc model settings
+    parser_mixednet_ctc = subparsers.add_parser("mixednet_ctc")
+    mixednet_ctc.model_parameters(parser_mixednet_ctc)
+
     flags, unparsed = parser.parse_known_args()
     if unparsed:
         raise ValueError(f"Unknown argument: {unparsed}")
@@ -388,6 +413,8 @@ if __name__ == "__main__":
         model_module = inception
     elif flags.model_name == "mixednet":
         model_module = mixednet
+    elif flags.model_name == "mixednet_ctc":
+        model_module = mixednet_ctc
     else:
         raise ValueError(f"Unknown model type: {flags.model_name}")
 
@@ -402,7 +429,7 @@ if __name__ == "__main__":
             flags, config["training_input_shape"], config["batch_size"]
         )
         logging.info(model.summary())
-        train_model(config, model, data_processor, flags.restore_checkpoint)
+        train_model(config, model, data_processor, flags.restore_checkpoint, flags)
     elif not os.path.isdir(config["train_dir"]):
         raise ValueError('model is not trained set "--train 1" and retrain it')
 

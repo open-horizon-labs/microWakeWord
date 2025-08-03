@@ -24,6 +24,19 @@ The first stage processes the raw monochannel audio data at a sample rate of 16 
 
 The streaming model performs inferences every 30 ms, where the initial convolution layer strides over three 10 ms slices of audio. The model is a neural network using [MixConv](https://arxiv.org/abs/1907.09595) mixed depthwise convolutions suitable for streaming. Streaming and training the model uses heavily modified open-sourced code from [Google Research](https://github.com/google-research/google-research/tree/master/kws_streaming) found in the paper [Streaming Keyword Spotting on Mobile Devices](https://arxiv.org/pdf/2005.06720.pdf) by Rykabov, Kononenko, Subrahmanya, Visontai, and Laurenzo.
 
+### Model Architectures
+
+microWakeWord supports multiple model architectures:
+
+1. **MixedNet** (default): A CNN-based model using MixConv layers that requires careful temporal alignment of wake word samples.
+
+2. **MixedNet+CTC** (experimental): An encoder-decoder architecture that combines:
+   - MixedNet encoder for feature extraction
+   - LSTM decoder with CTC (Connectionist Temporal Classification) loss
+   - Word-level token prediction that eliminates the need for precise alignment
+   
+   This architecture is particularly useful when training data has variable-length wake words or inconsistent timing. Use `mixednet_ctc` as the model type when training.
+
 ### Training Process
 - We augment the spectrograms in several possible ways during training:
     - [SpecAugment](https://arxiv.org/pdf/1904.08779.pdf) masks time and frequency features
