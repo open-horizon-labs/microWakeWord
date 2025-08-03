@@ -277,14 +277,22 @@ def train_adversarial_model(
         train_ground_truth = train_ground_truth.reshape(-1, 1)
         train_tts_labels = train_tts_labels.reshape(-1, 1)
         
+        # Apply class weights to sample weights
+        # For wake word task, multiply sample weights by class weights
+        wake_word_sample_weights = train_weights.copy()
+        for i in range(len(train_ground_truth)):
+            if train_ground_truth[i] == 1:
+                wake_word_sample_weights[i] *= class_weights["wake_word"][1]
+            else:
+                wake_word_sample_weights[i] *= class_weights["wake_word"][0]
+        
         # Train for one epoch
         history = model.fit(
             train_fingerprints,
             {"wake_word": train_ground_truth, "tts_classifier": train_tts_labels},
             batch_size=batch_size,
             epochs=1,
-            sample_weight={"wake_word": train_weights, "tts_classifier": np.ones_like(train_weights)},
-            class_weight=class_weights,
+            sample_weight={"wake_word": wake_word_sample_weights, "tts_classifier": np.ones_like(train_weights)},
             callbacks=callbacks,
             verbose=1,
         )
