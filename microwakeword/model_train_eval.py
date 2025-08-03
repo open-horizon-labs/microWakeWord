@@ -128,17 +128,17 @@ def train_model(config, model, data_processor, restore_checkpoint, flags=None):
     elif flags and flags.model_name == "mixednet_adversarial":
         # Adversarial model training
         epochs = config.get("training_steps", [12000])[0] // (data_processor.get_mode_size("training") // config["batch_size"])
-        
+
         # Setup optimizer
         learning_rate = config.get("learning_rates", [0.001])[0]
         optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-        
+
         # Setup losses
         losses = {
             "wake_word": tf.keras.losses.BinaryCrossentropy(),
             "tts_classifier": tf.keras.losses.BinaryCrossentropy()
         }
-        
+
         # Setup metrics
         metrics = {
             "wake_word": [
@@ -154,7 +154,7 @@ def train_model(config, model, data_processor, restore_checkpoint, flags=None):
                 tf.keras.metrics.BinaryAccuracy(name="accuracy")
             ]
         }
-        
+
         # Setup class weights
         class_weights = {
             "wake_word": {
@@ -163,7 +163,7 @@ def train_model(config, model, data_processor, restore_checkpoint, flags=None):
             },
             "tts_classifier": {0: 1.0, 1: 1.0}  # Equal weight for TTS classification
         }
-        
+
         # Check Keras version and use appropriate training function
         keras_version = tuple(map(int, tf.keras.__version__.split('.')[:2]))
         if keras_version >= (3, 0):
@@ -254,6 +254,7 @@ def evaluate_model(
         # Save the internal streaming model to disk
         logging.info("Saving streaming model")
 
+        model = utils_adversarial.extract_wake_word_model(model)
         utils.convert_model_saved(
             model,
             config,
@@ -277,17 +278,17 @@ def evaluate_model(
                     f.write(f"{key}: {value}\n")
             logging.info(f"CTC model metrics: {metrics}")
         elif config["flags"].get("model_name") == "mixednet_adversarial":
-            # Adversarial model validation
-            metrics = train_adversarial.validate_adversarial_nonstreaming(
-                config, data_processor, model, "testing"
-            )
-            # Save metrics
-            metrics_file = os.path.join(config["train_dir"], "testing_set_metrics.txt")
-            with open(metrics_file, "w") as f:
-                for key, value in metrics.items():
-                    f.write(f"{key}: {value}\n")
-            logging.info(f"Adversarial model metrics: {metrics}")
-            
+            # # Adversarial model validation
+            # metrics = train_adversarial.validate_adversarial_nonstreaming(
+            #     config, data_processor, model, "testing"
+            # )
+            # # Save metrics
+            # metrics_file = os.path.join(config["train_dir"], "testing_set_metrics.txt")
+            # with open(metrics_file, "w") as f:
+            #     for key, value in metrics.items():
+            #         f.write(f"{key}: {value}\n")
+            # logging.info(f"Adversarial model metrics: {metrics}")
+
             # For TFLite conversion, extract wake word only model
             model = utils_adversarial.extract_wake_word_model(model)
         else:

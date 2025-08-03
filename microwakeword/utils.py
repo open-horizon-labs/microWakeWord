@@ -297,9 +297,10 @@ def convert_saved_model_to_tflite(
     """
 
     def representative_dataset_gen():
-        sample_fingerprints, _, _ = audio_processor.get_data(
+        data = audio_processor.get_data(
             "training", 500, features_length=config["spectrogram_length"]
         )
+        sample_fingerprints = data[0]
 
         sample_fingerprints[0][0, 0] = (
             0.0  # guarantee one pixel is the preprocessor min
@@ -362,7 +363,8 @@ def convert_model_saved(model, config, folder, mode):
     converted_model = model_to_saved(model, config, mode)
     converted_model.summary()
 
-    assert converted_model.input.shape[0] is not None
+    print(converted_model.input)
+    assert converted_model.input[0].shape[0] is not None
 
     # XXX: Using `converted_model.export(path_model)` results in obscure errors during
     # quantization, we create an export archive directly instead.
@@ -372,7 +374,7 @@ def convert_model_saved(model, config, folder, mode):
         name="serve",
         fn=converted_model.call,
         input_signature=[
-            tf.TensorSpec(shape=converted_model.input.shape, dtype=tf.float32)
+            tf.TensorSpec(shape=converted_model.input[0].shape, dtype=tf.float32)
         ],
     )
     export_archive.write_out(path_model)
