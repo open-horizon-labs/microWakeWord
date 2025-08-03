@@ -37,20 +37,20 @@ def swap_attribute(obj, attr, temp_value):
 def validate_nonstreaming(config, data_processor, model, test_set):
     # Handle both regular and adversarial data processors
     is_adversarial = hasattr(data_processor, '__class__') and 'Adversarial' in data_processor.__class__.__name__
-    
+
     data_result = data_processor.get_data(
         test_set,
         batch_size=config["batch_size"],
         features_length=config["spectrogram_length"],
         truncation_strategy="truncate_start",
     )
-    
+
     if is_adversarial:
         # Adversarial data processor returns 4 values
         testing_fingerprints, testing_ground_truth, testing_tts_labels, _ = data_result
         testing_ground_truth = testing_ground_truth.reshape(-1, 1)
         testing_tts_labels = testing_tts_labels.reshape(-1, 1)
-        
+
         # For adversarial models, we need to pass both outputs
         y_test = {
             "wake_word": testing_ground_truth,
@@ -73,7 +73,7 @@ def validate_nonstreaming(config, data_processor, model, test_set):
     )
 
     metrics = {}
-    
+
     if is_adversarial:
         # For adversarial models, metrics are prefixed with output names
         metrics["accuracy"] = result.get("wake_word_accuracy", result.get("accuracy", 0))
@@ -81,7 +81,7 @@ def validate_nonstreaming(config, data_processor, model, test_set):
         metrics["precision"] = result.get("wake_word_precision", result.get("precision", 0))
         metrics["auc"] = result.get("wake_word_auc", result.get("auc", 0))
         metrics["loss"] = result.get("wake_word_loss", result.get("loss", 0))
-        
+
         # Extract FP for wake word
         if "wake_word_fp" in result:
             test_set_fp = result["wake_word_fp"].numpy()
@@ -97,7 +97,7 @@ def validate_nonstreaming(config, data_processor, model, test_set):
         metrics["auc"] = result["auc"]
         metrics["loss"] = result["loss"]
         test_set_fp = result["fp"].numpy()
-    
+
     metrics["recall_at_no_faph"] = 0
     metrics["cutoff_for_no_faph"] = 0
     metrics["ambient_false_positives"] = 0
@@ -111,13 +111,13 @@ def validate_nonstreaming(config, data_processor, model, test_set):
             features_length=config["spectrogram_length"],
             truncation_strategy="split",
         )
-        
+
         if is_adversarial:
             # Adversarial data processor returns 4 values
             ambient_testing_fingerprints, ambient_testing_ground_truth, ambient_tts_labels, _ = ambient_data_result
             ambient_testing_ground_truth = ambient_testing_ground_truth.reshape(-1, 1)
             ambient_tts_labels = ambient_tts_labels.reshape(-1, 1)
-            
+
             # For adversarial models, we need to pass both outputs
             y_ambient = {
                 "wake_word": ambient_testing_ground_truth,
@@ -151,14 +151,14 @@ def validate_nonstreaming(config, data_processor, model, test_set):
             ambient_fp = ambient_predictions.get("wake_word_fp", ambient_predictions.get("fp", [0])).numpy()
             ambient_false_positives = ambient_fp - test_set_fp
             all_false_negatives = ambient_predictions.get("wake_word_fn", ambient_predictions.get("fn", [0])).numpy()
-            
+
             metrics["auc"] = ambient_predictions.get("wake_word_auc", ambient_predictions.get("auc", 0))
             metrics["loss"] = ambient_predictions.get("wake_word_loss", ambient_predictions.get("loss", 0))
         else:
             all_true_positives = ambient_predictions["tp"].numpy()
             ambient_false_positives = ambient_predictions["fp"].numpy() - test_set_fp
             all_false_negatives = ambient_predictions["fn"].numpy()
-            
+
             metrics["auc"] = ambient_predictions["auc"]
             metrics["loss"] = ambient_predictions["loss"]
 
@@ -220,13 +220,13 @@ def validate_nonstreaming(config, data_processor, model, test_set):
 def train(model, config, data_processor):
     # Detect if we're using adversarial training based on data processor type
     is_adversarial = hasattr(data_processor, '__class__') and 'Adversarial' in data_processor.__class__.__name__
-    
+
     # Get adversarial lambda from config flags if available
-    adversarial_lambda = 1.0
+    adversarial_beta = 1.0
     if is_adversarial and 'flags' in config:
         # config['flags'] is a dict, not an object
-        adversarial_lambda = config['flags'].get('adversarial_lambda', 1.0)
-    
+        adversarial_beta = config['flags'].get('adversarial_beta', 0.5)
+
     # Assign default training settings if not set in the configuration yaml
     if not (training_steps_list := config.get("training_steps")):
         training_steps_list = [20000]
@@ -275,13 +275,13 @@ def train(model, config, data_processor):
             "wake_word": tf.keras.losses.BinaryCrossentropy(from_logits=False),
             "tts_classifier": tf.keras.losses.BinaryCrossentropy(from_logits=False)
         }
-        
+
         # Loss weights with adversarial lambda
         loss_weights = {
-            "wake_word": 1.0,
-            "tts_classifier": adversarial_lambda
+            "wake_word": 1.0 - adversarial_beta,
+            "tts_classifier": adversarial_beta
         }
-        
+
         metrics = {
             "wake_word": [
                 tf.keras.metrics.BinaryAccuracy(name="accuracy"),
@@ -299,12 +299,12 @@ def train(model, config, data_processor):
                 tf.keras.metrics.BinaryCrossentropy(name="loss"),
             ]
         }
-        
+
         model.compile(optimizer=optimizer, loss=loss, loss_weights=loss_weights, metrics=metrics)
     else:
         # Regular single-output model
         loss = tf.keras.losses.BinaryCrossentropy(from_logits=False)
-        
+
         metrics = [
             tf.keras.metrics.BinaryAccuracy(name="accuracy"),
             tf.keras.metrics.Recall(name="recall"),
@@ -316,7 +316,7 @@ def train(model, config, data_processor):
             tf.keras.metrics.AUC(name="auc"),
             tf.keras.metrics.BinaryCrossentropy(name="loss"),
         ]
-        
+
         model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
 
     # We un-decorate the `tf.function`, it's very slow to manually run training batches
@@ -342,7 +342,7 @@ def train(model, config, data_processor):
     best_minimization_quantity = 10000
     best_maximization_quantity = 0.0
     best_no_faph_cutoff = 1.0
-    
+
     # Accumulated statistics for the current evaluation interval
     accumulated_wake_accuracy = 0.0
     accumulated_wake_recall = 0.0
@@ -351,7 +351,7 @@ def train(model, config, data_processor):
     accumulated_tts_accuracy = 0.0
     accumulated_tts_loss = 0.0
     accumulated_total_loss = 0.0
-    
+
     for training_step in range(1, training_steps_max + 1):
         training_steps_sum = 0
         for i in range(len(training_steps_list)):
@@ -387,25 +387,25 @@ def train(model, config, data_processor):
             truncation_strategy="default",
             augmentation_policy=augmentation_policy,
         )
-        
+
         if is_adversarial:
             # Adversarial data processor returns 4 values
             train_fingerprints, train_ground_truth, train_tts_labels, train_sample_weights = data_result
             train_ground_truth = train_ground_truth.reshape(-1, 1)
             train_tts_labels = train_tts_labels.reshape(-1, 1)
-            
+
             # Apply class weights to wake word samples only
             class_weights = {0: negative_class_weight, 1: positive_class_weight}
             wake_word_weights = train_sample_weights * np.vectorize(class_weights.get)(
                 train_ground_truth
             )
-            
+
             # Format outputs as dict for multi-output model
             y_train = {
                 "wake_word": train_ground_truth,
                 "tts_classifier": train_tts_labels
             }
-            
+
             # For Keras 3.x compatibility, we need to use a different approach
             # Instead of dict sample weights, we'll apply the weights in the loss
             # by using a custom training step
@@ -417,25 +417,25 @@ def train(model, config, data_processor):
                     predictions = model(train_fingerprints, training=True)
                     wake_pred = predictions[0]
                     tts_pred = predictions[1]
-                    
+
                     # Calculate losses
                     wake_loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=False, reduction='none')
                     tts_loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=False, reduction='none')
-                    
+
                     wake_losses = wake_loss_fn(train_ground_truth, wake_pred)
                     tts_losses = tts_loss_fn(train_tts_labels, tts_pred)
-                    
+
                     # Apply sample weights to wake word loss
                     weighted_wake_loss = tf.reduce_mean(wake_losses * wake_word_weights.reshape(-1, 1))
                     tts_loss = tf.reduce_mean(tts_losses)
-                    
+
                     # Total loss with adversarial lambda
-                    total_loss = weighted_wake_loss + adversarial_lambda * tts_loss
-                
+                    total_loss = (1.0 - adversarial_beta)*weighted_wake_loss + adversarial_beta * tts_loss
+
                 # Compute gradients and update
                 gradients = tape.gradient(total_loss, model.trainable_variables)
                 model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-                
+
                 # Update metrics manually
                 # We'll track the key metrics ourselves
                 wake_accuracy = tf.reduce_mean(tf.cast(tf.equal(
@@ -450,12 +450,12 @@ def train(model, config, data_processor):
                 wake_precision = wake_tp / (wake_tp + wake_fp + 1e-7)
                 tts_accuracy = tf.reduce_mean(tf.cast(tf.equal(
                     tf.round(tts_pred), train_tts_labels), tf.float32))
-                
+
                 # Build result list to match expected format
                 result = [
                     float(total_loss),  # 0: total loss
                     float(wake_accuracy),  # 1: wake accuracy
-                    float(wake_recall),  # 2: wake recall  
+                    float(wake_recall),  # 2: wake recall
                     float(wake_precision),  # 3: wake precision
                     0.0, 0.0, 0.0, 0.0,  # 4-7: placeholders for TP/FP/TN/FN
                     0.5,  # 8: AUC placeholder
@@ -470,7 +470,7 @@ def train(model, config, data_processor):
                     "wake_word": wake_word_weights,
                     "tts_classifier": np.ones_like(train_sample_weights)
                 }
-                
+
                 result = model.train_on_batch(
                     train_fingerprints,
                     y_train,
@@ -480,12 +480,12 @@ def train(model, config, data_processor):
             # Regular data processor returns 3 values
             train_fingerprints, train_ground_truth, train_sample_weights = data_result
             train_ground_truth = train_ground_truth.reshape(-1, 1)
-            
+
             class_weights = {0: negative_class_weight, 1: positive_class_weight}
             combined_weights = train_sample_weights * np.vectorize(class_weights.get)(
                 train_ground_truth
             )
-            
+
             result = model.train_on_batch(
                 train_fingerprints,
                 train_ground_truth,
@@ -515,10 +515,10 @@ def train(model, config, data_processor):
             total_loss = wake_loss
             tts_accuracy = None
             tts_loss = None
-        
+
         # Accumulate statistics across mini-batches
         mini_batch_num = (training_step - 1) % config["eval_step_interval"] + 1
-        
+
         # Reset accumulation at the start of each evaluation interval
         if mini_batch_num == 1:
             accumulated_wake_accuracy = 0.0
@@ -528,29 +528,29 @@ def train(model, config, data_processor):
             accumulated_tts_accuracy = 0.0
             accumulated_tts_loss = 0.0
             accumulated_total_loss = 0.0
-        
+
         # Add current batch metrics to accumulation
         accumulated_wake_accuracy += wake_accuracy
         accumulated_wake_recall += wake_recall
         accumulated_wake_precision += wake_precision
         accumulated_wake_loss += wake_loss
         accumulated_total_loss += total_loss
-        
+
         if is_adversarial:
             accumulated_tts_accuracy += tts_accuracy
             accumulated_tts_loss += tts_loss
-        
+
         # Calculate running averages
         avg_wake_accuracy = accumulated_wake_accuracy / mini_batch_num
         avg_wake_recall = accumulated_wake_recall / mini_batch_num
         avg_wake_precision = accumulated_wake_precision / mini_batch_num
         avg_wake_loss = accumulated_wake_loss / mini_batch_num
         avg_total_loss = accumulated_total_loss / mini_batch_num
-        
+
         if is_adversarial:
             avg_tts_accuracy = accumulated_tts_accuracy / mini_batch_num
             avg_tts_loss = accumulated_tts_loss / mini_batch_num
-        
+
         # Print the running statistics in the current validation epoch
         if is_adversarial:
             print(
