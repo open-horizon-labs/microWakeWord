@@ -339,17 +339,76 @@ def train(model, config, data_processor):
                 "tts_classifier": train_tts_labels
             }
             
-            # Sample weights only for wake word task
-            sample_weights = {
-                "wake_word": wake_word_weights,
-                "tts_classifier": np.ones_like(train_sample_weights)  # Equal weight for TTS
-            }
-            
-            result = model.train_on_batch(
-                train_fingerprints,
-                y_train,
-                sample_weight=sample_weights,
-            )
+            # For Keras 3.x compatibility, we need to use a different approach
+            # Instead of dict sample weights, we'll apply the weights in the loss
+            # by using a custom training step
+            keras_version = tuple(map(int, tf.keras.__version__.split('.')[:2]))
+            if keras_version >= (3, 0):
+                # Manual gradient computation for Keras 3.x
+                with tf.GradientTape() as tape:
+                    # Forward pass
+                    predictions = model(train_fingerprints, training=True)
+                    wake_pred = predictions[0]
+                    tts_pred = predictions[1]
+                    
+                    # Calculate losses
+                    wake_loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=False, reduction='none')
+                    tts_loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=False, reduction='none')
+                    
+                    wake_losses = wake_loss_fn(train_ground_truth, wake_pred)
+                    tts_losses = tts_loss_fn(train_tts_labels, tts_pred)
+                    
+                    # Apply sample weights to wake word loss
+                    weighted_wake_loss = tf.reduce_mean(wake_losses * wake_word_weights.reshape(-1, 1))
+                    tts_loss = tf.reduce_mean(tts_losses)
+                    
+                    # Total loss with adversarial lambda
+                    total_loss = weighted_wake_loss + adversarial_lambda * tts_loss
+                
+                # Compute gradients and update
+                gradients = tape.gradient(total_loss, model.trainable_variables)
+                model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+                
+                # Update metrics manually
+                # We'll track the key metrics ourselves
+                wake_accuracy = tf.reduce_mean(tf.cast(tf.equal(
+                    tf.round(wake_pred), train_ground_truth), tf.float32))
+                wake_tp = tf.reduce_sum(tf.cast(
+                    tf.logical_and(train_ground_truth == 1, tf.round(wake_pred) == 1), tf.float32))
+                wake_fp = tf.reduce_sum(tf.cast(
+                    tf.logical_and(train_ground_truth == 0, tf.round(wake_pred) == 1), tf.float32))
+                wake_fn = tf.reduce_sum(tf.cast(
+                    tf.logical_and(train_ground_truth == 1, tf.round(wake_pred) == 0), tf.float32))
+                wake_recall = wake_tp / (wake_tp + wake_fn + 1e-7)
+                wake_precision = wake_tp / (wake_tp + wake_fp + 1e-7)
+                tts_accuracy = tf.reduce_mean(tf.cast(tf.equal(
+                    tf.round(tts_pred), train_tts_labels), tf.float32))
+                
+                # Build result list to match expected format
+                result = [
+                    float(total_loss),  # 0: total loss
+                    float(wake_accuracy),  # 1: wake accuracy
+                    float(wake_recall),  # 2: wake recall  
+                    float(wake_precision),  # 3: wake precision
+                    0.0, 0.0, 0.0, 0.0,  # 4-7: placeholders for TP/FP/TN/FN
+                    0.5,  # 8: AUC placeholder
+                    0.0,  # 9: placeholder
+                    float(weighted_wake_loss),  # 10: wake loss
+                    float(tts_accuracy),  # 11: tts accuracy
+                    float(tts_loss),  # 12: tts loss
+                ]
+            else:
+                # Keras 2.x can handle dict sample weights
+                sample_weights = {
+                    "wake_word": wake_word_weights,
+                    "tts_classifier": np.ones_like(train_sample_weights)
+                }
+                
+                result = model.train_on_batch(
+                    train_fingerprints,
+                    y_train,
+                    sample_weight=sample_weights,
+                )
         else:
             # Regular data processor returns 3 values
             train_fingerprints, train_ground_truth, train_sample_weights = data_result
