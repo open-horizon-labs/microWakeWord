@@ -284,7 +284,16 @@ def train(model, config, data_processor):
     best_minimization_quantity = 10000
     best_maximization_quantity = 0.0
     best_no_faph_cutoff = 1.0
-
+    
+    # Accumulated statistics for the current evaluation interval
+    accumulated_wake_accuracy = 0.0
+    accumulated_wake_recall = 0.0
+    accumulated_wake_precision = 0.0
+    accumulated_wake_loss = 0.0
+    accumulated_tts_accuracy = 0.0
+    accumulated_tts_loss = 0.0
+    accumulated_total_loss = 0.0
+    
     for training_step in range(1, training_steps_max + 1):
         training_steps_sum = 0
         for i in range(len(training_steps_list)):
@@ -449,31 +458,75 @@ def train(model, config, data_processor):
             tts_accuracy = None
             tts_loss = None
         
+        # Accumulate statistics across mini-batches
+        mini_batch_num = (training_step - 1) % config["eval_step_interval"] + 1
+        
+        # Reset accumulation at the start of each evaluation interval
+        if mini_batch_num == 1:
+            accumulated_wake_accuracy = 0.0
+            accumulated_wake_recall = 0.0
+            accumulated_wake_precision = 0.0
+            accumulated_wake_loss = 0.0
+            accumulated_tts_accuracy = 0.0
+            accumulated_tts_loss = 0.0
+            accumulated_total_loss = 0.0
+        
+        # Add current batch metrics to accumulation
+        accumulated_wake_accuracy += wake_accuracy
+        accumulated_wake_recall += wake_recall
+        accumulated_wake_precision += wake_precision
+        accumulated_wake_loss += wake_loss
+        accumulated_total_loss += total_loss
+        
+        if is_adversarial:
+            accumulated_tts_accuracy += tts_accuracy
+            accumulated_tts_loss += tts_loss
+        
+        # Calculate running averages
+        avg_wake_accuracy = accumulated_wake_accuracy / mini_batch_num
+        avg_wake_recall = accumulated_wake_recall / mini_batch_num
+        avg_wake_precision = accumulated_wake_precision / mini_batch_num
+        avg_wake_loss = accumulated_wake_loss / mini_batch_num
+        avg_total_loss = accumulated_total_loss / mini_batch_num
+        
+        if is_adversarial:
+            avg_tts_accuracy = accumulated_tts_accuracy / mini_batch_num
+            avg_tts_loss = accumulated_tts_loss / mini_batch_num
+        
         # Print the running statistics in the current validation epoch
         if is_adversarial:
             print(
-                "Validation Batch #{:d}: Acc={:.3f}; Rec={:.3f}; Prec={:.3f}; Loss={:.4f} (wake={:.4f}, tts={:.4f}); TTS_Acc={:.3f}; Batch #{:d}".format(
+                "Validation Batch #{:d}: Acc={:.3f} (avg={:.3f}); Rec={:.3f} (avg={:.3f}); Prec={:.3f} (avg={:.3f}); Loss={:.4f} (avg={:.4f}); TTS_Acc={:.3f} (avg={:.3f}); Mini-Batch #{:d}/{:d}".format(
                     (training_step // config["eval_step_interval"] + 1),
                     wake_accuracy,
+                    avg_wake_accuracy,
                     wake_recall,
+                    avg_wake_recall,
                     wake_precision,
+                    avg_wake_precision,
                     total_loss,
-                    wake_loss,
-                    tts_loss,
+                    avg_total_loss,
                     tts_accuracy,
-                    (training_step % config["eval_step_interval"]),
+                    avg_tts_accuracy,
+                    mini_batch_num,
+                    config["eval_step_interval"],
                 ),
                 end="\r",
             )
         else:
             print(
-                "Validation Batch #{:d}: Accuracy = {:.3f}; Recall = {:.3f}; Precision = {:.3f}; Loss = {:.4f}; Mini-Batch #{:d}".format(
+                "Validation Batch #{:d}: Acc={:.3f} (avg={:.3f}); Rec={:.3f} (avg={:.3f}); Prec={:.3f} (avg={:.3f}); Loss={:.4f} (avg={:.4f}); Mini-Batch #{:d}/{:d}".format(
                     (training_step // config["eval_step_interval"] + 1),
                     wake_accuracy,
+                    avg_wake_accuracy,
                     wake_recall,
+                    avg_wake_recall,
                     wake_precision,
+                    avg_wake_precision,
                     wake_loss,
-                    (training_step % config["eval_step_interval"]),
+                    avg_wake_loss,
+                    mini_batch_num,
+                    config["eval_step_interval"],
                 ),
                 end="\r",
             )
@@ -486,13 +539,13 @@ def train(model, config, data_processor):
                     *(
                         training_step,
                         learning_rate,
-                        wake_accuracy * 100,
-                        wake_recall * 100,
-                        wake_precision * 100,
-                        total_loss,
-                        wake_loss,
-                        tts_loss,
-                        tts_accuracy * 100,
+                        avg_wake_accuracy * 100,
+                        avg_wake_recall * 100,
+                        avg_wake_precision * 100,
+                        avg_total_loss,
+                        avg_wake_loss,
+                        avg_tts_loss,
+                        avg_tts_accuracy * 100,
                     ),
                 )
             else:
@@ -501,28 +554,28 @@ def train(model, config, data_processor):
                     *(
                         training_step,
                         learning_rate,
-                        wake_accuracy * 100,
-                        wake_recall * 100,
-                        wake_precision * 100,
-                        wake_loss,
+                        avg_wake_accuracy * 100,
+                        avg_wake_recall * 100,
+                        avg_wake_precision * 100,
+                        avg_wake_loss,
                     ),
                 )
 
             with train_writer.as_default():
                 if is_adversarial:
-                    tf.summary.scalar("loss/total", total_loss, step=training_step)
-                    tf.summary.scalar("loss/wake_word", wake_loss, step=training_step)
-                    tf.summary.scalar("loss/tts_classifier", tts_loss, step=training_step)
-                    tf.summary.scalar("accuracy/wake_word", wake_accuracy, step=training_step)
-                    tf.summary.scalar("accuracy/tts_classifier", tts_accuracy, step=training_step)
-                    tf.summary.scalar("recall", wake_recall, step=training_step)
-                    tf.summary.scalar("precision", wake_precision, step=training_step)
+                    tf.summary.scalar("loss/total", avg_total_loss, step=training_step)
+                    tf.summary.scalar("loss/wake_word", avg_wake_loss, step=training_step)
+                    tf.summary.scalar("loss/tts_classifier", avg_tts_loss, step=training_step)
+                    tf.summary.scalar("accuracy/wake_word", avg_wake_accuracy, step=training_step)
+                    tf.summary.scalar("accuracy/tts_classifier", avg_tts_accuracy, step=training_step)
+                    tf.summary.scalar("recall", avg_wake_recall, step=training_step)
+                    tf.summary.scalar("precision", avg_wake_precision, step=training_step)
                     tf.summary.scalar("auc", result[8], step=training_step)
                 else:
-                    tf.summary.scalar("loss", wake_loss, step=training_step)
-                    tf.summary.scalar("accuracy", wake_accuracy, step=training_step)
-                    tf.summary.scalar("recall", wake_recall, step=training_step)
-                    tf.summary.scalar("precision", wake_precision, step=training_step)
+                    tf.summary.scalar("loss", avg_wake_loss, step=training_step)
+                    tf.summary.scalar("accuracy", avg_wake_accuracy, step=training_step)
+                    tf.summary.scalar("recall", avg_wake_recall, step=training_step)
+                    tf.summary.scalar("precision", avg_wake_precision, step=training_step)
                     tf.summary.scalar("auc", result[8], step=training_step)
                 train_writer.flush()
 
