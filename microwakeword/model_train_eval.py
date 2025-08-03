@@ -145,7 +145,10 @@ def train_model(config, model, data_processor, restore_checkpoint, flags=None):
                 tf.keras.metrics.BinaryAccuracy(name="accuracy"),
                 tf.keras.metrics.Recall(name="recall"),
                 tf.keras.metrics.Precision(name="precision"),
-                tf.keras.metrics.AUC(name="auc")
+                tf.keras.metrics.AUC(name="auc"),
+                tf.keras.metrics.TruePositives(name="tp"),
+                tf.keras.metrics.FalsePositives(name="fp"),
+                tf.keras.metrics.FalseNegatives(name="fn")
             ],
             "tts_classifier": [
                 tf.keras.metrics.BinaryAccuracy(name="accuracy")

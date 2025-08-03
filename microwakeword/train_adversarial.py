@@ -59,16 +59,16 @@ def validate_adversarial_nonstreaming(config, data_processor, model, test_set):
     
     metrics = {}
     # Wake word metrics
-    metrics["accuracy"] = result["wake_word_accuracy"]
-    metrics["recall"] = result["wake_word_recall"]
-    metrics["precision"] = result["wake_word_precision"]
-    metrics["auc"] = result["wake_word_auc"]
-    metrics["loss"] = result["loss"]
-    metrics["wake_word_loss"] = result["wake_word_loss"]
+    metrics["accuracy"] = result.get("wake_word_accuracy", 0)
+    metrics["recall"] = result.get("wake_word_recall", 0)
+    metrics["precision"] = result.get("wake_word_precision", 0)
+    metrics["auc"] = result.get("wake_word_auc", 0)
+    metrics["loss"] = result.get("loss", 0)
+    metrics["wake_word_loss"] = result.get("wake_word_loss", 0)
     
     # TTS classifier metrics
-    metrics["tts_accuracy"] = result["tts_classifier_accuracy"]
-    metrics["tts_loss"] = result["tts_classifier_loss"]
+    metrics["tts_accuracy"] = result.get("tts_classifier_accuracy", 0)
+    metrics["tts_loss"] = result.get("tts_classifier_loss", 0)
     
     # Initialize ambient metrics
     metrics["recall_at_no_faph"] = 0
@@ -77,7 +77,7 @@ def validate_adversarial_nonstreaming(config, data_processor, model, test_set):
     metrics["ambient_false_positives_per_hour"] = 0
     metrics["average_viable_recall"] = 0
     
-    test_set_fp = result["wake_word_fp"]
+    test_set_fp = result.get("wake_word_fp", 0)
     
     if data_processor.get_mode_size("validation_ambient") > 0:
         (
@@ -109,13 +109,13 @@ def validate_adversarial_nonstreaming(config, data_processor, model, test_set):
         )
         
         # Calculate ambient metrics for wake word performance
-        all_true_positives = ambient_predictions["wake_word_tp"]
-        ambient_false_positives = ambient_predictions["wake_word_fp"] - test_set_fp
-        all_false_negatives = ambient_predictions["wake_word_fn"]
+        all_true_positives = ambient_predictions.get("wake_word_tp", 0)
+        ambient_false_positives = ambient_predictions.get("wake_word_fp", 0) - test_set_fp
+        all_false_negatives = ambient_predictions.get("wake_word_fn", 0)
         
-        metrics["auc"] = ambient_predictions["wake_word_auc"]
-        metrics["loss"] = ambient_predictions["loss"]
-        metrics["tts_accuracy"] = ambient_predictions["tts_classifier_accuracy"]
+        metrics["auc"] = ambient_predictions.get("wake_word_auc", 0)
+        metrics["loss"] = ambient_predictions.get("loss", 0)
+        metrics["tts_accuracy"] = ambient_predictions.get("tts_classifier_accuracy", 0)
         
         recall_at_cutoffs = all_true_positives / (
             all_true_positives + all_false_negatives
