@@ -35,12 +35,21 @@ def swap_attribute(obj, attr, temp_value):
 
 
 def validate_nonstreaming(config, data_processor, model, test_set):
-    testing_fingerprints, testing_ground_truth, _ = data_processor.get_data(
+    # Handle both regular and adversarial data processors
+    data_result = data_processor.get_data(
         test_set,
         batch_size=config["batch_size"],
         features_length=config["spectrogram_length"],
         truncation_strategy="truncate_start",
     )
+    
+    if len(data_result) == 4:
+        # Adversarial data processor returns 4 values
+        testing_fingerprints, testing_ground_truth, testing_tts_labels, _ = data_result
+    else:
+        # Regular data processor returns 3 values
+        testing_fingerprints, testing_ground_truth, _ = data_result
+    
     testing_ground_truth = testing_ground_truth.reshape(-1, 1)
 
     model.reset_metrics()
@@ -69,16 +78,20 @@ def validate_nonstreaming(config, data_processor, model, test_set):
     test_set_fp = result["fp"].numpy()
 
     if data_processor.get_mode_size("validation_ambient") > 0:
-        (
-            ambient_testing_fingerprints,
-            ambient_testing_ground_truth,
-            _,
-        ) = data_processor.get_data(
+        ambient_data_result = data_processor.get_data(
             test_set + "_ambient",
             batch_size=config["batch_size"],
             features_length=config["spectrogram_length"],
             truncation_strategy="split",
         )
+        
+        if len(ambient_data_result) == 4:
+            # Adversarial data processor returns 4 values
+            ambient_testing_fingerprints, ambient_testing_ground_truth, _, _ = ambient_data_result
+        else:
+            # Regular data processor returns 3 values
+            ambient_testing_fingerprints, ambient_testing_ground_truth, _ = ambient_data_result
+        
         ambient_testing_ground_truth = ambient_testing_ground_truth.reshape(-1, 1)
 
         # XXX: tf no longer provides a way to evaluate a model without updating metrics
