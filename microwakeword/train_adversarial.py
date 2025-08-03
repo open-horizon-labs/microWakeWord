@@ -287,6 +287,7 @@ def train_adversarial_model(
                 wake_word_sample_weights[i] *= class_weights["wake_word"][0]
         
         # Train for one epoch
+        # Note: For Keras 3.x, we need to be careful about sample_weight format
         history = model.fit(
             train_fingerprints,
             {"wake_word": train_ground_truth, "tts_classifier": train_tts_labels},

@@ -511,9 +511,15 @@ if __name__ == "__main__":
         data_processor = input_data.FeatureHandler(config)
 
     if flags.train:
-        model = model_module.model(
-            flags, config["training_input_shape"], config["batch_size"]
-        )
+        # For adversarial models, use None batch size for more flexibility
+        if flags.model_name == "mixednet_adversarial":
+            model = model_module.model(
+                flags, config["training_input_shape"], None
+            )
+        else:
+            model = model_module.model(
+                flags, config["training_input_shape"], config["batch_size"]
+            )
         logging.info(model.summary())
         train_model(config, model, data_processor, flags.restore_checkpoint, flags)
     elif not os.path.isdir(config["train_dir"]):
