@@ -36,6 +36,8 @@ def swap_attribute(obj, attr, temp_value):
 
 def validate_nonstreaming(config, data_processor, model, test_set):
     # Handle both regular and adversarial data processors
+    is_adversarial = hasattr(data_processor, '__class__') and 'Adversarial' in data_processor.__class__.__name__
+    
     data_result = data_processor.get_data(
         test_set,
         batch_size=config["batch_size"],
@@ -43,39 +45,64 @@ def validate_nonstreaming(config, data_processor, model, test_set):
         truncation_strategy="truncate_start",
     )
     
-    if len(data_result) == 4:
+    if is_adversarial:
         # Adversarial data processor returns 4 values
         testing_fingerprints, testing_ground_truth, testing_tts_labels, _ = data_result
+        testing_ground_truth = testing_ground_truth.reshape(-1, 1)
+        testing_tts_labels = testing_tts_labels.reshape(-1, 1)
+        
+        # For adversarial models, we need to pass both outputs
+        y_test = {
+            "wake_word": testing_ground_truth,
+            "tts_classifier": testing_tts_labels
+        }
     else:
         # Regular data processor returns 3 values
         testing_fingerprints, testing_ground_truth, _ = data_result
-    
-    testing_ground_truth = testing_ground_truth.reshape(-1, 1)
+        testing_ground_truth = testing_ground_truth.reshape(-1, 1)
+        y_test = testing_ground_truth
 
     model.reset_metrics()
 
     result = model.evaluate(
         testing_fingerprints,
-        testing_ground_truth,
+        y_test,
         batch_size=1024,
         return_dict=True,
         verbose=0,
     )
 
     metrics = {}
-    metrics["accuracy"] = result["accuracy"]
-    metrics["recall"] = result["recall"]
-    metrics["precision"] = result["precision"]
-
-    metrics["auc"] = result["auc"]
-    metrics["loss"] = result["loss"]
+    
+    if is_adversarial:
+        # For adversarial models, metrics are prefixed with output names
+        metrics["accuracy"] = result.get("wake_word_accuracy", result.get("accuracy", 0))
+        metrics["recall"] = result.get("wake_word_recall", result.get("recall", 0))
+        metrics["precision"] = result.get("wake_word_precision", result.get("precision", 0))
+        metrics["auc"] = result.get("wake_word_auc", result.get("auc", 0))
+        metrics["loss"] = result.get("wake_word_loss", result.get("loss", 0))
+        
+        # Extract FP for wake word
+        if "wake_word_fp" in result:
+            test_set_fp = result["wake_word_fp"].numpy()
+        elif "fp" in result:
+            test_set_fp = result["fp"].numpy()
+        else:
+            test_set_fp = 0
+    else:
+        # Regular models have unprefixed metrics
+        metrics["accuracy"] = result["accuracy"]
+        metrics["recall"] = result["recall"]
+        metrics["precision"] = result["precision"]
+        metrics["auc"] = result["auc"]
+        metrics["loss"] = result["loss"]
+        test_set_fp = result["fp"].numpy()
+    
     metrics["recall_at_no_faph"] = 0
     metrics["cutoff_for_no_faph"] = 0
     metrics["ambient_false_positives"] = 0
     metrics["ambient_false_positives_per_hour"] = 0
     metrics["average_viable_recall"] = 0
-
-    test_set_fp = result["fp"].numpy()
 
     if data_processor.get_mode_size("validation_ambient") > 0:
         ambient_data_result = data_processor.get_data(
@@ -85,20 +112,28 @@ def validate_nonstreaming(config, data_processor, model, test_set):
             truncation_strategy="split",
         )
         
-        if len(ambient_data_result) == 4:
+        if is_adversarial:
             # Adversarial data processor returns 4 values
-            ambient_testing_fingerprints, ambient_testing_ground_truth, _, _ = ambient_data_result
+            ambient_testing_fingerprints, ambient_testing_ground_truth, ambient_tts_labels, _ = ambient_data_result
+            ambient_testing_ground_truth = ambient_testing_ground_truth.reshape(-1, 1)
+            ambient_tts_labels = ambient_tts_labels.reshape(-1, 1)
+            
+            # For adversarial models, we need to pass both outputs
+            y_ambient = {
+                "wake_word": ambient_testing_ground_truth,
+                "tts_classifier": ambient_tts_labels
+            }
         else:
             # Regular data processor returns 3 values
             ambient_testing_fingerprints, ambient_testing_ground_truth, _ = ambient_data_result
-        
-        ambient_testing_ground_truth = ambient_testing_ground_truth.reshape(-1, 1)
+            ambient_testing_ground_truth = ambient_testing_ground_truth.reshape(-1, 1)
+            y_ambient = ambient_testing_ground_truth
 
         # XXX: tf no longer provides a way to evaluate a model without updating metrics
         with swap_attribute(model, "reset_metrics", lambda: None):
             ambient_predictions = model.evaluate(
                 ambient_testing_fingerprints,
-                ambient_testing_ground_truth,
+                y_ambient,
                 batch_size=1024,
                 return_dict=True,
                 verbose=0,
@@ -110,12 +145,22 @@ def validate_nonstreaming(config, data_processor, model, test_set):
 
         # Other than the false positive rate, all other metrics are accumulated across
         # both test sets
-        all_true_positives = ambient_predictions["tp"].numpy()
-        ambient_false_positives = ambient_predictions["fp"].numpy() - test_set_fp
-        all_false_negatives = ambient_predictions["fn"].numpy()
-
-        metrics["auc"] = ambient_predictions["auc"]
-        metrics["loss"] = ambient_predictions["loss"]
+        if is_adversarial:
+            # Extract wake word metrics for adversarial models
+            all_true_positives = ambient_predictions.get("wake_word_tp", ambient_predictions.get("tp", [0])).numpy()
+            ambient_fp = ambient_predictions.get("wake_word_fp", ambient_predictions.get("fp", [0])).numpy()
+            ambient_false_positives = ambient_fp - test_set_fp
+            all_false_negatives = ambient_predictions.get("wake_word_fn", ambient_predictions.get("fn", [0])).numpy()
+            
+            metrics["auc"] = ambient_predictions.get("wake_word_auc", ambient_predictions.get("auc", 0))
+            metrics["loss"] = ambient_predictions.get("wake_word_loss", ambient_predictions.get("loss", 0))
+        else:
+            all_true_positives = ambient_predictions["tp"].numpy()
+            ambient_false_positives = ambient_predictions["fp"].numpy() - test_set_fp
+            all_false_negatives = ambient_predictions["fn"].numpy()
+            
+            metrics["auc"] = ambient_predictions["auc"]
+            metrics["loss"] = ambient_predictions["loss"]
 
         recall_at_cutoffs = all_true_positives / (
             all_true_positives + all_false_negatives
