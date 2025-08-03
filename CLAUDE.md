@@ -67,6 +67,7 @@ python -m microwakeword.model_train_eval \
     --test_tflite_streaming_quantized 1 \
     --use_weights "best_weights" \
     mixednet_adversarial \
+    --adversarial_beta 0.5 \
     --adversarial_lambda 1.0 \
     --adversarial_hidden_units "128,64" \
     --adversarial_dropout 0.5 \
@@ -139,13 +140,13 @@ The project uses:
      - `gradient_reversal.py`: Gradient reversal layer for adversarial training
 
 3. **Training Pipeline**
-   - `train.py`: Core training loop and validation logic
+   - `train.py`: Unified training loop supporting both regular and adversarial models
    - `train_ctc.py`: CTC-specific training loop for MixedNet+CTC models
-   - `train_adversarial.py`: Adversarial training loop for TTS-robust models
    - `model_train_eval.py`: Main entry point for training and evaluation
    - `data.py`: Data loading and preprocessing with Ragged Mmap support
    - `data_adversarial.py`: Extended data pipeline with TTS labels for adversarial training
    - `ctc_utils.py`: CTC loss, decoding, and metrics utilities
+   - `utils_adversarial.py`: Utilities for extracting wake word model from adversarial model
 
 4. **Inference**
    - `inference.py`: Model class for loading and running inference
@@ -187,18 +188,23 @@ Parameters:
 
 ### MixedNet+Adversarial Architecture
 
-The MixedNet+Adversarial model improves robustness to TTS-generated speech:
+The MixedNet+Adversarial model improves robustness to TTS-generated speech using domain-adversarial training:
 - **Main Branch**: Standard wake word classification
 - **Adversarial Branch**: Predicts if input is TTS or real speech
-- **Gradient Reversal**: Forces model to learn TTS-invariant features
+- **Gradient Reversal Layer**: Forces model to learn TTS-invariant features by reversing gradients during backpropagation
 
 Benefits:
-- 8-12% accuracy improvement on real speech (based on paper results)
+- 8-12% accuracy improvement on real speech (based on paper: https://arxiv.org/html/2408.10463v1)
 - Reduced overfitting to TTS-specific artifacts
 - No inference overhead (adversarial branch removed during deployment)
 
 Parameters:
-- `--adversarial_lambda`: Gradient reversal scaling factor (default: 1.0)
+- `--adversarial_beta`: Loss weight balance (default: 0.5)
+  - Controls balance between wake word loss (1-β) and TTS classifier loss (β)
+  - Total loss = `(1-β) * wake_word_loss + β * tts_classifier_loss`
+- `--adversarial_lambda`: Gradient reversal strength (default: 1.0)
+  - Scales the reversed gradients in the gradient reversal layer
+  - Higher values create stronger domain-invariant features
 - `--adversarial_hidden_units`: Hidden layers for adversarial classifier (e.g., "128,64")
 - `--adversarial_dropout`: Dropout rate in adversarial classifier (default: 0.5)
 
@@ -210,6 +216,12 @@ features:
 - features_dir: /path/to/real_samples
   is_tts: false  # Mark as real speech
 ```
+
+Training Notes:
+- The unified `train.py` automatically detects adversarial models and handles multi-output training
+- Validation metrics track both wake word performance and TTS classification accuracy
+- Training displays accumulated statistics across mini-batches for smoother progress monitoring
+- Keras 3.x compatibility is handled with manual gradient computation when needed
 
 ## Important Considerations
 
