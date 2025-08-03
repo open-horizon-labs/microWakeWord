@@ -17,13 +17,16 @@
 import numpy as np
 
 from microwakeword.data import (
-    FeatureSetProvider, ClipsHandlerWrapperGenerator, 
-    DataProcessor, spec_augment
+    MmapFeatureGenerator, ClipsHandlerWrapperGenerator, 
+    FeatureHandler, spec_augment
 )
+from microwakeword.audio.clips import Clips
+from microwakeword.audio.augmentation import Augmentation
+from microwakeword.audio.spectrograms import SpectrogramGeneration
 
 
-class AdversarialFeatureSetProvider(FeatureSetProvider):
-    """Extended FeatureSetProvider that includes TTS labels.
+class AdversarialMmapFeatureGenerator(MmapFeatureGenerator):
+    """Extended MmapFeatureGenerator that includes TTS labels.
     
     This class extends the base FeatureSetProvider to track whether
     samples are from TTS or real speech for adversarial training.
@@ -90,12 +93,62 @@ class AdversarialClipsHandlerWrapperGenerator(ClipsHandlerWrapperGenerator):
         self.is_tts = float(is_tts)
 
 
-class AdversarialDataProcessor(DataProcessor):
-    """Extended DataProcessor for adversarial TTS training.
+class AdversarialFeatureHandler(FeatureHandler):
+    """Extended FeatureHandler for adversarial TTS training.
     
     This processor returns an additional label for each sample indicating
     whether it's from TTS (1.0) or real speech (0.0).
     """
+    
+    def __init__(self, config: dict):
+        """Initialize the adversarial feature handler.
+        
+        Args:
+            config: Training configuration dictionary
+        """
+        # Initialize empty list before calling parent
+        self.feature_providers = []
+        
+        # Process features with adversarial providers
+        for feature_set in config["features"]:
+            if feature_set.get("type", "mmap") == "mmap":
+                # Determine if this is TTS data
+                is_tts = feature_set.get("is_tts", "generated" in feature_set["features_dir"])
+                
+                self.feature_providers.append(
+                    AdversarialMmapFeatureGenerator(
+                        path=feature_set["features_dir"],
+                        label=feature_set["truth"],
+                        is_tts=is_tts,
+                        sampling_weight=feature_set["sampling_weight"],
+                        penalty_weight=feature_set["penalty_weight"],
+                        truncation_strategy=feature_set["truncation_strategy"],
+                        stride=config["stride"],
+                        step=config["window_step_ms"] / 1000.0,
+                        fixed_right_cutoffs=feature_set.get("fixed_right_cutoffs", [0]),
+                    )
+                )
+            elif feature_set.get("type") == "clips":
+                # Handle clips type with adversarial wrapper
+                clips_handler = Clips(**feature_set["clips_settings"])
+                augmentation_applier = Augmentation(**feature_set["augmentation_settings"])
+                spectrogram_generator = SpectrogramGeneration(
+                    clips_handler,
+                    augmentation_applier,
+                    **feature_set["spectrogram_generation_settings"],
+                )
+                is_tts = feature_set.get("is_tts", False)
+                
+                self.feature_providers.append(
+                    AdversarialClipsHandlerWrapperGenerator(
+                        spectrogram_generator,
+                        feature_set["truth"],
+                        is_tts,
+                        feature_set["sampling_weight"],
+                        feature_set["penalty_weight"],
+                        feature_set["truncation_strategy"],
+                    )
+                )
     
     def get_data(
         self,

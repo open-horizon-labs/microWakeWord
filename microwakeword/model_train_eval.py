@@ -499,26 +499,11 @@ if __name__ == "__main__":
 
     # Use adversarial data processor for adversarial models
     if flags.model_name == "mixednet_adversarial":
-        # Create adversarial data processor with TTS labels
-        feature_providers = []
+        # Ensure features have type field for compatibility
         for feature_config in config["features"]:
-            # Determine if this is TTS data based on directory name or config
-            is_tts = feature_config.get("is_tts", "generated" in feature_config["features_dir"])
-            
-            provider = adversarial_data.AdversarialFeatureSetProvider(
-                path=feature_config["features_dir"],
-                label=feature_config["truth"],
-                is_tts=is_tts,
-                sampling_weight=feature_config["sampling_weight"],
-                penalty_weight=feature_config["penalty_weight"],
-                truncation_strategy=feature_config["truncation_strategy"],
-                stride=config["stride"],
-                step=config["window_step_ms"] / 1000.0,
-            )
-            feature_providers.append(provider)
-        
-        data_processor = adversarial_data.AdversarialDataProcessor(config)
-        data_processor.feature_providers = feature_providers
+            if "type" not in feature_config:
+                feature_config["type"] = "mmap"  # Default to mmap type
+        data_processor = adversarial_data.AdversarialFeatureHandler(config)
     else:
         data_processor = input_data.FeatureHandler(config)
 
