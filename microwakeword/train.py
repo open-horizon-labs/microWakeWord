@@ -221,8 +221,8 @@ def train(model, config, data_processor):
     # Detect if we're using adversarial training based on data processor type
     is_adversarial = hasattr(data_processor, '__class__') and 'Adversarial' in data_processor.__class__.__name__
 
-    # Get adversarial lambda from config flags if available
-    adversarial_beta = 1.0
+    # Get adversarial beta from config flags if available
+    adversarial_beta = 0.5  # Default to balanced training
     if is_adversarial and 'flags' in config:
         # config['flags'] is a dict, not an object
         adversarial_beta = config['flags'].get('adversarial_beta', 0.5)
