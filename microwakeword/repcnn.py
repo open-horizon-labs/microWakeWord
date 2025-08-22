@@ -157,6 +157,11 @@ def model(flags, shape, batch_size):
 
         # RepConvBlock already uses Conv2D with 'same' padding internally
         # No need for Stream wrapper as the block handles its own convolutions
+        net = stream.Stream(
+            cell=tf.keras.layers.Identity(),
+            ring_buffer_size_in_time_dim=max(kernel_sizes)-1,
+            use_one_step=False,
+        )(net)
         net = repconv_block.RepConvBlock(
             filters=filters,
             kernel_sizes=kernel_sizes,
@@ -165,16 +170,21 @@ def model(flags, shape, batch_size):
             name=f"repconv_block_{i}",
         )(net)
 
-    # Global pooling
-    if flags.pooled:
-        # Pool over both time and frequency dimensions
-        if flags.max_pool:
-            net = tf.keras.layers.GlobalMaxPooling2D()(net)
-        else:
-            net = tf.keras.layers.GlobalAveragePooling2D()(net)
-    else:
-        # Flatten without pooling - keeps temporal information
-        net = tf.keras.layers.Flatten()(net)
+
+    if net.shape[1] > 1:
+        net = stream.Stream(
+            cell=tf.keras.layers.Identity(),
+            ring_buffer_size_in_time_dim=net.shape[1] - 1,
+            use_one_step=False,
+        )(net)
+
+        if flags.pooled:
+            # We want to use either Global Max Pooling or Global Average Pooling, but the esp-nn operator optimizations only benefit regular pooling operations
+
+            if flags.max_pool:
+                net = tf.keras.layers.MaxPooling2D(pool_size=(net.shape[1], 1))(net)
+            else:
+                net = tf.keras.layers.AveragePooling2D(pool_size=(net.shape[1], 1))(net)
 
     # Final dense layer for binary classification
     net = tf.keras.layers.Dense(1)(net)
