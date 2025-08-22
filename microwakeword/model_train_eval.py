@@ -30,7 +30,7 @@ if os.environ.get("CUDA_VISIBLE_DEVICES") == "-1" or (
 ):
     tf.config.set_visible_devices([], "GPU")
 
-from microwakeword import inception, mixednet, mixednet_ctc, mixednet_adversarial, test, train, train_ctc, utils, utils_adversarial
+from microwakeword import inception, mixednet, mixednet_ctc, mixednet_adversarial, repcnn, test, train, train_ctc, utils, utils_adversarial
 import microwakeword.data as input_data
 import microwakeword.data_adversarial as adversarial_data
 from microwakeword.layers import modes
@@ -425,6 +425,9 @@ if __name__ == "__main__":
     # mixednet_adversarial model settings
     parser_mixednet_adversarial = subparsers.add_parser("mixednet_adversarial")
     mixednet_adversarial.model_parameters(parser_mixednet_adversarial)
+    # repcnn model settings
+    parser_repcnn = subparsers.add_parser("repcnn")
+    repcnn.model_parameters(parser_repcnn)
 
     flags, unparsed = parser.parse_known_args()
     if unparsed:
@@ -438,6 +441,8 @@ if __name__ == "__main__":
         model_module = mixednet_ctc
     elif flags.model_name == "mixednet_adversarial":
         model_module = mixednet_adversarial
+    elif flags.model_name == "repcnn":
+        model_module = repcnn
     else:
         raise ValueError(f"Unknown model type: {flags.model_name}")
 

@@ -272,6 +272,11 @@ def model_to_saved(
         modes.Modes.NON_STREAM_INFERENCE,
     ):
         raise ValueError(f"mode {mode} is not supported ")
+    
+    # Apply re-parameterization for RepCNN models before streaming conversion
+    if config.get("flags", {}).get("model_name") == "repcnn":
+        from microwakeword import repcnn
+        model_non_stream = repcnn.reparameterize_model(model_non_stream)
 
     if mode == modes.Modes.NON_STREAM_INFERENCE:
         model = model_non_stream
