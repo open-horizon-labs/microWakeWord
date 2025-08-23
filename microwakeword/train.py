@@ -585,10 +585,10 @@ def train(model, config, data_processor):
             train_fingerprints, train_ground_truth, train_sample_weights = data_result
             train_ground_truth = train_ground_truth.reshape(-1, 1)
 
-            class_weights = {0: negative_class_weight, 1: positive_class_weight}
-            combined_weights = train_sample_weights * np.vectorize(class_weights.get)(
-                train_ground_truth
-            )
+            # class_weights = {0: negative_class_weight, 1: positive_class_weight}
+            # combined_weights = train_sample_weights * np.vectorize(class_weights.get)(
+            #     train_ground_truth
+            # )
 
             # Check if we should use hard negative mining
             if use_hard_negative_mining and training_step >= hard_negative_start_step:
@@ -612,7 +612,7 @@ def train(model, config, data_processor):
                     losses_unreduced = tf.squeeze(losses_unreduced)  # Remove extra dimension
 
                     # Apply sample weights
-                    weighted_losses = losses_unreduced * combined_weights.flatten()
+                    weighted_losses = losses_unreduced #* combined_weights.flatten()
 
                     # Separate positive and negative indices
                     positive_mask = tf.cast(train_ground_truth.flatten() == 1, tf.float32)
@@ -688,18 +688,18 @@ def train(model, config, data_processor):
                 num_neg = int(tf.reduce_sum(negative_mask))
                 num_selected_neg = int(tf.reduce_sum(selection_mask * negative_mask))
 
-                # Log occasionally
-                if training_step % 100 == 0:
-                    logging.info(
-                        "Hard negative mining: %d/%d negatives selected, %d positives (step %d)",
-                        num_selected_neg, num_neg, num_pos, training_step
-                    )
+                # # Log occasionally
+                # if training_step % 100 == 0:
+                #     logging.info(
+                #         "Hard negative mining: %d/%d negatives selected, %d positives (step %d)",
+                #         num_selected_neg, num_neg, num_pos, training_step
+                #     )
             else:
                 # Standard training without hard negative mining
                 result = model.train_on_batch(
                     train_fingerprints,
                     train_ground_truth,
-                    sample_weight=combined_weights,
+                    #sample_weight=combined_weights,
                 )
 
         # Initialize hard negative mining stats for this batch
