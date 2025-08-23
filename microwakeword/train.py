@@ -269,10 +269,34 @@ def train(model, config, data_processor):
     optimizer = tf.keras.optimizers.Adam()
     cutoffs = np.linspace(0.0, 1.0, 101).tolist()
 
+    # Get focal loss settings from config (YAML or command-line)
+    use_focal_loss = config.get("use_focal_loss", 0)
+    if use_focal_loss == 0 and 'flags' in config:
+        use_focal_loss = config['flags'].get('use_focal_loss', 0)
+    
+    focal_alpha = config.get("focal_alpha", 0.25)
+    if 'flags' in config and config['flags'].get('focal_alpha') is not None:
+        focal_alpha = config['flags'].get('focal_alpha')
+    
+    focal_gamma = config.get("focal_gamma", 2.0)
+    if 'flags' in config and config['flags'].get('focal_gamma') is not None:
+        focal_gamma = config['flags'].get('focal_gamma')
+    
+    # Create base loss function based on focal loss setting
+    if use_focal_loss:
+        logging.info(f"Using focal loss with alpha={focal_alpha}, gamma={focal_gamma}")
+        base_loss = tf.keras.losses.BinaryFocalCrossentropy(
+            alpha=focal_alpha,
+            gamma=focal_gamma,
+            from_logits=False
+        )
+    else:
+        base_loss = tf.keras.losses.BinaryCrossentropy(from_logits=False)
+
     if is_adversarial:
-        # For adversarial models, use dict of losses and metrics
+        # For adversarial models, use focal loss only for wake word
         loss = {
-            "wake_word": tf.keras.losses.BinaryCrossentropy(from_logits=False),
+            "wake_word": base_loss,
             "tts_classifier": tf.keras.losses.BinaryCrossentropy(from_logits=False)
         }
 
@@ -303,7 +327,7 @@ def train(model, config, data_processor):
         model.compile(optimizer=optimizer, loss=loss, loss_weights=loss_weights, metrics=metrics)
     else:
         # Regular single-output model
-        loss = tf.keras.losses.BinaryCrossentropy(from_logits=False)
+        loss = base_loss
 
         metrics = [
             tf.keras.metrics.BinaryAccuracy(name="accuracy"),
@@ -419,7 +443,15 @@ def train(model, config, data_processor):
                     tts_pred = predictions[1]
 
                     # Calculate losses
-                    wake_loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=False, reduction='none')
+                    if use_focal_loss:
+                        wake_loss_fn = tf.keras.losses.BinaryFocalCrossentropy(
+                            alpha=focal_alpha,
+                            gamma=focal_gamma,
+                            from_logits=False,
+                            reduction='none'
+                        )
+                    else:
+                        wake_loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=False, reduction='none')
                     tts_loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=False, reduction='none')
 
                     wake_losses = wake_loss_fn(train_ground_truth, wake_pred)

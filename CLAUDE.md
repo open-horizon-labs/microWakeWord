@@ -78,7 +78,50 @@ python -m microwakeword.model_train_eval \
     --first_conv_filters 32 \
     --first_conv_kernel_size 5 \
     --stride 3
+
+# Train with focal loss for better handling of class imbalance
+python -m microwakeword.model_train_eval \
+    --training_config='training_parameters.yaml' \
+    --train 1 \
+    --restore_checkpoint 1 \
+    --test_tflite_streaming_quantized 1 \
+    --use_weights "best_weights" \
+    --use_focal_loss 1 \
+    --focal_alpha 0.25 \
+    --focal_gamma 2.0 \
+    mixednet \
+    --pointwise_filters "64,64,64,64" \
+    --repeat_in_block  "1, 1, 1, 1" \
+    --mixconv_kernel_sizes '[5], [7,11], [9,15], [23]' \
+    --residual_connection "0,0,0,0" \
+    --first_conv_filters 32 \
+    --first_conv_kernel_size 5 \
+    --stride 3
 ```
+
+### Focal Loss Configuration
+
+Binary focal loss can be used as an alternative to standard binary cross entropy to better handle class imbalance in wake word detection:
+
+**When to use focal loss:**
+- When you have significantly more negative samples than positive wake word samples
+- When the model is overfitting to the majority class (too many false negatives)
+- When standard class weighting isn't sufficient to address imbalance
+
+**Configuration options:**
+- `--use_focal_loss 1`: Enable focal loss (default: 0)
+- `--focal_alpha`: Class balancing factor (default: 0.25 for rare positive class)
+- `--focal_gamma`: Focusing parameter (default: 2.0, higher values focus more on hard examples)
+
+**YAML configuration:**
+```yaml
+# In your training_parameters.yaml
+use_focal_loss: 1  # 0=standard BCE, 1=focal loss
+focal_alpha: 0.25  # Class balance factor
+focal_gamma: 2.0   # Focusing parameter
+```
+
+Note: Focal loss works with all model types (MixedNet, Inception, adversarial). For adversarial models, focal loss is only applied to the wake word classification branch, while the TTS classifier maintains standard binary cross entropy.
 
 ### Testing
 ```bash
