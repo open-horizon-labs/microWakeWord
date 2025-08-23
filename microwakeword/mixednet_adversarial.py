@@ -198,6 +198,7 @@ def model(flags, shape, batch_size):
 
         net = tf.keras.layers.Activation("relu")(net)
 
+    features = tf.keras.layers.Flatten()(net)
     # encoder - exactly the same as original MixedNet
     for filters, repeat, ksize, res in zip(
         pointwise_filters,
@@ -226,9 +227,10 @@ def model(flags, shape, batch_size):
                 net = net + residual
 
             net = tf.keras.layers.Activation("relu")(net)
+            features = tf.keras.layers.Concatenate()([features,tf.keras.layers.Flatten()(net)])
 
     # Save features before final pooling for adversarial classifier
-    features = net
+    # features = net
 
     # Continue with wake word classification branch
     if net.shape[1] > 1:
@@ -258,12 +260,12 @@ def model(flags, shape, batch_size):
     adversarial_features = gradient_reversal.GradientReversal(lambda_=flags.adversarial_lambda)(features)
 
     # Global average pooling to aggregate temporal information
-    adversarial_features = tf.keras.layers.GlobalAveragePooling2D()(adversarial_features)
+    # adversarial_features = tf.keras.layers.GlobalAveragePooling2D()(adversarial_features)
 
     # Adversarial classifier
-    for units in adversarial_hidden_units:
-        adversarial_features = tf.keras.layers.Dense(units, activation="relu")(adversarial_features)
-        adversarial_features = tf.keras.layers.Dropout(flags.adversarial_dropout)(adversarial_features)
+    # for units in adversarial_hidden_units:
+    #     adversarial_features = tf.keras.layers.Dense(, activation="relu")(adversarial_features)
+    #     adversarial_features = tf.keras.layers.Dropout(flags.adversarial_dropout)(adversarial_features)
 
     # Binary classification: 0 = real speech, 1 = TTS
     tts_output = tf.keras.layers.Dense(1, activation="sigmoid", name="tts_classifier")(adversarial_features)
