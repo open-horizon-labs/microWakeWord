@@ -20,6 +20,7 @@ import tensorflow as tf
 
 from microwakeword.layers import stream, strided_drop
 
+import numpy as np
 
 def parse(text):
     """Parse model parameters.
@@ -127,16 +128,17 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
         kernel_size,
         use_batch_norm=True,
         activation="relu",
+        reparameterized=False,  # Add as parameter for proper serialization
         **kwargs,
     ):
         super().__init__(**kwargs)
         
         self.branches = branches
-        self.depth_multplier = depth_multiplier
+        self.depth_multiplier = depth_multiplier
         self.kernel_size = kernel_size
         self.use_batch_norm = use_batch_norm
         self.activation = tf.keras.activations.get(activation)
-        self.reparameterized = False
+        self.reparameterized = reparameterized
     
     def build(self, input_shape):
         super().build(input_shape)
@@ -147,6 +149,22 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
         # Input channels
         self.in_channels = input_shape[-1]
         
+        # If already reparameterized, only create the single merged convolution
+        if self.reparameterized:
+            self.reparam_conv = tf.keras.layers.DepthwiseConv2D(
+                kernel_size=(self.kernel_size, 1),
+                strides=1,
+                padding="valid",
+                depth_multiplier=self.depth_multiplier,
+                use_bias=True,
+            )
+            # Initialize empty lists to avoid attribute errors
+            self.conv_branches = []
+            self.bn_branches = []
+            self.conv_1x1 = None
+            self.bn_1x1 = None
+            return
+        
         # Create parallel Conv2D branches for each kernel size
         self.conv_branches = []
         self.bn_branches = []
@@ -156,7 +174,7 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
                 kernel_size=(self.kernel_size, 1),
                 strides=1,
                 padding="valid",
-                depth_multiplier=self.depth_multplier,
+                depth_multiplier=self.depth_multiplier,
                 use_bias=False,
             )
             self.conv_branches.append(conv)
@@ -169,7 +187,7 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
                 kernel_size=(1, 1),
                 strides=1,
                 padding="valid",
-                depth_multiplier=self.depth_multplier,
+                depth_multiplier=self.depth_multiplier,
                 use_bias=False,
             )
         
@@ -177,13 +195,13 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
             self.bn_1x1 = tf.keras.layers.BatchNormalization()
 
         # For re-parameterized mode, create a single convolution
-        # Pre-create it to avoid state issues during re-parameterization
+        # Pre-create it with bias to avoid state issues during re-parameterization
         self.reparam_conv = tf.keras.layers.DepthwiseConv2D(
                 kernel_size=(self.kernel_size, 1),
                 strides=1,
                 padding="valid",
-                depth_multiplier=self.depth_multplier,
-                use_bias=False,
+                depth_multiplier=self.depth_multiplier,
+                use_bias=True,  # Enable bias for reparameterized mode
             )
     
     def call(self, inputs, training=None):
@@ -199,7 +217,7 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
         net = inputs
         
         # If re-parameterized, use single convolution
-        if self.reparameterized and self.reparam_conv is not None:
+        if self.reparameterized:
             x = self.reparam_conv(net)
             if self.activation is not None:
                 x = self.activation(x)
@@ -230,6 +248,116 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
             x = self.activation(x)
 
         return x
+
+    def reparameterize(self):
+        """Merge multiple branches into a single depthwise convolution.
+
+        This should be called after training to convert the multi-branch
+        architecture into a single efficient convolution for inference.
+        """
+
+        if self.reparameterized:
+            return
+
+        # Initialize merged kernel with zeros
+        # For depthwise conv: [kernel_height, kernel_width, in_channels, depth_multiplier]
+        merged_kernel = np.zeros((self.kernel_size, 1, self.in_channels, self.depth_multiplier))
+        
+        # Since depthwise conv doesn't have a bias by default in our branches,
+        # we'll accumulate the bias from batch norm folding
+        # Output channels = in_channels * depth_multiplier
+        output_channels = self.in_channels * self.depth_multiplier
+        merged_bias = np.zeros(output_channels)
+
+        # Merge each convolution branch (all have the same kernel size)
+        for i, conv in enumerate(self.conv_branches):
+            # Get conv weights [kernel_size, 1, in_channels, depth_multiplier]
+            conv_weights = conv.get_weights()[0]
+            
+            # Apply batch norm if present
+            if self.use_batch_norm and i < len(self.bn_branches):
+                bn = self.bn_branches[i]
+                gamma, beta, moving_mean, moving_var = bn.get_weights()
+
+                # Fold BN parameters into convolution
+                # For depthwise conv, BN operates on output_channels = in_channels * depth_multiplier
+                std = np.sqrt(moving_var + bn.epsilon)
+                scale = gamma / std
+                
+                # Reshape scale and bias for proper broadcasting
+                # conv_weights shape: [kernel_size, 1, in_channels, depth_multiplier]
+                # We need to scale each of the output channels independently
+                scale_reshaped = scale.reshape(self.in_channels, self.depth_multiplier)
+                
+                # Scale kernel weights - broadcast across kernel_size dimension
+                for c in range(self.in_channels):
+                    for d in range(self.depth_multiplier):
+                        conv_weights[:, :, c, d] *= scale_reshaped[c, d]
+                    
+                # Add bias contribution
+                merged_bias += beta - moving_mean * scale
+            
+            # Add to merged kernel
+            merged_kernel += conv_weights
+
+        # Merge 1x1 convolution branch
+        conv_1x1_weights = self.conv_1x1.get_weights()[0]  # [1, 1, in_channels, depth_multiplier]
+
+        # Apply batch norm to 1x1 branch if present
+        if self.use_batch_norm:
+            bn = self.bn_1x1
+            gamma, beta, moving_mean, moving_var = bn.get_weights()
+            std = np.sqrt(moving_var + bn.epsilon)
+            scale = gamma / std
+
+            # Scale 1x1 kernel weights
+            scale_reshaped = scale.reshape(self.in_channels, self.depth_multiplier)
+            for c in range(self.in_channels):
+                for d in range(self.depth_multiplier):
+                    conv_1x1_weights[:, :, c, d] *= scale_reshaped[c, d]
+            
+            # Add bias contribution
+            merged_bias += beta - moving_mean * scale
+
+        # Add 1x1 weights to the LAST position of merged kernel
+        # This aligns with how StridedDrop shifts the 1x1 input
+        merged_kernel[self.kernel_size - 1 : self.kernel_size, :, :, :] += conv_1x1_weights
+
+        # Build the reparam_conv layer if not already built
+        if not self.reparam_conv.built:
+            self.reparam_conv.build(self.input_shape_stored)
+        
+        # Set weights with both kernel and bias
+        self.reparam_conv.set_weights([merged_kernel, merged_bias])
+
+        self.reparameterized = True
+
+    def get_weights(self):
+        """Override get_weights to return only reparam_conv weights when reparameterized."""
+        if self.reparameterized:
+            return self.reparam_conv.get_weights()
+        return super().get_weights()
+    
+    def set_weights(self, weights):
+        """Override set_weights to handle reparameterized state."""
+        if self.reparameterized:
+            self.reparam_conv.set_weights(weights)
+        else:
+            super().set_weights(weights)
+    
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "branches": self.branches,
+                "depth_multiplier": self.depth_multiplier,
+                "kernel_size": self.kernel_size,
+                "use_batch_norm": self.use_batch_norm,
+                "activation": tf.keras.activations.serialize(self.activation),
+                "reparameterized": self.reparameterized,
+            }
+        )
+        return config
 
 def model(flags, shape, batch_size):
     """
@@ -319,5 +447,29 @@ def model(flags, shape, batch_size):
     net = tf.keras.layers.Activation("sigmoid")(net)
 
     model = tf.keras.Model(inputs=input_audio, outputs=net)
+
+    return model
+
+def reparameterize_model(model):
+    """Apply re-parameterization to all RepConvBlock layers in the model.
+
+    This should be called after training to convert multi-branch blocks
+    into single efficient convolutions for inference.
+
+    Args:
+        model: Trained Keras model containing RepConvBlock layers
+
+    Returns:
+        Model with re-parameterized blocks
+    """
+
+    for layer in model.layers:
+        if isinstance(layer, TemporalRepConvBlock):
+            layer.reparameterize()
+        # Handle Stream-wrapped layers
+        elif hasattr(layer, "cell") and isinstance(
+            layer.cell, TemporalRepConvBlock
+        ):
+            layer.cell.reparameterize()
 
     return model
