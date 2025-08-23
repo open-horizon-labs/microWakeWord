@@ -98,6 +98,31 @@ def model_parameters(parser_nn):
     )
 
 
+def spectrogram_slices_dropped(flags):
+    """Computes the number of spectrogram slices dropped due to valid padding.
+
+    Args:
+        flags: data/model parameters
+
+    Returns:
+        int: number of spectrogram slices dropped
+    """
+    spectrogram_slices_dropped = 0
+
+    if flags.first_conv_filters > 0:
+        spectrogram_slices_dropped += flags.first_conv_kernel_size - 1
+
+    spectrogram_slices_dropped += 8*flags.stride
+    spectrogram_slices_dropped += 12*flags.stride
+    # for repeat, ksize in zip(
+    #     parse(flags.repeat_in_block),
+    #     parse(flags.mixconv_kernel_sizes),
+    # ):
+    #     spectrogram_slices_dropped += (repeat * (max(ksize) - 1)) * flags.stride
+
+    # spectrogram_slices_dropped *= flags.stride
+    return spectrogram_slices_dropped
+
 def model(flags, shape, batch_size):
     """RepCNN model.
 
@@ -185,6 +210,8 @@ def model(flags, shape, batch_size):
                 net = tf.keras.layers.MaxPooling2D(pool_size=(net.shape[1], 1))(net)
             else:
                 net = tf.keras.layers.AveragePooling2D(pool_size=(net.shape[1], 1))(net)
+        else:
+            net = tf.keras.layers.Flatten()(net)
 
     # Final dense layer for binary classification
     net = tf.keras.layers.Dense(1)(net)
