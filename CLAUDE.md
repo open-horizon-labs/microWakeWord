@@ -123,6 +123,53 @@ focal_gamma: 2.0   # Focusing parameter
 
 Note: Focal loss works with all model types (MixedNet, Inception, adversarial). For adversarial models, focal loss is only applied to the wake word classification branch, while the TTS classifier maintains standard binary cross entropy.
 
+### Hard Negative Mining Configuration
+
+Hard negative mining improves training efficiency by focusing on the most challenging negative samples:
+
+**When to use hard negative mining:**
+- When you have many easy negative samples that dominate training
+- To improve model's ability to distinguish difficult negative cases
+- When training time is limited and you want to focus on informative samples
+- Can be combined with focal loss for even better handling of class imbalance
+
+**How it works:**
+- For each batch, losses are computed for all samples
+- Negative samples are sorted by loss value (highest to lowest)
+- Only the top K hardest negatives are used for backpropagation
+- All positive samples are always used for training
+
+**Configuration options:**
+- `--use_hard_negative_mining 1`: Enable hard negative mining (default: 0)
+- `--hard_negative_k`: Number of hardest negatives to select (default: 50)
+- `--hard_negative_start_step`: Training step to start mining, for warm-up (default: 0)
+
+**Command-line example:**
+```bash
+python -m microwakeword.model_train_eval \
+    --training_config='training_parameters.yaml' \
+    --use_hard_negative_mining 1 \
+    --hard_negative_k 50 \
+    --hard_negative_start_step 1000 \
+    --train 1 \
+    mixednet
+```
+
+**YAML configuration:**
+```yaml
+# In your training_parameters.yaml
+use_hard_negative_mining: 1  # 0=disabled, 1=enabled
+hard_negative_k: 50          # Number of hard negatives per batch
+hard_negative_start_step: 0  # Warm-up period before mining starts
+```
+
+**Monitoring:**
+- TensorBoard tracks mining statistics under `hard_negative_mining/` namespace
+- Logs show selection ratio and sample counts every 100 steps
+- Compatible with all model types (MixedNet, Inception, adversarial, CTC)
+
+Note: Hard negative mining can be combined with focal loss and class weighting. The paper that inspired this feature also suggests training with 3 different random seeds and averaging results for best performance.
+
 ### Testing
 ```bash
 # Run unit tests

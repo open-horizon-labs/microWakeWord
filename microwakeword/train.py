@@ -226,6 +226,19 @@ def train(model, config, data_processor):
     if is_adversarial and 'flags' in config:
         # config['flags'] is a dict, not an object
         adversarial_beta = config['flags'].get('adversarial_beta', 0.5)
+    
+    # Get hard negative mining settings from config (YAML or command-line)
+    use_hard_negative_mining = config.get("use_hard_negative_mining", 0)
+    if use_hard_negative_mining == 0 and 'flags' in config:
+        use_hard_negative_mining = config['flags'].get('use_hard_negative_mining', 0)
+    
+    hard_negative_k = config.get("hard_negative_k", 50)
+    if 'flags' in config and config['flags'].get('hard_negative_k') is not None:
+        hard_negative_k = config['flags'].get('hard_negative_k')
+    
+    hard_negative_start_step = config.get("hard_negative_start_step", 0)
+    if 'flags' in config and config['flags'].get('hard_negative_start_step') is not None:
+        hard_negative_start_step = config['flags'].get('hard_negative_start_step')
 
     # Assign default training settings if not set in the configuration yaml
     if not (training_steps_list := config.get("training_steps")):
@@ -375,6 +388,11 @@ def train(model, config, data_processor):
     accumulated_tts_accuracy = 0.0
     accumulated_tts_loss = 0.0
     accumulated_total_loss = 0.0
+    
+    # Hard negative mining statistics
+    accumulated_num_positives = 0
+    accumulated_num_negatives = 0
+    accumulated_num_selected_negatives = 0
 
     for training_step in range(1, training_steps_max + 1):
         training_steps_sum = 0
@@ -456,9 +474,63 @@ def train(model, config, data_processor):
 
                     wake_losses = wake_loss_fn(train_ground_truth, wake_pred)
                     tts_losses = tts_loss_fn(train_tts_labels, tts_pred)
-
-                    # Apply sample weights to wake word loss
-                    weighted_wake_loss = tf.reduce_mean(wake_losses * wake_word_weights.reshape(-1, 1))
+                    
+                    # Apply hard negative mining if enabled
+                    if use_hard_negative_mining and training_step >= hard_negative_start_step:
+                        # Apply weights and squeeze for processing
+                        weighted_wake_losses = tf.squeeze(wake_losses) * wake_word_weights.flatten()
+                        
+                        # Separate positive and negative indices
+                        positive_mask = tf.cast(train_ground_truth.flatten() == 1, tf.float32)
+                        negative_mask = tf.cast(train_ground_truth.flatten() == 0, tf.float32)
+                        
+                        # Get indices of negatives
+                        negative_indices = tf.where(negative_mask > 0)
+                        negative_loss_values = tf.gather(weighted_wake_losses, negative_indices)
+                        
+                        # Determine how many negatives to keep
+                        num_negatives = tf.shape(negative_indices)[0]
+                        k = tf.minimum(hard_negative_k, num_negatives)
+                        
+                        # Get top K negative indices
+                        if num_negatives > 0:
+                            _, top_k_indices = tf.nn.top_k(negative_loss_values[:, 0], k=k)
+                            selected_negative_indices = tf.gather(negative_indices, top_k_indices)
+                            
+                            # Create selection mask
+                            selection_mask = positive_mask  # Start with all positives
+                            
+                            # Add selected negatives to mask
+                            updates = tf.ones(tf.shape(selected_negative_indices)[0])
+                            selection_mask = tf.tensor_scatter_nd_update(
+                                selection_mask,
+                                selected_negative_indices,
+                                updates
+                            )
+                        else:
+                            # No negatives in batch, use all positives
+                            selection_mask = positive_mask
+                        
+                        # Apply selection mask to wake losses
+                        masked_wake_losses = weighted_wake_losses * selection_mask
+                        num_selected = tf.reduce_sum(selection_mask)
+                        weighted_wake_loss = tf.reduce_sum(masked_wake_losses) / tf.maximum(num_selected, 1.0)
+                        
+                        # Track hard negative mining statistics
+                        num_pos = int(tf.reduce_sum(positive_mask))
+                        num_neg = int(tf.reduce_sum(negative_mask))
+                        num_selected_neg = int(tf.reduce_sum(selection_mask * negative_mask))
+                        
+                        # Log occasionally
+                        if training_step % 100 == 0:
+                            logging.info(
+                                "Hard negative mining (adversarial): %d/%d negatives selected, %d positives (step %d)",
+                                num_selected_neg, num_neg, num_pos, training_step
+                            )
+                    else:
+                        # Standard weighted loss without hard negative mining
+                        weighted_wake_loss = tf.reduce_mean(wake_losses * wake_word_weights.reshape(-1, 1))
+                    
                     tts_loss = tf.reduce_mean(tts_losses)
 
                     # Total loss with adversarial lambda
@@ -518,12 +590,123 @@ def train(model, config, data_processor):
                 train_ground_truth
             )
 
-            result = model.train_on_batch(
-                train_fingerprints,
-                train_ground_truth,
-                sample_weight=combined_weights,
-            )
+            # Check if we should use hard negative mining
+            if use_hard_negative_mining and training_step >= hard_negative_start_step:
+                # Use custom gradient computation for hard negative mining
+                with tf.GradientTape() as tape:
+                    # Forward pass
+                    predictions = model(train_fingerprints, training=True)
+                    
+                    # Calculate unreduced losses
+                    if use_focal_loss:
+                        loss_fn = tf.keras.losses.BinaryFocalCrossentropy(
+                            alpha=focal_alpha,
+                            gamma=focal_gamma,
+                            from_logits=False,
+                            reduction='none'
+                        )
+                    else:
+                        loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=False, reduction='none')
+                    
+                    losses_unreduced = loss_fn(train_ground_truth, predictions)
+                    losses_unreduced = tf.squeeze(losses_unreduced)  # Remove extra dimension
+                    
+                    # Apply sample weights
+                    weighted_losses = losses_unreduced * combined_weights.flatten()
+                    
+                    # Separate positive and negative indices
+                    positive_mask = tf.cast(train_ground_truth.flatten() == 1, tf.float32)
+                    negative_mask = tf.cast(train_ground_truth.flatten() == 0, tf.float32)
+                    
+                    # Get indices of positives and negatives
+                    positive_losses = weighted_losses * positive_mask
+                    negative_losses = weighted_losses * negative_mask
+                    
+                    # Sort negative losses and get top K
+                    negative_indices = tf.where(negative_mask > 0)
+                    negative_loss_values = tf.gather(weighted_losses, negative_indices)
+                    
+                    # Determine how many negatives to keep
+                    num_negatives = tf.shape(negative_indices)[0]
+                    k = tf.minimum(hard_negative_k, num_negatives)
+                    
+                    # Get top K negative indices
+                    if num_negatives > 0:
+                        _, top_k_indices = tf.nn.top_k(negative_loss_values[:, 0], k=k)
+                        selected_negative_indices = tf.gather(negative_indices, top_k_indices)
+                        
+                        # Create selection mask
+                        selection_mask = positive_mask  # Start with all positives
+                        
+                        # Add selected negatives to mask
+                        updates = tf.ones(tf.shape(selected_negative_indices)[0])
+                        selection_mask = tf.tensor_scatter_nd_update(
+                            selection_mask,
+                            selected_negative_indices,
+                            updates
+                        )
+                    else:
+                        # No negatives in batch, use all positives
+                        selection_mask = positive_mask
+                    
+                    # Apply selection mask to losses
+                    masked_losses = weighted_losses * selection_mask
+                    
+                    # Calculate mean loss over selected samples
+                    num_selected = tf.reduce_sum(selection_mask)
+                    total_loss = tf.reduce_sum(masked_losses) / tf.maximum(num_selected, 1.0)
+                
+                # Compute gradients and update
+                gradients = tape.gradient(total_loss, model.trainable_variables)
+                model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+                
+                # Update metrics manually
+                accuracy = tf.reduce_mean(tf.cast(tf.equal(
+                    tf.round(predictions), train_ground_truth), tf.float32))
+                tp = tf.reduce_sum(tf.cast(
+                    tf.logical_and(train_ground_truth == 1, tf.round(predictions) == 1), tf.float32))
+                fp = tf.reduce_sum(tf.cast(
+                    tf.logical_and(train_ground_truth == 0, tf.round(predictions) == 1), tf.float32))
+                fn = tf.reduce_sum(tf.cast(
+                    tf.logical_and(train_ground_truth == 1, tf.round(predictions) == 0), tf.float32))
+                recall = tp / (tp + fn + 1e-7)
+                precision = tp / (tp + fp + 1e-7)
+                
+                # Build result list to match expected format
+                result = [
+                    float(total_loss),  # 0: total loss
+                    float(accuracy),  # 1: accuracy
+                    float(recall),  # 2: recall
+                    float(precision),  # 3: precision
+                    0.0, 0.0, 0.0, 0.0,  # 4-7: placeholders for TP/FP/TN/FN
+                    0.5,  # 8: AUC placeholder
+                    float(total_loss),  # 9: loss
+                ]
+                
+                # Track hard negative mining statistics
+                num_pos = int(tf.reduce_sum(positive_mask))
+                num_neg = int(tf.reduce_sum(negative_mask))
+                num_selected_neg = int(tf.reduce_sum(selection_mask * negative_mask))
+                
+                # Log occasionally
+                if training_step % 100 == 0:
+                    logging.info(
+                        "Hard negative mining: %d/%d negatives selected, %d positives (step %d)",
+                        num_selected_neg, num_neg, num_pos, training_step
+                    )
+            else:
+                # Standard training without hard negative mining
+                result = model.train_on_batch(
+                    train_fingerprints,
+                    train_ground_truth,
+                    sample_weight=combined_weights,
+                )
 
+        # Initialize hard negative mining stats for this batch
+        num_pos = 0
+        num_neg = 0
+        num_selected_neg = 0
+        
         # Extract metrics based on model type
         if is_adversarial:
             # For adversarial models, result is a list with metrics for both outputs
@@ -560,6 +743,9 @@ def train(model, config, data_processor):
             accumulated_tts_accuracy = 0.0
             accumulated_tts_loss = 0.0
             accumulated_total_loss = 0.0
+            accumulated_num_positives = 0
+            accumulated_num_negatives = 0
+            accumulated_num_selected_negatives = 0
 
         # Add current batch metrics to accumulation
         accumulated_wake_accuracy += wake_accuracy
@@ -567,6 +753,11 @@ def train(model, config, data_processor):
         accumulated_wake_precision += wake_precision
         accumulated_wake_loss += wake_loss
         accumulated_total_loss += total_loss
+        
+        # Accumulate hard negative mining statistics
+        accumulated_num_positives += num_pos
+        accumulated_num_negatives += num_neg
+        accumulated_num_selected_negatives += num_selected_neg
 
         if is_adversarial:
             accumulated_tts_accuracy += tts_accuracy
@@ -660,6 +851,19 @@ def train(model, config, data_processor):
                     tf.summary.scalar("recall", avg_wake_recall, step=training_step)
                     tf.summary.scalar("precision", avg_wake_precision, step=training_step)
                     tf.summary.scalar("auc", result[8], step=training_step)
+                
+                # Add hard negative mining summaries if enabled
+                if use_hard_negative_mining and training_step >= hard_negative_start_step:
+                    avg_positives = accumulated_num_positives / mini_batch_num
+                    avg_negatives = accumulated_num_negatives / mini_batch_num
+                    avg_selected_negatives = accumulated_num_selected_negatives / mini_batch_num
+                    selection_ratio = avg_selected_negatives / max(avg_negatives, 1.0)
+                    
+                    tf.summary.scalar("hard_negative_mining/num_positives", avg_positives, step=training_step)
+                    tf.summary.scalar("hard_negative_mining/num_negatives", avg_negatives, step=training_step)
+                    tf.summary.scalar("hard_negative_mining/num_selected_negatives", avg_selected_negatives, step=training_step)
+                    tf.summary.scalar("hard_negative_mining/selection_ratio", selection_ratio, step=training_step)
+                
                 train_writer.flush()
 
             model.save_weights(
