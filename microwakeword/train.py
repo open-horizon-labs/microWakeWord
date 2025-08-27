@@ -109,6 +109,219 @@ def compute_hard_negative_loss_and_gradients(
     return gradients, total_loss, predictions
 
 
+@tf.function(reduce_retracing=True)
+def compute_percentile_hard_negative_loss_and_gradients(
+    model, train_fingerprints, train_ground_truth,
+    lower_percentile, upper_percentile, max_k, loss_fn
+):
+    """Advanced hard negative mining using percentile-based selection.
+    
+    Selects negative samples within a percentile range of loss values,
+    enabling curriculum learning by gradually focusing on harder examples.
+    
+    Args:
+        model: The model to train
+        train_fingerprints: Input features
+        train_ground_truth: Target labels
+        lower_percentile: Lower bound of percentile range (0-100)
+        upper_percentile: Upper bound of percentile range (0-100)
+        max_k: Maximum number of negatives to select (safety limit)
+        loss_fn: Pre-created loss function (BCE or focal loss)
+    
+    Returns:
+        Tuple of (gradients, total_loss, predictions, num_selected_negatives)
+    """
+    with tf.GradientTape() as tape:
+        # Forward pass
+        predictions = model(train_fingerprints, training=True)
+        
+        # Calculate unreduced losses
+        losses_unreduced = loss_fn(train_ground_truth, predictions)
+        losses_unreduced = tf.squeeze(losses_unreduced)
+        
+        # Separate positive and negative indices
+        positive_mask = tf.cast(tf.reshape(train_ground_truth, [-1]) == 1, tf.float32)
+        negative_mask = tf.cast(tf.reshape(train_ground_truth, [-1]) == 0, tf.float32)
+        
+        # Get indices and losses for negatives
+        negative_indices_2d = tf.where(negative_mask > 0)  # Shape: [N, 1]
+        negative_indices = tf.reshape(negative_indices_2d, [-1])  # Flatten to [N]
+        negative_loss_values = tf.gather(losses_unreduced, negative_indices)
+        
+        num_negatives = tf.shape(negative_indices)[0]
+        
+        # Handle case with negatives
+        if num_negatives > 0:
+            # Sort losses to find percentile thresholds
+            sorted_losses = tf.sort(negative_loss_values, direction='DESCENDING')
+            
+            # Calculate percentile indices
+            # Note: lower percentile = harder examples (higher loss)
+            lower_idx = tf.cast(tf.cast(num_negatives, tf.float32) * lower_percentile / 100.0, tf.int32)
+            upper_idx = tf.cast(tf.cast(num_negatives, tf.float32) * upper_percentile / 100.0, tf.int32)
+            
+            # Ensure valid range
+            lower_idx = tf.minimum(lower_idx, num_negatives - 1)
+            upper_idx = tf.minimum(upper_idx, num_negatives - 1)
+            upper_idx = tf.maximum(upper_idx, lower_idx)
+            
+            # Get threshold values
+            if lower_idx < num_negatives and upper_idx < num_negatives:
+                upper_threshold = sorted_losses[lower_idx]  # Higher loss threshold
+                lower_threshold = sorted_losses[upper_idx]   # Lower loss threshold
+                
+                # Select negatives within percentile range
+                in_range = tf.logical_and(
+                    negative_loss_values >= lower_threshold,
+                    negative_loss_values <= upper_threshold
+                )
+                
+                # Get indices of negatives in range
+                in_range_indices = tf.boolean_mask(negative_indices, in_range)
+                num_in_range = tf.shape(in_range_indices)[0]
+                
+                # Apply max_k limit if needed
+                if num_in_range > max_k:
+                    # Sort the in-range losses and take top max_k
+                    in_range_losses = tf.boolean_mask(negative_loss_values, in_range)
+                    _, top_k_in_range = tf.nn.top_k(in_range_losses, k=max_k)
+                    selected_indices = tf.gather(in_range_indices, top_k_in_range)
+                    num_selected_negatives = max_k
+                else:
+                    selected_indices = in_range_indices
+                    num_selected_negatives = num_in_range
+                
+                # Create selection mask
+                selection_mask = positive_mask  # Start with all positives
+                
+                # Add selected negatives to mask
+                updates = tf.ones(tf.shape(selected_indices)[0])
+                # Reshape indices for scatter_nd_update (needs [N, 1] shape)
+                selected_indices_2d = tf.expand_dims(selected_indices, axis=1)
+                selection_mask = tf.tensor_scatter_nd_update(
+                    selection_mask,
+                    selected_indices_2d,
+                    updates
+                )
+            else:
+                # Edge case: use all samples
+                selection_mask = tf.ones_like(losses_unreduced)
+                num_selected_negatives = num_negatives
+        else:
+            # No negatives in batch, use all positives
+            selection_mask = positive_mask
+            num_selected_negatives = 0
+        
+        # Apply selection mask to losses
+        masked_losses = losses_unreduced * selection_mask
+        num_selected = tf.reduce_sum(selection_mask)
+        total_loss = tf.reduce_sum(masked_losses) / tf.maximum(num_selected, 1.0)
+    
+    # Compute gradients
+    gradients = tape.gradient(total_loss, model.trainable_variables)
+    
+    return gradients, total_loss, predictions, num_selected_negatives
+
+
+def precompute_curriculum_percentiles(config, max_steps):
+    """Pre-compute all curriculum percentiles to avoid runtime overhead.
+    
+    Args:
+        config: Training configuration dict
+        max_steps: Maximum number of training steps
+    
+    Returns:
+        Dict mapping step to (lower_percentile, upper_percentile)
+    """
+    curriculum_config = config.get("hard_negative_curriculum", {})
+    
+    # Default curriculum stages if not specified
+    default_stages = [
+        {"step": 0, "lower_pct": 100, "upper_pct": 100},      # No mining initially
+        {"step": 1000, "lower_pct": 30, "upper_pct": 80},      # Moderate difficulty
+        {"step": 5000, "lower_pct": 20, "upper_pct": 60},      # Increase difficulty
+        {"step": 10000, "lower_pct": 10, "upper_pct": 40},     # More difficult
+        {"step": 15000, "lower_pct": 0, "upper_pct": 20},       # Hardest examples
+    ]
+    
+    stages = curriculum_config.get("stages", default_stages)
+    
+    # Pre-compute percentiles for all steps
+    percentiles_by_step = {}
+    
+    for step in range(1, max_steps + 1):
+        lower_pct = 100  # Default: no mining
+        upper_pct = 100
+        
+        for i, stage in enumerate(stages):
+            if step >= stage["step"]:
+                if i < len(stages) - 1:
+                    # Interpolate between this stage and next
+                    next_stage = stages[i + 1]
+                    progress = (step - stage["step"]) / float(next_stage["step"] - stage["step"])
+                    progress = min(1.0, max(0.0, progress))  # Clamp to [0, 1]
+                    
+                    # Linear interpolation
+                    lower_pct = stage["lower_pct"] + progress * (next_stage["lower_pct"] - stage["lower_pct"])
+                    upper_pct = stage["upper_pct"] + progress * (next_stage["upper_pct"] - stage["upper_pct"])
+                else:
+                    # We're at or past the last stage
+                    lower_pct = stage["lower_pct"]
+                    upper_pct = stage["upper_pct"]
+        
+        percentiles_by_step[step] = (lower_pct, upper_pct)
+    
+    return percentiles_by_step
+
+
+def get_curriculum_percentiles(step, config):
+    """Calculate dynamic percentile bounds for curriculum learning.
+    
+    This is a fallback function for when pre-computation isn't used.
+    
+    Args:
+        step: Current training step
+        config: Training configuration dict
+    
+    Returns:
+        Tuple of (lower_percentile, upper_percentile)
+    """
+    curriculum_config = config.get("hard_negative_curriculum", {})
+    
+    # Default curriculum stages if not specified
+    default_stages = [
+        {"step": 0, "lower_pct": 100, "upper_pct": 100},      # No mining initially
+        {"step": 1000, "lower_pct": 30, "upper_pct": 80},      # Moderate difficulty
+        {"step": 5000, "lower_pct": 20, "upper_pct": 60},      # Increase difficulty
+        {"step": 10000, "lower_pct": 10, "upper_pct": 40},     # More difficult
+        {"step": 15000, "lower_pct": 0, "upper_pct": 20},       # Hardest examples
+    ]
+    
+    stages = curriculum_config.get("stages", default_stages)
+    
+    # Find current stage
+    lower_pct = 100  # Default: no mining
+    upper_pct = 100
+    
+    for i, stage in enumerate(stages):
+        if step >= stage["step"]:
+            if i < len(stages) - 1:
+                # Interpolate between this stage and next
+                next_stage = stages[i + 1]
+                progress = (step - stage["step"]) / float(next_stage["step"] - stage["step"])
+                progress = min(1.0, max(0.0, progress))  # Clamp to [0, 1]
+                
+                # Linear interpolation
+                lower_pct = stage["lower_pct"] + progress * (next_stage["lower_pct"] - stage["lower_pct"])
+                upper_pct = stage["upper_pct"] + progress * (next_stage["upper_pct"] - stage["upper_pct"])
+            else:
+                # We're at or past the last stage
+                lower_pct = stage["lower_pct"]
+                upper_pct = stage["upper_pct"]
+    
+    return lower_pct, upper_pct
+
+
 def validate_nonstreaming(config, data_processor, model, test_set):
     # Handle both regular and adversarial data processors
     is_adversarial = hasattr(data_processor, '__class__') and 'Adversarial' in data_processor.__class__.__name__
@@ -302,18 +515,43 @@ def train(model, config, data_processor):
         # config['flags'] is a dict, not an object
         adversarial_beta = config['flags'].get('adversarial_beta', 0.5)
 
-    # Get hard negative mining settings from config (YAML or command-line)
-    use_hard_negative_mining = config.get("use_hard_negative_mining", 0)
+    # Get hard negative mining settings from config (prioritize YAML over command-line)
+    hard_negative_config = config.get("hard_negative_mining", {})
+    
+    # Check for old-style config or command-line flags for backwards compatibility
+    use_hard_negative_mining = hard_negative_config.get("enabled", 
+        config.get("use_hard_negative_mining", 0))
     if use_hard_negative_mining == 0 and 'flags' in config:
         use_hard_negative_mining = config['flags'].get('use_hard_negative_mining', 0)
-
-    hard_negative_k = config.get("hard_negative_k", 50)
+    
+    # Mining strategy: 'fixed_k' (original), 'percentile', or 'curriculum'
+    mining_strategy = hard_negative_config.get("strategy", "fixed_k")
+    
+    # Fixed-K strategy parameters
+    hard_negative_k = hard_negative_config.get("k", 
+        config.get("hard_negative_k", 50))
     if 'flags' in config and config['flags'].get('hard_negative_k') is not None:
         hard_negative_k = config['flags'].get('hard_negative_k')
-
-    hard_negative_start_step = config.get("hard_negative_start_step", 0)
+    
+    # Maximum K for percentile strategy (safety limit)
+    max_k = hard_negative_config.get("max_k", 100)
+    
+    # Warm-up period before starting hard negative mining
+    hard_negative_start_step = hard_negative_config.get("start_step",
+        config.get("hard_negative_start_step", 0))
     if 'flags' in config and config['flags'].get('hard_negative_start_step') is not None:
         hard_negative_start_step = config['flags'].get('hard_negative_start_step')
+    
+    # Percentile strategy parameters
+    percentile_lower = hard_negative_config.get("percentile_lower", 0)
+    percentile_upper = hard_negative_config.get("percentile_upper", 20)
+    
+    logging.info(
+        "Hard negative mining: enabled=%s, strategy=%s, k=%d, max_k=%d, start_step=%d",
+        use_hard_negative_mining, mining_strategy, hard_negative_k, max_k, hard_negative_start_step
+    )
+    if mining_strategy == "curriculum":
+        logging.info("Using curriculum learning for hard negative mining")
 
     # Assign default training settings if not set in the configuration yaml
     if not (training_steps_list := config.get("training_steps")):
@@ -463,6 +701,12 @@ def train(model, config, data_processor):
 
     training_steps_max = np.sum(training_steps_list)
 
+    # Pre-compute curriculum percentiles if using curriculum strategy
+    curriculum_percentiles = None
+    if mining_strategy == "curriculum":
+        logging.info("Pre-computing curriculum percentiles for %d steps", training_steps_max)
+        curriculum_percentiles = precompute_curriculum_percentiles(config, training_steps_max)
+
     best_minimization_quantity = 10000
     best_maximization_quantity = 0.0
     best_no_faph_cutoff = 1.0
@@ -572,31 +816,112 @@ def train(model, config, data_processor):
                         negative_mask = tf.cast(train_ground_truth.flatten() == 0, tf.float32)
 
                         # Get indices of negatives
-                        negative_indices = tf.where(negative_mask > 0)
+                        negative_indices_2d = tf.where(negative_mask > 0)  # Shape: [N, 1]
+                        negative_indices = tf.reshape(negative_indices_2d, [-1])  # Flatten to [N]
                         negative_loss_values = tf.gather(weighted_wake_losses, negative_indices)
-
-                        # Determine how many negatives to keep
+                        
                         num_negatives = tf.shape(negative_indices)[0]
-                        k = tf.minimum(hard_negative_k, num_negatives)
 
-                        # Get top K negative indices
-                        if num_negatives > 0:
-                            _, top_k_indices = tf.nn.top_k(negative_loss_values[:, 0], k=k)
-                            selected_negative_indices = tf.gather(negative_indices, top_k_indices)
-
-                            # Create selection mask
-                            selection_mask = positive_mask  # Start with all positives
-
+                        if mining_strategy == "curriculum":
+                            # Get pre-computed percentile bounds (much faster)
+                            if curriculum_percentiles:
+                                lower_pct, upper_pct = curriculum_percentiles[training_step]
+                            else:
+                                lower_pct, upper_pct = get_curriculum_percentiles(training_step, config)
+                            
+                            # Apply percentile-based selection
+                            if num_negatives > 0:
+                                sorted_losses = tf.sort(negative_loss_values, direction='DESCENDING')
+                                lower_idx = tf.cast(tf.cast(num_negatives, tf.float32) * lower_pct / 100.0, tf.int32)
+                                upper_idx = tf.cast(tf.cast(num_negatives, tf.float32) * upper_pct / 100.0, tf.int32)
+                                lower_idx = tf.minimum(lower_idx, num_negatives - 1)
+                                upper_idx = tf.minimum(upper_idx, num_negatives - 1)
+                                upper_idx = tf.maximum(upper_idx, lower_idx)
+                                
+                                if lower_idx < num_negatives and upper_idx < num_negatives:
+                                    upper_threshold = sorted_losses[lower_idx]
+                                    lower_threshold = sorted_losses[upper_idx]
+                                    in_range = tf.logical_and(
+                                        negative_loss_values >= lower_threshold,
+                                        negative_loss_values <= upper_threshold
+                                    )
+                                    in_range_indices = tf.boolean_mask(negative_indices, in_range)
+                                    num_in_range = tf.shape(in_range_indices)[0]
+                                    
+                                    if num_in_range > max_k:
+                                        in_range_losses = tf.boolean_mask(negative_loss_values, in_range)
+                                        _, top_k_in_range = tf.nn.top_k(in_range_losses, k=max_k)
+                                        selected_indices = tf.gather(in_range_indices, top_k_in_range)
+                                        num_selected_neg = max_k
+                                    else:
+                                        selected_indices = in_range_indices
+                                        num_selected_neg = num_in_range
+                                else:
+                                    selected_indices = negative_indices
+                                    num_selected_neg = num_negatives
+                            else:
+                                selected_indices = tf.constant([], dtype=tf.int64)
+                                num_selected_neg = 0
+                                
+                        elif mining_strategy == "percentile":
+                            # Use fixed percentile range
+                            if num_negatives > 0:
+                                sorted_losses = tf.sort(negative_loss_values, direction='DESCENDING')
+                                lower_idx = tf.cast(tf.cast(num_negatives, tf.float32) * percentile_lower / 100.0, tf.int32)
+                                upper_idx = tf.cast(tf.cast(num_negatives, tf.float32) * percentile_upper / 100.0, tf.int32)
+                                lower_idx = tf.minimum(lower_idx, num_negatives - 1)
+                                upper_idx = tf.minimum(upper_idx, num_negatives - 1)
+                                upper_idx = tf.maximum(upper_idx, lower_idx)
+                                
+                                if lower_idx < num_negatives and upper_idx < num_negatives:
+                                    upper_threshold = sorted_losses[lower_idx]
+                                    lower_threshold = sorted_losses[upper_idx]
+                                    in_range = tf.logical_and(
+                                        negative_loss_values >= lower_threshold,
+                                        negative_loss_values <= upper_threshold
+                                    )
+                                    in_range_indices = tf.boolean_mask(negative_indices, in_range)
+                                    num_in_range = tf.shape(in_range_indices)[0]
+                                    
+                                    if num_in_range > max_k:
+                                        in_range_losses = tf.boolean_mask(negative_loss_values, in_range)
+                                        _, top_k_in_range = tf.nn.top_k(in_range_losses, k=max_k)
+                                        selected_indices = tf.gather(in_range_indices, top_k_in_range)
+                                        num_selected_neg = max_k
+                                    else:
+                                        selected_indices = in_range_indices
+                                        num_selected_neg = num_in_range
+                                else:
+                                    selected_indices = negative_indices
+                                    num_selected_neg = num_negatives
+                            else:
+                                selected_indices = tf.constant([], dtype=tf.int64)
+                                num_selected_neg = 0
+                        else:
+                            # Original fixed-K strategy
+                            k = tf.minimum(hard_negative_k, num_negatives)
+                            if num_negatives > 0:
+                                negative_loss_flat = tf.reshape(negative_loss_values, [-1])
+                                _, top_k_indices = tf.nn.top_k(negative_loss_flat, k=k)
+                                selected_indices = tf.gather(negative_indices, top_k_indices)
+                                num_selected_neg = k
+                            else:
+                                selected_indices = tf.constant([], dtype=tf.int64)
+                                num_selected_neg = 0
+                        
+                        # Create selection mask
+                        selection_mask = positive_mask  # Start with all positives
+                        
+                        if tf.shape(selected_indices)[0] > 0:
                             # Add selected negatives to mask
-                            updates = tf.ones(tf.shape(selected_negative_indices)[0])
+                            updates = tf.ones(tf.shape(selected_indices)[0])
+                            # Reshape indices for scatter_nd_update (needs [N, 1] shape)
+                            selected_indices_2d = tf.expand_dims(selected_indices, axis=1)
                             selection_mask = tf.tensor_scatter_nd_update(
                                 selection_mask,
-                                selected_negative_indices,
+                                selected_indices_2d,
                                 updates
                             )
-                        else:
-                            # No negatives in batch, use all positives
-                            selection_mask = positive_mask
 
                         # Apply selection mask to wake losses
                         masked_wake_losses = weighted_wake_losses * selection_mask
@@ -606,7 +931,6 @@ def train(model, config, data_processor):
                         # Track hard negative mining statistics
                         num_pos = int(tf.reduce_sum(positive_mask))
                         num_neg = int(tf.reduce_sum(negative_mask))
-                        num_selected_neg = int(tf.reduce_sum(selection_mask * negative_mask))
 
                         # # Log occasionally
                         # if training_step % 100 == 0:
@@ -679,15 +1003,55 @@ def train(model, config, data_processor):
 
             # Check if we should use hard negative mining
             if use_hard_negative_mining and training_step >= hard_negative_start_step:
-                # Use compiled TensorFlow function for hard negative mining
-                # This significantly reduces Python overhead by running in graph mode
-                gradients, total_loss, predictions = compute_hard_negative_loss_and_gradients(
-                    model, 
-                    train_fingerprints, 
-                    train_ground_truth,
-                    hard_negative_k,
-                    hard_negative_loss_fn  # Use pre-created loss function
-                )
+                if mining_strategy == "curriculum":
+                    # Get pre-computed percentile bounds (much faster)
+                    if curriculum_percentiles:
+                        lower_pct, upper_pct = curriculum_percentiles[training_step]
+                    else:
+                        lower_pct, upper_pct = get_curriculum_percentiles(training_step, config)
+                    
+                    # Convert to TensorFlow constants to avoid retracing
+                    lower_pct_tf = tf.constant(lower_pct, dtype=tf.float32)
+                    upper_pct_tf = tf.constant(upper_pct, dtype=tf.float32)
+                    max_k_tf = tf.constant(max_k, dtype=tf.int32)
+                    
+                    # Use percentile-based mining with curriculum
+                    gradients, total_loss, predictions, num_selected_neg = compute_percentile_hard_negative_loss_and_gradients(
+                        model,
+                        train_fingerprints,
+                        train_ground_truth,
+                        lower_pct_tf,
+                        upper_pct_tf,
+                        max_k_tf,
+                        hard_negative_loss_fn
+                    )
+                elif mining_strategy == "percentile":
+                    # Use fixed percentile range
+                    # Convert to TensorFlow constants to avoid retracing
+                    lower_pct_tf = tf.constant(percentile_lower, dtype=tf.float32)
+                    upper_pct_tf = tf.constant(percentile_upper, dtype=tf.float32)
+                    max_k_tf = tf.constant(max_k, dtype=tf.int32)
+                    
+                    gradients, total_loss, predictions, num_selected_neg = compute_percentile_hard_negative_loss_and_gradients(
+                        model,
+                        train_fingerprints,
+                        train_ground_truth,
+                        lower_pct_tf,
+                        upper_pct_tf,
+                        max_k_tf,
+                        hard_negative_loss_fn
+                    )
+                else:
+                    # Use original fixed-K strategy
+                    gradients, total_loss, predictions = compute_hard_negative_loss_and_gradients(
+                        model, 
+                        train_fingerprints, 
+                        train_ground_truth,
+                        hard_negative_k,
+                        hard_negative_loss_fn
+                    )
+                    # For consistency with percentile strategy
+                    num_selected_neg = min(hard_negative_k, int(tf.reduce_sum(tf.cast(train_ground_truth.flatten() == 0, tf.float32))))
                 
                 # Apply gradients
                 model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
@@ -721,8 +1085,7 @@ def train(model, config, data_processor):
                 negative_mask = tf.cast(tf.reshape(train_ground_truth, [-1]) == 0, tf.float32)
                 num_pos = int(tf.reduce_sum(positive_mask))
                 num_neg = int(tf.reduce_sum(negative_mask))
-                # For statistics, assume we selected min(k, num_neg) negatives
-                num_selected_neg = min(hard_negative_k, num_neg)
+                # num_selected_neg is already set based on strategy
 
                 # # Log occasionally
                 # if training_step % 100 == 0:
@@ -899,6 +1262,15 @@ def train(model, config, data_processor):
                     tf.summary.scalar("hard_negative_mining/num_negatives", avg_negatives, step=training_step)
                     tf.summary.scalar("hard_negative_mining/num_selected_negatives", avg_selected_negatives, step=training_step)
                     tf.summary.scalar("hard_negative_mining/selection_ratio", selection_ratio, step=training_step)
+                    
+                    # Add curriculum-specific summaries
+                    if mining_strategy == "curriculum":
+                        if curriculum_percentiles:
+                            lower_pct, upper_pct = curriculum_percentiles[training_step]
+                        else:
+                            lower_pct, upper_pct = get_curriculum_percentiles(training_step, config)
+                        tf.summary.scalar("hard_negative_mining/percentile_lower", lower_pct, step=training_step)
+                        tf.summary.scalar("hard_negative_mining/percentile_upper", upper_pct, step=training_step)
 
                 train_writer.flush()
 

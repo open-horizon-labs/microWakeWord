@@ -1,0 +1,157 @@
+# Example training configuration with enhanced hard negative mining
+# This demonstrates all three strategies: fixed_k, percentile, and curriculum
+
+batch_size: 200
+clip_duration_ms: 1490
+eval_step_interval: 500
+train_dir: trained_models/hnm_example
+
+# Feature directories
+features:
+- features_dir: /path/to/positive_samples
+  penalty_weight: 1
+  sampling_weight: 0.25
+  truncation_strategy: truncate_start
+  truth: true
+
+- features_dir: /path/to/negative_samples
+  penalty_weight: 0.5
+  sampling_weight: 0.25
+  truncation_strategy: truncate_start
+  truth: false
+
+- features_dir: /path/to/background_samples
+  penalty_weight: 2
+  sampling_weight: 0.5
+  truncation_strategy: random
+  truth: false
+
+# ============================================
+# Hard Negative Mining Configuration
+# ============================================
+
+# Option 1: Original fixed-K strategy (RepCNN paper approach)
+# hard_negative_mining:
+#   enabled: 1
+#   strategy: fixed_k
+#   k: 50  # Number of hardest negatives to select
+#   start_step: 1000  # Warm-up period before starting
+
+# Option 2: Percentile-based selection (fixed range)
+# hard_negative_mining:
+#   enabled: 1
+#   strategy: percentile
+#   percentile_lower: 0    # Select hardest 20% of negatives
+#   percentile_upper: 20   # (0 = hardest, 100 = easiest)
+#   max_k: 100            # Safety limit on number selected
+#   start_step: 1000
+
+# Option 3: Curriculum learning (recommended)
+hard_negative_mining:
+  enabled: 1
+  strategy: curriculum
+  max_k: 100  # Safety limit on number of negatives
+  start_step: 0  # Can start immediately with curriculum
+  
+  # Curriculum stages define how percentile bounds change over time
+  # Lower percentile = harder examples (higher loss)
+  # The model gradually focuses on harder examples
+  hard_negative_curriculum:
+    stages:
+      # Stage 1: No mining initially (warm-up)
+      - step: 0
+        lower_pct: 100  # No selection
+        upper_pct: 100
+      
+      # Stage 2: Start with moderately hard examples
+      - step: 1000
+        lower_pct: 30   # Top 30-80% hardest
+        upper_pct: 80   # Avoids noise/outliers
+      
+      # Stage 3: Include harder examples
+      - step: 5000
+        lower_pct: 20   # Top 20-60% hardest
+        upper_pct: 60
+      
+      # Stage 4: Focus more on hard examples
+      - step: 10000
+        lower_pct: 10   # Top 10-40% hardest
+        upper_pct: 40
+      
+      # Stage 5: Focus on hardest examples
+      - step: 15000
+        lower_pct: 0    # Top 0-20% hardest
+        upper_pct: 20   # Only the most challenging
+      
+      # Optional: Stage 6: Ultra-hard examples only (late refinement)
+      # - step: 25000
+      #   lower_pct: 0
+      #   upper_pct: 10
+
+# ============================================
+# Focal Loss Configuration (complementary to HNM)
+# ============================================
+use_focal_loss: 1
+focal_alpha: 0.25  # Weight for rare positive class
+focal_gamma: 2.0   # Focus on hard examples
+
+# ============================================
+# Training Parameters
+# ============================================
+
+# Multi-stage training with different learning rates
+training_steps:
+- 5000   # Initial learning
+- 10000  # Main training
+- 5000   # Fine-tuning
+
+learning_rates:
+- 0.001  # Higher initial rate
+- 0.0005 # Reduced for main training
+- 0.0001 # Low rate for fine-tuning
+
+# SpecAugment parameters (can vary per stage)
+freq_mask_count:
+- 2
+- 2
+- 1  # Less augmentation during fine-tuning
+
+freq_mask_max_size:
+- 5
+- 5
+- 3
+
+time_mask_count:
+- 2
+- 2
+- 1
+
+time_mask_max_size:
+- 25
+- 25
+- 15
+
+# Mix-up augmentation (per stage)
+mix_up_augmentation_prob:
+- 0.0
+- 0.2  # Enable during main training
+- 0.0  # Disable for fine-tuning
+
+freq_mix_augmentation_prob:
+- 0
+
+# Class weights (per stage) - adjust based on your data imbalance
+positive_class_weight:
+- 1
+- 1
+- 1
+
+negative_class_weight:
+- 40  # High weight to handle imbalance
+- 40
+- 20  # Reduce during fine-tuning
+
+# Optimization metrics
+maximization_metric: recall
+minimization_metric: ambient_false_positives_per_hour
+target_minimization: 2  # Target max 2 false positives per hour

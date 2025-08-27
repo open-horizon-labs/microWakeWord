@@ -125,7 +125,7 @@ Note: Focal loss works with all model types (MixedNet, Inception, adversarial). 
 
 ### Hard Negative Mining Configuration
 
-Hard negative mining improves training efficiency by focusing on the most challenging negative samples:
+Hard negative mining improves training efficiency by focusing on the most challenging negative samples. We support three strategies: fixed-K (from RepCNN paper), percentile-based selection, and curriculum learning.
 
 **When to use hard negative mining:**
 - When you have many easy negative samples that dominate training
@@ -133,42 +133,80 @@ Hard negative mining improves training efficiency by focusing on the most challe
 - When training time is limited and you want to focus on informative samples
 - Can be combined with focal loss for even better handling of class imbalance
 
-**How it works:**
-- For each batch, losses are computed for all samples
-- Negative samples are sorted by loss value (highest to lowest)
-- Only the top K hardest negatives are used for backpropagation
-- All positive samples are always used for training
+**Strategy 1: Fixed-K (Original RepCNN approach)**
+Selects the top K hardest negative samples per batch:
+```yaml
+hard_negative_mining:
+  enabled: 1
+  strategy: fixed_k
+  k: 50              # Number of hardest negatives to select
+  start_step: 1000   # Warm-up period before starting
+```
 
-**Configuration options:**
-- `--use_hard_negative_mining 1`: Enable hard negative mining (default: 0)
-- `--hard_negative_k`: Number of hardest negatives to select (default: 50)
-- `--hard_negative_start_step`: Training step to start mining, for warm-up (default: 0)
+**Strategy 2: Percentile-based selection**
+Selects negatives within a percentile range of loss values:
+```yaml
+hard_negative_mining:
+  enabled: 1
+  strategy: percentile
+  percentile_lower: 0    # Select hardest 20% of negatives
+  percentile_upper: 20   # (0 = hardest, 100 = easiest)
+  max_k: 100            # Safety limit on number selected
+  start_step: 1000      # Warm-up period
+```
 
-**Command-line example:**
+**Strategy 3: Curriculum learning (Recommended)**
+Gradually focuses on harder examples during training:
+```yaml
+hard_negative_mining:
+  enabled: 1
+  strategy: curriculum
+  max_k: 100        # Safety limit
+  start_step: 0     # Can start immediately
+  
+hard_negative_curriculum:
+  stages:
+    # No mining initially (warm-up)
+    - step: 0
+      lower_pct: 100
+      upper_pct: 100
+    
+    # Start with moderately hard examples
+    - step: 1000
+      lower_pct: 30   # Avoid outliers/noise
+      upper_pct: 80
+    
+    # Gradually focus on harder examples
+    - step: 5000
+      lower_pct: 20
+      upper_pct: 60
+    
+    # Focus on hardest examples
+    - step: 15000
+      lower_pct: 0
+      upper_pct: 20
+```
+
+**How curriculum learning improves training:**
+- **Early training (30-80th percentile)**: Learns core patterns without overfitting to noise
+- **Mid training (20-60th percentile)**: Refines decision boundaries
+- **Late training (0-20th percentile)**: Polishes performance on edge cases
+
+**Command-line example (backwards compatibility):**
 ```bash
 python -m microwakeword.model_train_eval \
-    --training_config='training_parameters.yaml' \
-    --use_hard_negative_mining 1 \
-    --hard_negative_k 50 \
-    --hard_negative_start_step 1000 \
+    --training_config='training_parameters_hnm_example.yaml' \
     --train 1 \
     mixednet
 ```
 
-**YAML configuration:**
-```yaml
-# In your training_parameters.yaml
-use_hard_negative_mining: 1  # 0=disabled, 1=enabled
-hard_negative_k: 50          # Number of hard negatives per batch
-hard_negative_start_step: 0  # Warm-up period before mining starts
-```
-
 **Monitoring:**
 - TensorBoard tracks mining statistics under `hard_negative_mining/` namespace
-- Logs show selection ratio and sample counts every 100 steps
+- Curriculum stages show `percentile_lower` and `percentile_upper` over time
+- Logs show selection ratio and sample counts
 - Compatible with all model types (MixedNet, Inception, adversarial, CTC)
 
-Note: Hard negative mining can be combined with focal loss and class weighting. The paper that inspired this feature also suggests training with 3 different random seeds and averaging results for best performance.
+Note: See `training_parameters_hnm_example.yaml` for a complete configuration example. Hard negative mining can be combined with focal loss and class weighting for optimal performance.
 
 ### Testing
 ```bash
