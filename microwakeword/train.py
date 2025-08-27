@@ -34,6 +34,93 @@ def swap_attribute(obj, attr, temp_value):
         setattr(obj, attr, original_value)
 
 
+@tf.function
+def compute_hard_negative_loss_and_gradients(
+    model, train_fingerprints, train_ground_truth, 
+    hard_negative_k, use_focal_loss, focal_alpha, focal_gamma
+):
+    """Compiled TensorFlow function for hard negative mining loss computation.
+    
+    This function is decorated with @tf.function to compile it into a TensorFlow graph,
+    significantly reducing Python overhead during training.
+    
+    Args:
+        model: The model to train
+        train_fingerprints: Input features
+        train_ground_truth: Target labels
+        hard_negative_k: Number of hard negatives to select
+        use_focal_loss: Whether to use focal loss
+        focal_alpha: Focal loss alpha parameter
+        focal_gamma: Focal loss gamma parameter
+    
+    Returns:
+        Tuple of (gradients, total_loss, predictions)
+    """
+    with tf.GradientTape() as tape:
+        # Forward pass
+        predictions = model(train_fingerprints, training=True)
+        
+        # Calculate unreduced losses
+        if use_focal_loss:
+            loss_fn = tf.keras.losses.BinaryFocalCrossentropy(
+                alpha=focal_alpha,
+                gamma=focal_gamma,
+                from_logits=False,
+                reduction='none'
+            )
+        else:
+            loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=False, reduction='none')
+        
+        losses_unreduced = loss_fn(train_ground_truth, predictions)
+        losses_unreduced = tf.squeeze(losses_unreduced)  # Remove extra dimension
+        
+        # Apply sample weights (commented out as in original)
+        weighted_losses = losses_unreduced
+        
+        # Separate positive and negative indices
+        positive_mask = tf.cast(tf.reshape(train_ground_truth, [-1]) == 1, tf.float32)
+        negative_mask = tf.cast(tf.reshape(train_ground_truth, [-1]) == 0, tf.float32)
+        
+        # Get indices of positives and negatives
+        negative_indices = tf.where(negative_mask > 0)
+        negative_loss_values = tf.gather(weighted_losses, negative_indices)
+        
+        # Determine how many negatives to keep
+        num_negatives = tf.shape(negative_indices)[0]
+        k = tf.minimum(hard_negative_k, num_negatives)
+        
+        # Get top K negative indices
+        if num_negatives > 0:
+            _, top_k_indices = tf.nn.top_k(negative_loss_values[:, 0], k=k)
+            selected_negative_indices = tf.gather(negative_indices, top_k_indices)
+            
+            # Create selection mask
+            selection_mask = positive_mask  # Start with all positives
+            
+            # Add selected negatives to mask
+            updates = tf.ones(tf.shape(selected_negative_indices)[0])
+            selection_mask = tf.tensor_scatter_nd_update(
+                selection_mask,
+                selected_negative_indices,
+                updates
+            )
+        else:
+            # No negatives in batch, use all positives
+            selection_mask = positive_mask
+        
+        # Apply selection mask to losses
+        masked_losses = weighted_losses * selection_mask
+        
+        # Calculate mean loss over selected samples
+        num_selected = tf.reduce_sum(selection_mask)
+        total_loss = tf.reduce_sum(masked_losses) / tf.maximum(num_selected, 1.0)
+    
+    # Compute gradients
+    gradients = tape.gradient(total_loss, model.trainable_variables)
+    
+    return gradients, total_loss, predictions
+
+
 def validate_nonstreaming(config, data_processor, model, test_set):
     # Handle both regular and adversarial data processors
     is_adversarial = hasattr(data_processor, '__class__') and 'Adversarial' in data_processor.__class__.__name__
@@ -592,72 +679,19 @@ def train(model, config, data_processor):
 
             # Check if we should use hard negative mining
             if use_hard_negative_mining and training_step >= hard_negative_start_step:
-                # Use custom gradient computation for hard negative mining
-                with tf.GradientTape() as tape:
-                    # Forward pass
-                    predictions = model(train_fingerprints, training=True)
-
-                    # Calculate unreduced losses
-                    if use_focal_loss:
-                        loss_fn = tf.keras.losses.BinaryFocalCrossentropy(
-                            alpha=focal_alpha,
-                            gamma=focal_gamma,
-                            from_logits=False,
-                            reduction='none'
-                        )
-                    else:
-                        loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=False, reduction='none')
-
-                    losses_unreduced = loss_fn(train_ground_truth, predictions)
-                    losses_unreduced = tf.squeeze(losses_unreduced)  # Remove extra dimension
-
-                    # Apply sample weights
-                    weighted_losses = losses_unreduced #* combined_weights.flatten()
-
-                    # Separate positive and negative indices
-                    positive_mask = tf.cast(train_ground_truth.flatten() == 1, tf.float32)
-                    negative_mask = tf.cast(train_ground_truth.flatten() == 0, tf.float32)
-
-                    # Get indices of positives and negatives
-                    positive_losses = weighted_losses * positive_mask
-                    negative_losses = weighted_losses * negative_mask
-
-                    # Sort negative losses and get top K
-                    negative_indices = tf.where(negative_mask > 0)
-                    negative_loss_values = tf.gather(weighted_losses, negative_indices)
-
-                    # Determine how many negatives to keep
-                    num_negatives = tf.shape(negative_indices)[0]
-                    k = tf.minimum(hard_negative_k, num_negatives)
-
-                    # Get top K negative indices
-                    if num_negatives > 0:
-                        _, top_k_indices = tf.nn.top_k(negative_loss_values[:, 0], k=k)
-                        selected_negative_indices = tf.gather(negative_indices, top_k_indices)
-
-                        # Create selection mask
-                        selection_mask = positive_mask  # Start with all positives
-
-                        # Add selected negatives to mask
-                        updates = tf.ones(tf.shape(selected_negative_indices)[0])
-                        selection_mask = tf.tensor_scatter_nd_update(
-                            selection_mask,
-                            selected_negative_indices,
-                            updates
-                        )
-                    else:
-                        # No negatives in batch, use all positives
-                        selection_mask = positive_mask
-
-                    # Apply selection mask to losses
-                    masked_losses = weighted_losses * selection_mask
-
-                    # Calculate mean loss over selected samples
-                    num_selected = tf.reduce_sum(selection_mask)
-                    total_loss = tf.reduce_sum(masked_losses) / tf.maximum(num_selected, 1.0)
-
-                # Compute gradients and update
-                gradients = tape.gradient(total_loss, model.trainable_variables)
+                # Use compiled TensorFlow function for hard negative mining
+                # This significantly reduces Python overhead by running in graph mode
+                gradients, total_loss, predictions = compute_hard_negative_loss_and_gradients(
+                    model, 
+                    train_fingerprints, 
+                    train_ground_truth,
+                    hard_negative_k,
+                    use_focal_loss,
+                    focal_alpha,
+                    focal_gamma
+                )
+                
+                # Apply gradients
                 model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
 
                 # Update metrics manually
@@ -684,9 +718,13 @@ def train(model, config, data_processor):
                 ]
 
                 # Track hard negative mining statistics
+                # Calculate masks for statistics
+                positive_mask = tf.cast(tf.reshape(train_ground_truth, [-1]) == 1, tf.float32)
+                negative_mask = tf.cast(tf.reshape(train_ground_truth, [-1]) == 0, tf.float32)
                 num_pos = int(tf.reduce_sum(positive_mask))
                 num_neg = int(tf.reduce_sum(negative_mask))
-                num_selected_neg = int(tf.reduce_sum(selection_mask * negative_mask))
+                # For statistics, assume we selected min(k, num_neg) negatives
+                num_selected_neg = min(hard_negative_k, num_neg)
 
                 # # Log occasionally
                 # if training_step % 100 == 0:
