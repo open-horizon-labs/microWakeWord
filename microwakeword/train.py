@@ -689,7 +689,17 @@ def train(model, config, data_processor):
     checkpoint_directory = os.path.join(config["train_dir"], "restore/")
     checkpoint_prefix = os.path.join(checkpoint_directory, "ckpt")
     checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=model)
-    checkpoint.restore(tf.train.latest_checkpoint(checkpoint_directory))
+    latest_checkpoint = tf.train.latest_checkpoint(checkpoint_directory)
+    
+    if latest_checkpoint:
+        status = checkpoint.restore(latest_checkpoint)
+        # For temporal_repcnn models, expect partial restoration 
+        # due to potential structure changes between saves
+        if config.get("flags", {}).get("model_name") == "temporal_repcnn":
+            status.expect_partial()
+            logging.info("Restored temporal_repcnn checkpoint (partial restoration expected)")
+        else:
+            logging.info("Restored checkpoint from %s", latest_checkpoint)
 
     # Configure TensorBoard summaries
     train_writer = tf.summary.create_file_writer(
@@ -767,11 +777,14 @@ def train(model, config, data_processor):
             train_ground_truth = train_ground_truth.reshape(-1, 1)
             train_tts_labels = train_tts_labels.reshape(-1, 1)
 
-            # # Apply class weights to wake word samples only
+            # Apply class weights to wake word samples only (commented out for now)
             # class_weights = {0: negative_class_weight, 1: positive_class_weight}
             # wake_word_weights = train_sample_weights * np.vectorize(class_weights.get)(
             #     train_ground_truth
             # )
+            
+            # For now, use equal weights
+            wake_word_weights = train_sample_weights
 
             # Format outputs as dict for multi-output model
             y_train = {
