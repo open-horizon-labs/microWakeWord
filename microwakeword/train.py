@@ -37,7 +37,7 @@ def swap_attribute(obj, attr, temp_value):
 @tf.function
 def compute_hard_negative_loss_and_gradients(
     model, train_fingerprints, train_ground_truth, 
-    hard_negative_k, use_focal_loss, focal_alpha, focal_gamma
+    hard_negative_k, loss_fn
 ):
     """Compiled TensorFlow function for hard negative mining loss computation.
     
@@ -49,9 +49,7 @@ def compute_hard_negative_loss_and_gradients(
         train_fingerprints: Input features
         train_ground_truth: Target labels
         hard_negative_k: Number of hard negatives to select
-        use_focal_loss: Whether to use focal loss
-        focal_alpha: Focal loss alpha parameter
-        focal_gamma: Focal loss gamma parameter
+        loss_fn: Pre-created loss function (BCE or focal loss)
     
     Returns:
         Tuple of (gradients, total_loss, predictions)
@@ -61,16 +59,6 @@ def compute_hard_negative_loss_and_gradients(
         predictions = model(train_fingerprints, training=True)
         
         # Calculate unreduced losses
-        if use_focal_loss:
-            loss_fn = tf.keras.losses.BinaryFocalCrossentropy(
-                alpha=focal_alpha,
-                gamma=focal_gamma,
-                from_logits=False,
-                reduction='none'
-            )
-        else:
-            loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=False, reduction='none')
-        
         losses_unreduced = loss_fn(train_ground_truth, predictions)
         losses_unreduced = tf.squeeze(losses_unreduced)  # Remove extra dimension
         
@@ -390,8 +378,20 @@ def train(model, config, data_processor):
             gamma=focal_gamma,
             from_logits=False
         )
+        # Create unreduced version for hard negative mining
+        hard_negative_loss_fn = tf.keras.losses.BinaryFocalCrossentropy(
+            alpha=focal_alpha,
+            gamma=focal_gamma,
+            from_logits=False,
+            reduction='none'
+        )
     else:
         base_loss = tf.keras.losses.BinaryCrossentropy(from_logits=False)
+        # Create unreduced version for hard negative mining
+        hard_negative_loss_fn = tf.keras.losses.BinaryCrossentropy(
+            from_logits=False,
+            reduction='none'
+        )
 
     if is_adversarial:
         # For adversarial models, use focal loss only for wake word
@@ -686,9 +686,7 @@ def train(model, config, data_processor):
                     train_fingerprints, 
                     train_ground_truth,
                     hard_negative_k,
-                    use_focal_loss,
-                    focal_alpha,
-                    focal_gamma
+                    hard_negative_loss_fn  # Use pre-created loss function
                 )
                 
                 # Apply gradients
