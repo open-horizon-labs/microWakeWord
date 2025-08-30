@@ -139,6 +139,17 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
         self.use_batch_norm = use_batch_norm
         self.activation = tf.keras.activations.get(activation)
         self.reparameterized = reparameterized
+        
+        # Create reparam_conv in __init__ to avoid state tracking issues
+        # Always use bias=True for reparam_conv since after reparameterization
+        # we always have bias (either from original bias or folded batch norm)
+        self.reparam_conv = tf.keras.layers.DepthwiseConv2D(
+            kernel_size=(self.kernel_size, 1),
+            strides=1,
+            padding="valid",
+            depth_multiplier=self.depth_multiplier,
+            use_bias=True,
+        )
     
     def build(self, input_shape):
         super().build(input_shape)
@@ -149,15 +160,8 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
         # Input channels
         self.in_channels = input_shape[-1]
         
-        # If already reparameterized, only create the single merged convolution
+        # If already reparameterized, only build the reparam_conv
         if self.reparameterized:
-            self.reparam_conv = tf.keras.layers.DepthwiseConv2D(
-                kernel_size=(self.kernel_size, 1),
-                strides=1,
-                padding="valid",
-                depth_multiplier=self.depth_multiplier,
-                use_bias=True,
-            )
             # Initialize empty lists to avoid attribute errors
             self.conv_branches = []
             self.bn_branches = []
@@ -175,7 +179,7 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
                 strides=1,
                 padding="valid",
                 depth_multiplier=self.depth_multiplier,
-                use_bias=False,
+                use_bias=not self.use_batch_norm,  # Use bias when NOT using batch norm
             )
             self.conv_branches.append(conv)
 
@@ -188,21 +192,11 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
                 strides=1,
                 padding="valid",
                 depth_multiplier=self.depth_multiplier,
-                use_bias=False,
+                use_bias=not self.use_batch_norm,  # Use bias when NOT using batch norm
             )
         
         if self.use_batch_norm:
             self.bn_1x1 = tf.keras.layers.BatchNormalization()
-
-        # For re-parameterized mode, create a single convolution
-        # Pre-create it with bias to avoid state issues during re-parameterization
-        self.reparam_conv = tf.keras.layers.DepthwiseConv2D(
-                kernel_size=(self.kernel_size, 1),
-                strides=1,
-                padding="valid",
-                depth_multiplier=self.depth_multiplier,
-                use_bias=True,  # Enable bias for reparameterized mode
-            )
     
     def call(self, inputs, training=None):
         """Forward pass through the block.
@@ -271,8 +265,13 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
 
         # Merge each convolution branch (all have the same kernel size)
         for i, conv in enumerate(self.conv_branches):
-            # Get conv weights [kernel_size, 1, in_channels, depth_multiplier]
-            conv_weights = conv.get_weights()[0]
+            # Get conv weights - includes bias if not using batch norm
+            weights = conv.get_weights()
+            conv_weights = weights[0]  # [kernel_size, 1, in_channels, depth_multiplier]
+            
+            # If we have bias (when not using batch norm), add it
+            if len(weights) > 1:
+                merged_bias += weights[1]
             
             # Apply batch norm if present
             if self.use_batch_norm and i < len(self.bn_branches):
@@ -301,7 +300,12 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
             merged_kernel += conv_weights
 
         # Merge 1x1 convolution branch
-        conv_1x1_weights = self.conv_1x1.get_weights()[0]  # [1, 1, in_channels, depth_multiplier]
+        weights_1x1 = self.conv_1x1.get_weights()
+        conv_1x1_weights = weights_1x1[0]  # [1, 1, in_channels, depth_multiplier]
+        
+        # If we have bias (when not using batch norm), add it
+        if len(weights_1x1) > 1:
+            merged_bias += weights_1x1[1]
 
         # Apply batch norm to 1x1 branch if present
         if self.use_batch_norm:
@@ -326,6 +330,8 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
         # Build the reparam_conv layer if not already built
         if not self.reparam_conv.built:
             self.reparam_conv.build(self.input_shape_stored)
+            # After building, the layer has random weights. We need to ensure
+            # we completely replace them with our merged weights.
         
         # Set weights with both kernel and bias
         self.reparam_conv.set_weights([merged_kernel, merged_bias])
