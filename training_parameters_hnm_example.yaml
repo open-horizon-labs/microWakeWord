@@ -46,7 +46,7 @@ features:
 #   max_k: 100            # Safety limit on number selected
 #   start_step: 1000
 
-# Option 3: Curriculum learning (recommended)
+# Option 3: Curriculum learning (recommended - safer defaults)
 hard_negative_mining:
   enabled: 1
   strategy: curriculum
@@ -54,39 +54,50 @@ hard_negative_mining:
   start_step: 0  # Can start immediately with curriculum
   
   # Curriculum stages define how percentile bounds change over time
-  # Lower percentile = harder examples (higher loss)
+  # IMPORTANT: Percentile interpretation:
+  # - 0 = easiest examples (lowest loss)
+  # - 100 = hardest examples (highest loss)
+  # - [0, 100] or [100, 100] = no mining (use all negatives)
   # The model gradually focuses on harder examples
   hard_negative_curriculum:
     stages:
-      # Stage 1: No mining initially (warm-up)
+      # Stage 1: No mining initially (warm-up period)
+      # Use all negatives to establish baseline learning
       - step: 0
-        lower_pct: 100  # No selection
-        upper_pct: 100
+        lower_pct: 0    # Use all examples
+        upper_pct: 100  # (full range = no mining)
       
-      # Stage 2: Start with moderately hard examples
-      - step: 1000
-        lower_pct: 30   # Top 30-80% hardest
-        upper_pct: 80   # Avoids noise/outliers
-      
-      # Stage 3: Include harder examples
+      # Stage 2: Very gentle start - exclude only easiest examples
+      # Keep most negatives while removing trivial ones
       - step: 5000
-        lower_pct: 20   # Top 20-60% hardest
-        upper_pct: 60
+        lower_pct: 10   # Exclude easiest 10%
+        upper_pct: 100  # Keep top 90% of examples
       
-      # Stage 4: Focus more on hard examples
+      # Stage 3: Gradual focusing - remove more easy examples
       - step: 10000
-        lower_pct: 10   # Top 10-40% hardest
-        upper_pct: 40
+        lower_pct: 20   # Exclude easiest 20%
+        upper_pct: 100  # Keep top 80% of examples
       
-      # Stage 5: Focus on hardest examples
+      # Stage 4: Moderate focusing - balanced selection
       - step: 15000
-        lower_pct: 0    # Top 0-20% hardest
-        upper_pct: 20   # Only the most challenging
+        lower_pct: 30   # Exclude easiest 30%
+        upper_pct: 90   # Also exclude hardest 10% (may be outliers)
       
-      # Optional: Stage 6: Ultra-hard examples only (late refinement)
-      # - step: 25000
-      #   lower_pct: 0
-      #   upper_pct: 10
+      # Stage 5: Focus on challenging examples
+      - step: 20000
+        lower_pct: 40   # Exclude easiest 40%
+        upper_pct: 85   # Focus on middle-to-hard examples
+      
+      # Stage 6: Focus on hard examples (use with caution)
+      - step: 25000
+        lower_pct: 50   # Top 50% hardest
+        upper_pct: 80   # Avoid extreme outliers
+      
+      # Optional: Stage 7: Very hard examples only (experimental)
+      # Warning: Can cause instability if used too early
+      # - step: 30000
+      #   lower_pct: 60
+      #   upper_pct: 80   # Top 20-40% hardest examples
 
 # ============================================
 # Focal Loss Configuration (complementary to HNM)

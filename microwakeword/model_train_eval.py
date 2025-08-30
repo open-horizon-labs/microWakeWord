@@ -372,7 +372,6 @@ if __name__ == "__main__":
         help="Which set of weights to use when creating the model"
         "One of `best_weights`` or `last_weights`.",
     )
-    
     # Focal loss parameters
     parser.add_argument(
         "--use_focal_loss",
@@ -394,29 +393,6 @@ if __name__ == "__main__":
         default=2.0,
         help="Gamma parameter for focal loss (focusing parameter). "
         "Higher gamma increases focus on hard examples. Default 2.0.",
-    )
-    
-    # Hard negative mining parameters
-    parser.add_argument(
-        "--use_hard_negative_mining",
-        type=int,
-        default=0,
-        help="Use hard negative mining to focus on difficult negative samples (1=yes, 0=no). "
-        "Only the top K hardest negatives are used for backpropagation.",
-    )
-    parser.add_argument(
-        "--hard_negative_k",
-        type=int,
-        default=50,
-        help="Number of hardest negative samples to use for backpropagation. "
-        "All positive samples are always used. Default 50.",
-    )
-    parser.add_argument(
-        "--hard_negative_start_step",
-        type=int,
-        default=0,
-        help="Training step to start hard negative mining (for warm-up). "
-        "Default 0 (no warm-up).",
     )
 
     # Function used to parse --verbosity argument
