@@ -62,6 +62,12 @@ def model_parameters(parser_nn):
         help="",
     )
     parser_nn.add_argument(
+        "--smaller_kernel_sizes",
+        type=str,
+        default="",
+        help="Smaller kernel sizes for additional branch in each block (comma-separated). Leave empty to disable.",
+    )
+    parser_nn.add_argument(
         "--pointwise_filters",
         type=str,
         default="32, 32",
@@ -135,6 +141,7 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
         use_batch_norm=True,
         activation="relu",
         reparameterized=False,  # Add as parameter for proper serialization
+        smaller_kernel_size=None,  # Optional smaller kernel branch
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -145,6 +152,7 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
         self.use_batch_norm = use_batch_norm
         self.activation = tf.keras.activations.get(activation)
         self.reparameterized = reparameterized
+        self.smaller_kernel_size = smaller_kernel_size
 
         # Create reparam_conv in __init__ to avoid state tracking issues
         # Always use bias=True for reparam_conv since after reparameterization
@@ -173,6 +181,8 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
             self.bn_branches = []
             self.conv_1x1 = None
             self.bn_1x1 = None
+            self.conv_smaller = None
+            self.bn_smaller = None
             return
 
         # Create parallel Conv2D branches for each kernel size
@@ -192,6 +202,22 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
             if self.use_batch_norm:
                 bn = tf.keras.layers.BatchNormalization()
                 self.bn_branches.append(bn)
+
+        # Create smaller kernel branch if specified
+        if self.smaller_kernel_size is not None:
+            self.conv_smaller = tf.keras.layers.DepthwiseConv2D(
+                kernel_size=(self.smaller_kernel_size, 1),
+                strides=1,
+                padding="valid",
+                depth_multiplier=self.depth_multiplier,
+                use_bias=not self.use_batch_norm,
+            )
+
+            if self.use_batch_norm:
+                self.bn_smaller = tf.keras.layers.BatchNormalization()
+        else:
+            self.conv_smaller = None
+            self.bn_smaller = None
 
         self.conv_1x1 = tf.keras.layers.DepthwiseConv2D(
                 kernel_size=(1, 1),
@@ -232,6 +258,14 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
             if self.use_batch_norm and i < len(self.bn_branches):
                 x = self.bn_branches[i](x, training=training)
             outputs.append(x)
+
+        # Process smaller kernel branch if it exists
+        if self.conv_smaller is not None:
+            dropped_net_smaller = strided_drop.StridedDrop(self.kernel_size - self.smaller_kernel_size)(net)
+            x_smaller = self.conv_smaller(dropped_net_smaller)
+            if self.use_batch_norm:
+                x_smaller = self.bn_smaller(x_smaller, training=training)
+            outputs.append(x_smaller)
 
         # Process 1x1 convolution branch
         dropped_net = strided_drop.StridedDrop(self.kernel_size-1)(net)
@@ -329,6 +363,36 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
             # Add bias contribution
             merged_bias += beta - moving_mean * scale
 
+        # Merge smaller kernel branch if it exists
+        if self.conv_smaller is not None:
+            weights_smaller = self.conv_smaller.get_weights()
+            conv_smaller_weights = weights_smaller[0]  # [smaller_kernel_size, 1, in_channels, depth_multiplier]
+
+            # If we have bias (when not using batch norm), add it
+            if len(weights_smaller) > 1:
+                merged_bias += weights_smaller[1]
+
+            # Apply batch norm to smaller branch if present
+            if self.use_batch_norm:
+                bn = self.bn_smaller
+                gamma, beta, moving_mean, moving_var = bn.get_weights()
+                std = np.sqrt(moving_var + bn.epsilon)
+                scale = gamma / std
+
+                # Scale smaller kernel weights
+                scale_reshaped = scale.reshape(self.in_channels, self.depth_multiplier)
+                for c in range(self.in_channels):
+                    for d in range(self.depth_multiplier):
+                        conv_smaller_weights[:, :, c, d] *= scale_reshaped[c, d]
+
+                # Add bias contribution
+                merged_bias += beta - moving_mean * scale
+
+            # Add smaller kernel weights at the appropriate offset
+            # Offset aligns with StridedDrop behavior
+            offset = self.kernel_size - self.smaller_kernel_size
+            merged_kernel[offset : offset + self.smaller_kernel_size, :, :, :] += conv_smaller_weights
+
         # Add 1x1 weights to the LAST position of merged kernel
         # This aligns with how StridedDrop shifts the 1x1 input
         merged_kernel[self.kernel_size - 1 : self.kernel_size, :, :, :] += conv_1x1_weights
@@ -367,6 +431,7 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
                 "use_batch_norm": self.use_batch_norm,
                 "activation": tf.keras.activations.serialize(self.activation),
                 "reparameterized": self.reparameterized,
+                "smaller_kernel_size": self.smaller_kernel_size,
             }
         )
         return config
@@ -383,6 +448,7 @@ def model(flags, shape, batch_size):
     depth_multipliers = parse(flags.depth_multipliers)
     kernel_sizes = parse(flags.kernel_sizes)
     pointwise_filters = parse(flags.pointwise_filters)
+    smaller_kernel_sizes = parse(flags.smaller_kernel_sizes) if flags.smaller_kernel_sizes else []
 
 
     for list in (
@@ -392,6 +458,10 @@ def model(flags, shape, batch_size):
     ):
         if len(branches) != len(list):
             raise ValueError("all input lists have to be the same length")
+
+    # Validate smaller_kernel_sizes if provided
+    if smaller_kernel_sizes and len(smaller_kernel_sizes) != len(branches):
+        raise ValueError("smaller_kernel_sizes must have the same length as other block parameters")
 
     input_audio = tf.keras.layers.Input(
         shape=shape,
@@ -421,7 +491,10 @@ def model(flags, shape, batch_size):
         net = tf.keras.layers.Activation("relu")(net)
 
 
-    for block_branches, block_depth_multipliers, block_kernel_sizes, block_pointwise_filter in zip(branches, depth_multipliers, kernel_sizes, pointwise_filters):
+    for block_idx, (block_branches, block_depth_multipliers, block_kernel_sizes, block_pointwise_filter) in enumerate(zip(branches, depth_multipliers, kernel_sizes, pointwise_filters)):
+        # Get smaller kernel size for this block if provided
+        block_smaller_kernel = smaller_kernel_sizes[block_idx] if smaller_kernel_sizes else None
+
         for branch, depth_multiplier, kernel_size in zip(block_branches, block_depth_multipliers, block_kernel_sizes):
             net = stream.Stream(
                 cell=tf.keras.layers.Identity(),
@@ -429,7 +502,7 @@ def model(flags, shape, batch_size):
                 use_one_step=False,
             )(net)
 
-            net = TemporalRepConvBlock(branch, depth_multiplier, kernel_size)(net)
+            net = TemporalRepConvBlock(branch, depth_multiplier, kernel_size, smaller_kernel_size=block_smaller_kernel)(net)
 
         net = tf.keras.layers.Conv2D(
                 filters=block_pointwise_filter, kernel_size=1, use_bias=False, padding="same"
