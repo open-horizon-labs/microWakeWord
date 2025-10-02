@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Model based on 1D depthwise MixedConvs and 1x1 convolutions in time + residual."""
+"""Model based on RepCNN wake word model adjusted to support streaming."""
 
 import ast
 
@@ -41,7 +41,7 @@ def parse(text):
 
 
 def model_parameters(parser_nn):
-    """MixedNet model parameters."""
+    """Temporal RepCNN model parameters."""
 
     parser_nn.add_argument(
         "--branches",
@@ -438,7 +438,10 @@ class TemporalRepConvBlock(tf.keras.layers.Layer):
 
 def model(flags, shape, batch_size):
     """
-
+    Based on the paper:
+    RepCNN: Micro-sized, Mighty Models for Wakeword Detection
+    Arnav Kundu, Prateeth Naya∗, Priyanka Padmanabhan, Devang Naik
+    https://arxiv.org/pdf/2406.02652
 
     Returns:
       Keras model for training
