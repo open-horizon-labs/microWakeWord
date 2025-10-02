@@ -97,6 +97,12 @@ def model_parameters(parser_nn):
         default=1,
         help="Striding in the time dimension of the initial convolution layer",
     )
+    parser_nn.add_argument(
+        "--adaptive_pooling",
+        type=int,
+        default=0,
+        help="Use adaptive pooling that combines both average and max pooling with learnable weights (0=disabled, 1=enabled)",
+    )
 
 
 def spectrogram_slices_dropped(flags):
@@ -439,13 +445,29 @@ def model(flags, shape, batch_size):
         )(net)
 
         if flags.pooled:
-            # We want to use either Global Max Pooling or Global Average Pooling, but the esp-nn operator optimizations only benefit regular pooling operations
+            if flags.adaptive_pooling:
+                # Adaptive pooling: combine average and max pooling with learnable weights
+                # Apply both pooling operations
+                avg_pool = tf.keras.layers.AveragePooling2D(pool_size=(net.shape[1], 1))(net)
+                max_pool = tf.keras.layers.MaxPooling2D(pool_size=(net.shape[1], 1))(net)
 
-            if flags.max_pool:
-                net = tf.keras.layers.MaxPooling2D(pool_size=(net.shape[1], 1))(net)
+                # Reshape to flatten spatial dimensions
+                avg_pool = tf.keras.layers.Reshape((-1,))(avg_pool)
+                max_pool = tf.keras.layers.Reshape((-1,))(max_pool)
+
+                # Concatenate both pooling outputs
+                net = tf.keras.layers.Concatenate(axis=-1)([avg_pool, max_pool])
+
+                # Note: The final Dense layer will learn how to weight these features
+                # This is more flexible than explicit weighting as it allows the model
+                # to learn complex interactions between avg and max pooled features
             else:
-                net = tf.keras.layers.AveragePooling2D(pool_size=(net.shape[1], 1))(net)
-            net = tf.keras.layers.Reshape((-1,))(net)
+                # Standard pooling based on max_pool flag
+                if flags.max_pool:
+                    net = tf.keras.layers.MaxPooling2D(pool_size=(net.shape[1], 1))(net)
+                else:
+                    net = tf.keras.layers.AveragePooling2D(pool_size=(net.shape[1], 1))(net)
+                net = tf.keras.layers.Reshape((-1,))(net)
         else:
             net = tf.keras.layers.Flatten()(net)
 
