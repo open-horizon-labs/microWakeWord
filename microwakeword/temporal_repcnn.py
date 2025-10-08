@@ -514,8 +514,21 @@ def model(flags, shape, batch_size):
         net = tf.keras.layers.Activation("relu")(net)
 
     if net.shape[1] > 1:
+        # Use ReLU instead of Identity as the streaming cell.
+        # This is critical for TFLite quantization: when wrapping Identity, the TFLite
+        # converter cannot infer quantization parameters for the internal state buffer,
+        # causing it to remain float32. This creates expensive dequantize→concat→quantize
+        # cycles before the pooling layers.
+        #
+        # ReLU provides quantization metadata, allowing the state buffer to be int8.
+        # Since values have already passed through ReLU activation, this is functionally
+        # a no-op (all values ≥0), but enables proper quantization.
+        #
+        # For TFLite Micro deployment, this is optimal: a single ReLU operation
+        # (cheap compare+select) is faster than dequantize+quantize operations
+        # (expensive multiply+divide+round).
         net = stream.Stream(
-            cell=tf.keras.layers.Identity(),
+            cell=tf.keras.layers.ReLU(max_value=None),
             ring_buffer_size_in_time_dim=net.shape[1] - 1,
             use_one_step=False,
         )(net)
