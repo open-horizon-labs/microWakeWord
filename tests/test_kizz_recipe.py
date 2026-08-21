@@ -1,10 +1,12 @@
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 import yaml
 import numpy as np
+from scipy.io import wavfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +21,14 @@ CONFIG_SPEC = importlib.util.spec_from_file_location("write_recipe_training_conf
 CONFIG_MODULE = importlib.util.module_from_spec(CONFIG_SPEC)
 sys.modules[CONFIG_SPEC.name] = CONFIG_MODULE
 CONFIG_SPEC.loader.exec_module(CONFIG_MODULE)
+
+EVALUATOR_SCRIPT = ROOT / "tools" / "evaluate_recipe_model.py"
+EVALUATOR_SPEC = importlib.util.spec_from_file_location(
+    "evaluate_recipe_model", EVALUATOR_SCRIPT
+)
+EVALUATOR_MODULE = importlib.util.module_from_spec(EVALUATOR_SPEC)
+sys.modules[EVALUATOR_SPEC.name] = EVALUATOR_MODULE
+EVALUATOR_SPEC.loader.exec_module(EVALUATOR_MODULE)
 
 
 class KizzRecipeTest(unittest.TestCase):
@@ -80,6 +90,23 @@ class KizzRecipeTest(unittest.TestCase):
         self.assertEqual(len(chunks), 2)
         np.testing.assert_array_equal(chunks[0], spectrogram[0:3])
         np.testing.assert_array_equal(chunks[1], spectrogram[3:6])
+
+    def test_evaluator_uses_the_feature_pipeline_holdout_split(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for group_name in ("hi_fi", "hee_fee"):
+                group = root / group_name
+                group.mkdir()
+                for index in range(10):
+                    wavfile.write(
+                        group / f"{index}.wav",
+                        16000,
+                        np.zeros(1600, dtype=np.int16),
+                    )
+            grouped = EVALUATOR_MODULE.clips_by_group(root, "test", 231)
+            held_out = [path for paths in grouped.values() for path in paths]
+            self.assertEqual(len(held_out), 2)
+            self.assertTrue(all(path.parent.name in {"hi_fi", "hee_fee"} for path in held_out))
 
 
 if __name__ == "__main__":

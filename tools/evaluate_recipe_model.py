@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import json
 from pathlib import Path
 
+import datasets
 import numpy as np
 from scipy.io import wavfile
 from scipy.signal import resample_poly
 
+from microwakeword.audio.clips import Clips
 from microwakeword.inference import Model
 
 
@@ -57,7 +60,7 @@ def peak_probability(
 
 def evaluate_group(
     model_path: Path,
-    group: Path,
+    clips: list[Path],
     cutoff: float,
     sliding_window: int,
     ignore_initial: int,
@@ -65,7 +68,7 @@ def evaluate_group(
     limit: int,
 ) -> dict:
     model = Model(str(model_path), stride=3)
-    clips = sorted(group.glob("*.wav"))
+    clips = sorted(clips)
     if limit:
         clips = clips[:limit]
     peaks = [
@@ -85,6 +88,31 @@ def evaluate_group(
     }
 
 
+def clips_by_group(root: Path, split: str, split_seed: int) -> dict[str, list[Path]]:
+    if split == "all":
+        return {
+            group.name: sorted(group.glob("*.wav"))
+            for group in sorted(root.iterdir())
+            if group.is_dir()
+        }
+    clips = Clips(
+        input_directory=str(root),
+        file_pattern="**/*.wav",
+        max_clip_duration_s=None,
+        remove_silence=False,
+        random_split_seed=split_seed,
+        split_count=0.1,
+    )
+    grouped: dict[str, list[Path]] = defaultdict(list)
+    held_out = clips.split_clips[split].cast_column(
+        "audio", datasets.Audio(sampling_rate=16000, decode=False)
+    )
+    for audio in held_out["audio"]:
+        path = Path(audio["path"])
+        grouped[path.parent.name].append(path)
+    return dict(grouped)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path, required=True)
@@ -94,6 +122,13 @@ def main() -> int:
     parser.add_argument("--ignore-initial", type=int, default=25)
     parser.add_argument("--clip-duration-ms", type=int, default=2000)
     parser.add_argument("--limit-per-phrase", type=int, default=0)
+    parser.add_argument(
+        "--split",
+        choices=("all", "test", "validation"),
+        default="test",
+        help="Evaluate the exact held-out split used during feature generation",
+    )
+    parser.add_argument("--split-seed", type=int, default=231)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -101,21 +136,24 @@ def main() -> int:
         "model": str(args.model),
         "cutoff": args.cutoff,
         "sliding_window": args.sliding_window,
+        "split": args.split,
+        "split_seed": args.split_seed,
         "positive": {},
         "hard_negative": {},
     }
     for truth in ("positive", "hard_negative"):
-        for group in sorted((args.generated / truth).iterdir()):
-            if group.is_dir():
-                result[truth][group.name] = evaluate_group(
-                    args.model,
-                    group,
-                    args.cutoff,
-                    args.sliding_window,
-                    args.ignore_initial,
-                    args.clip_duration_ms,
-                    args.limit_per_phrase,
-                )
+        seed = args.split_seed + (1 if truth == "hard_negative" else 0)
+        grouped = clips_by_group(args.generated / truth, args.split, seed)
+        for name, clips in sorted(grouped.items()):
+            result[truth][name] = evaluate_group(
+                args.model,
+                clips,
+                args.cutoff,
+                args.sliding_window,
+                args.ignore_initial,
+                args.clip_duration_ms,
+                args.limit_per_phrase,
+            )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
