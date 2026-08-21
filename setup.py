@@ -18,6 +18,7 @@ setuptools.setup(
         "tensorboard>=2.18",
         "webrtcvad-wheels",
         "ai-edge-litert",
+        "aiohttp>=3.10,<4",
     ],
     author="Kevin Ahrendt",
     author_email="kahrendt@gmail.com",

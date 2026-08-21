@@ -9,7 +9,9 @@ from pathlib import Path
 import yaml
 
 
-def feature(path: Path, weight: float, penalty: float, truth: bool, strategy: str) -> dict:
+def feature(
+    path: Path, weight: float, penalty: float, truth: bool, strategy: str
+) -> dict:
     return {
         "features_dir": str(path),
         "sampling_weight": weight,
@@ -26,29 +28,46 @@ def training_config(
     features_dir: Path | None = None,
     hard_negative_sampling_weight: float = 8.0,
     hard_negative_penalty_weight: float = 4.0,
+    device_features_dir: Path | None = None,
 ) -> dict:
     negatives = workspace / "negative-datasets"
     features = features_dir or workspace / "features"
+    feature_sources = [
+        feature(features / "positive", 3.0, 1.0, True, "truncate_start"),
+        feature(
+            features / "hard_negative",
+            hard_negative_sampling_weight,
+            hard_negative_penalty_weight,
+            False,
+            "random",
+        ),
+        feature(negatives / "speech", 10.0, 1.5, False, "random"),
+        feature(negatives / "dinner_party", 10.0, 1.5, False, "random"),
+        feature(negatives / "no_speech", 6.0, 1.0, False, "random"),
+        feature(features / "hard_negative", 0.0, 1.0, False, "split"),
+        feature(negatives / "dinner_party_eval", 0.0, 1.0, False, "split"),
+    ]
+    if device_features_dir is not None:
+        feature_sources.extend(
+            [
+                feature(
+                    device_features_dir / "positive", 6.0, 2.0, True, "truncate_start"
+                ),
+                feature(
+                    device_features_dir / "hard_negative", 8.0, 4.0, False, "random"
+                ),
+                feature(
+                    device_features_dir / "ambient_negative", 4.0, 2.0, False, "split"
+                ),
+                feature(
+                    device_features_dir / "hard_negative", 0.0, 1.0, False, "split"
+                ),
+            ]
+        )
     return {
         "window_step_ms": 10,
         "train_dir": str(train_dir),
-        "features": [
-            feature(features / "positive", 3.0, 1.0, True, "truncate_start"),
-            feature(
-                features / "hard_negative",
-                hard_negative_sampling_weight,
-                hard_negative_penalty_weight,
-                False,
-                "random",
-            ),
-            feature(negatives / "speech", 10.0, 1.5, False, "random"),
-            feature(negatives / "dinner_party", 10.0, 1.5, False, "random"),
-            feature(negatives / "no_speech", 6.0, 1.0, False, "random"),
-            # Include labeled confusables in the long-form false-accept metric.
-            # Otherwise checkpoint selection can ignore words such as "kiss".
-            feature(features / "hard_negative", 0.0, 1.0, False, "split"),
-            feature(negatives / "dinner_party_eval", 0.0, 1.0, False, "split"),
-        ],
+        "features": feature_sources,
         "training_steps": [20000, 10000],
         "positive_class_weight": [1, 1],
         "negative_class_weight": [24, 32],
@@ -73,6 +92,7 @@ def main() -> int:
     parser.add_argument("--features-dir", type=Path)
     parser.add_argument("--hard-negative-sampling-weight", type=float, default=8.0)
     parser.add_argument("--hard-negative-penalty-weight", type=float, default=4.0)
+    parser.add_argument("--device-features-dir", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.write_text(
@@ -83,6 +103,7 @@ def main() -> int:
                 args.features_dir,
                 args.hard_negative_sampling_weight,
                 args.hard_negative_penalty_weight,
+                args.device_features_dir,
             ),
             sort_keys=False,
         )

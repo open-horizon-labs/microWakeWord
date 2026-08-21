@@ -12,12 +12,17 @@ followed by the exact word `Kizz`. This prevents a multi-pronunciation model
 from learning the common suffix as a shortcut.
 
 The first model is synthetic-data-first, but it is not considered hardware
-qualified until it is evaluated against two device-microphone corpora:
+qualified until it is evaluated against real device-microphone corpora using
+the standalone [device enrollment service](../../documentation/device_enrollment.md):
 
 1. Positive recordings spoken to the actual StackChan from varied positions,
    voices, speeds, and room noise.
 2. Long negative recordings from normal conversation and music in the intended
    room, used to measure false accepts per hour.
+
+StackChan, Dial, Frame, and later microphone products use the same enrollment
+contract. Results are first compared by `device_profile`; device-specific models
+are created only when held-out evidence shows the shared model is inadequate.
 
 ## Generate the phrase corpus
 

@@ -10,7 +10,6 @@ import yaml
 import numpy as np
 from scipy.io import wavfile
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tools" / "generate_recipe_samples.py"
 SPEC = importlib.util.spec_from_file_location("generate_recipe_samples", SCRIPT)
@@ -19,7 +18,9 @@ sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 CONFIG_SCRIPT = ROOT / "tools" / "write_recipe_training_config.py"
-CONFIG_SPEC = importlib.util.spec_from_file_location("write_recipe_training_config", CONFIG_SCRIPT)
+CONFIG_SPEC = importlib.util.spec_from_file_location(
+    "write_recipe_training_config", CONFIG_SCRIPT
+)
 CONFIG_MODULE = importlib.util.module_from_spec(CONFIG_SPEC)
 sys.modules[CONFIG_SPEC.name] = CONFIG_MODULE
 CONFIG_SPEC.loader.exec_module(CONFIG_MODULE)
@@ -57,8 +58,7 @@ class KizzRecipeTest(unittest.TestCase):
         self.assertIn("High Fye Kizz", phrases)
         self.assertIn("Hiffy Kizz", phrases)
         counts = {
-            entry["text"]: entry["samples"]
-            for entry in self.recipe["positive_phrases"]
+            entry["text"]: entry["samples"] for entry in self.recipe["positive_phrases"]
         }
         self.assertGreaterEqual(counts["Hee Fee Kizz"], 2000)
         self.assertGreaterEqual(counts["Hippy Kizz"], 2000)
@@ -68,22 +68,16 @@ class KizzRecipeTest(unittest.TestCase):
         phrases = {entry["text"] for entry in self.recipe["hard_negative_phrases"]}
         self.assertTrue({"Kizz", "kids", "kiss", "quiz", "Hi-Fi"}.issubset(phrases))
         self.assertTrue(
-            {"Hi-Fi Kiss", "Hippy Kiss", "Wi-Fi Kizz", "Happy Kizz"}.issubset(
-                phrases
-            )
+            {"Hi-Fi Kiss", "Hippy Kiss", "Wi-Fi Kizz", "Happy Kizz"}.issubset(phrases)
         )
 
     def test_pronunciation_probes_are_unseen_during_training(self):
-        probes = yaml.safe_load(
-            (ROOT / "recipes/kizz/probes.yaml").read_text()
-        )
+        probes = yaml.safe_load((ROOT / "recipes/kizz/probes.yaml").read_text())
         training = {
-            phrase["text"].casefold()
-            for phrase in self.recipe["positive_phrases"]
+            phrase["text"].casefold() for phrase in self.recipe["positive_phrases"]
         }
         probe_phrases = {
-            phrase["text"].casefold()
-            for phrase in probes["positive_phrases"]
+            phrase["text"].casefold() for phrase in probes["positive_phrases"]
         }
         self.assertIn("high phi kizz", probe_phrases)
         self.assertTrue(training.isdisjoint(probe_phrases))
@@ -125,13 +119,13 @@ class KizzRecipeTest(unittest.TestCase):
             )
             (root / "generated" / "positive" / "stale").mkdir()
             with self.assertRaisesRegex(ValueError, "extra="):
-                FEATURE_MODULE.validate_generated_corpus(
-                    recipe, root / "generated"
-                )
+                FEATURE_MODULE.validate_generated_corpus(recipe, root / "generated")
 
     def test_training_selects_for_ambient_false_accepts_first(self):
         config = CONFIG_MODULE.training_config(Path("work"), Path("trained"))
-        self.assertEqual(config["minimization_metric"], "ambient_false_positives_per_hour")
+        self.assertEqual(
+            config["minimization_metric"], "ambient_false_positives_per_hour"
+        )
         hard_negatives = [
             item
             for item in config["features"]
@@ -144,6 +138,22 @@ class KizzRecipeTest(unittest.TestCase):
         self.assertEqual(evaluation_hard_negative["sampling_weight"], 0.0)
         self.assertEqual(evaluation_hard_negative["truncation_strategy"], "split")
         self.assertLessEqual(config["eval_step_interval"], 1000)
+
+    def test_device_profiles_are_added_as_shared_training_evidence(self):
+        config = CONFIG_MODULE.training_config(
+            Path("work"), Path("trained"), device_features_dir=Path("device-features")
+        )
+        device_sources = [
+            item
+            for item in config["features"]
+            if item["features_dir"].startswith("device-features/")
+        ]
+        self.assertEqual(len(device_sources), 4)
+        self.assertTrue(any(item["truth"] for item in device_sources))
+        self.assertTrue(any(not item["truth"] for item in device_sources))
+        self.assertTrue(
+            any(item["truncation_strategy"] == "split" for item in device_sources)
+        )
 
     def test_microfrontend_accepts_current_pybind_api(self):
         from microwakeword.audio.audio_utils import generate_features_for_clip
@@ -175,7 +185,9 @@ class KizzRecipeTest(unittest.TestCase):
             grouped = EVALUATOR_MODULE.clips_by_group(root, "test", 231)
             held_out = [path for paths in grouped.values() for path in paths]
             self.assertEqual(len(held_out), 2)
-            self.assertTrue(all(path.parent.name in {"hi_fi", "hee_fee"} for path in held_out))
+            self.assertTrue(
+                all(path.parent.name in {"hi_fi", "hee_fee"} for path in held_out)
+            )
 
     def test_streaming_model_state_can_be_reset_between_independent_clips(self):
         from microwakeword.inference import Model
