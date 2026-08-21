@@ -1,8 +1,8 @@
 # HiPhi Kizz wake-word recipe
 
 This recipe trains one wake class from several natural readings of **HiPhi
-Kizz**. It intentionally treats bare `Kizz`, `kids`, `kiss`, `quiz`, `Hi-Fi`,
-and similar speech as negatives. A one-syllable **Kizz** detector belongs in a
+Kizz**. It treats bare `Kizz`, `kids`, `kiss`, `quiz`, `Hi-Fi`, and similar
+speech as negatives. A one-syllable **Kizz** detector belongs in a
 separate model so its difficult near-word boundary cannot weaken the full brand
 phrase.
 
@@ -11,21 +11,20 @@ HiPhi-like prefixes followed by the wrong final word, and wrong prefixes
 followed by the exact word `Kizz`. This prevents a multi-pronunciation model
 from learning the common suffix as a shortcut.
 
-The first model is synthetic-data-first, but it is not considered hardware
-qualified until it is evaluated against real device-microphone corpora using
-the standalone [device enrollment service](../../documentation/device_enrollment.md):
+Start with synthetic data, but do not call a model hardware qualified until it
+is evaluated against real device-microphone corpora using the standalone
+[device enrollment service](../../documentation/device_enrollment.md):
 
 1. Positive recordings spoken to the actual StackChan from varied positions,
    voices, speeds, and room noise.
 2. Long negative recordings from normal conversation and music in the intended
    room, used to measure false accepts per hour.
 
-The seven current microphone-equipped targets in `device-profiles.json` use the
-same enrollment contract: Waveshare Dial, Frame, RLCD, M5Stack Tough,
-M5StickS3, StopWatch, and Kizz/StackChan. Results are first compared by exact
-`device_profile`; device-specific models are created only when held-out evidence
-shows the shared model is inadequate. Catalog presence, enrollment-firmware
-support, and a collected real corpus are tracked separately.
+The same enrollment contract applies to every microphone-equipped profile in
+[`device-profiles.json`](../../device-profiles.json). Compare results by
+`device_profile` first; create device-specific models only when held-out
+evidence shows the shared model is inadequate. Catalog presence,
+enrollment-firmware support, and a collected real corpus are tracked separately.
 
 ## Generate the phrase corpus
 
@@ -46,9 +45,8 @@ The command is resumable per phrase and writes a manifest containing hashes of
 the recipe and generator model. `--dry-run` prints the complete generation plan
 without downloading or generating anything.
 
-Then augment and convert the audio to the exact micro-speech features used on
-device. Pass actual room music/noise and impulse-response directories whenever
-available:
+Build the `micro_speech` features used on-device, adding actual room music,
+noise, and impulse-response directories whenever available:
 
 ```sh
 python tools/build_recipe_features.py \
@@ -68,9 +66,9 @@ When a later recipe revision changes only one class, pass `--class-name
 hard_negative` or `--class-name positive`; the complete recipe/manifest and all
 corpus directories are still validated before the selected class is rebuilt.
 Pass that alternate feature root to the config writer with `--features-dir`.
-For an acoustic-cluster experiment, repeat `--positive-text` with exact phrase
-labels from the recipe. The builder stages only those clips while preserving the
-same manifest and count validation.
+For an acoustic-cluster experiment, repeat `--positive-text` with the recipe's
+phrase labels. The builder stages only those clips while preserving the same
+manifest and count validation.
 
 The generated training config includes the labeled hard-negative archive twice:
 once as a sampled training source and once as an evaluation-only long-form
@@ -99,4 +97,4 @@ generalization rather than memorization of the corpus spellings.
 Model selection must minimize ambient false accepts before maximizing recall.
 The release bundle must include the quantized streaming `.tflite`, ESPHome v2
 model JSON, recipe and training config, metrics, corpus provenance, and SHA-256
-hashes. A model is not releasable based only on synthetic validation results.
+hashes. Synthetic validation alone does not make a model releasable.

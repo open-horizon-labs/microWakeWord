@@ -3,7 +3,7 @@
 **Decision:** stop the synthetic-only model search and collect real StackChan
 microphone audio. Every model below was rejected.
 
-All acceptance rates use the exact held-out split and the quantized streaming
+All acceptance rates use the held-out split and the quantized streaming
 model with a five-frame moving window. The evaluator resets streaming state
 between clips. These results measure synthetic audio only.
 

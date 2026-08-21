@@ -8,13 +8,11 @@ streaming model against the microphones and rooms where it must work.
 This Open Horizon Labs fork extends
 [Kevin Ahrendt's microWakeWord](https://github.com/kahrendt/microWakeWord). It
 keeps the upstream TensorFlow training and streaming TensorFlow Lite export,
-then adds the product-development loop around them: reproducible recipes,
+then adds the workflow they lack: reproducible recipes,
 confusable speech, cohort-level evaluation, real-microphone enrollment, and
 artifact qualification.
 
 ## When this fork is useful
-
-Use it when:
 
 - the wake phrase is a name, brand, or invented word without a ready-made model;
 - people may pronounce the phrase several ways;
@@ -39,19 +37,19 @@ phrase + pronunciations + confusable speech
                   ↓
  held-out comparison by device profile and cohort
                   ↓
-     exact-artifact physical qualification
+       physical artifact qualification
 ```
 
 A failed gate sends the work back to the recipe, corpus balance, or training
 configuration. Record rejected candidates in the experiment ledger. Aggregate
 scores do not satisfy the release gate.
 
-## The HiPhi Kizz example
+## Worked recipe: Kizz
 
-The included [HiPhi Kizz recipe](recipes/kizz/README.md) treats natural readings
-of **HiPhi Kizz** as one wake class. It explicitly tests speech such as `Kizz`,
-`kids`, `kiss`, and `quiz`, plus valid prefixes with the wrong final word and
-wrong prefixes followed by `Kizz`.
+The included [Kizz recipe](recipes/kizz/README.md) is one application of the
+framework. It treats natural readings of **HiPhi Kizz** as one wake class and
+explicitly tests `Kizz`, `kids`, `kiss`, and `quiz`, plus valid prefixes with
+the wrong final word and wrong prefixes followed by `Kizz`.
 
 The current synthetic candidates are rejected. Their per-phrase results exposed
 confusable acceptance and weak unseen-pronunciation recall that an aggregate
@@ -76,22 +74,21 @@ The repository does not publish a hardware-qualified Kizz model.
 - separate reports for pronunciations, confusable phrases, ambient audio,
   device profiles, and prior detector outcomes;
 - a versioned real-device corpus with audio hashes and leak-safe splits;
-- the evidence needed to decide whether an exact artifact may be flashed or
-  released.
+- evidence for a flash or release decision.
 
 ## Status and qualification boundary
 
 This is experimental training and qualification tooling. Synthetic evaluation
 can reject a model; it cannot qualify one for a room or microphone it has never
 heard. A model release still requires representative real-device corpora,
-frozen held-out evaluation, the exact quantized artifact, and physical acceptance
-on every claimed target.
+frozen held-out evaluation, the tested quantized artifact, and physical
+acceptance on every claimed target.
 
-The repository catalogs the current microphone-equipped HiPhi targets so their
-corpora can be compared through one contract. A catalog entry does not mean that
-enrollment firmware or real recordings exist. At present, only Kizz has an
-implemented enrollment path, and no device profile is marked as having a
-collected real corpus.
+The [device profile catalog](device-profiles.json) records microphone capability
+and acoustic-domain metadata so product corpora can be compared through one
+contract. A catalog entry does not imply enrollment firmware or real recordings.
+The included Kizz enrollment path is a reference implementation, not a limit on
+the devices this framework can qualify.
 
 ## How microWakeWord detects a wake phrase
 

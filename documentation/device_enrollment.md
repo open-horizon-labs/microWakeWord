@@ -1,18 +1,22 @@
 # Device corpus enrollment
 
-The enrollment service is a standalone LAN service. It is not part of UHC and
-its endpoint is never inferred from a production voice endpoint. A device is
-given the full trainer WebSocket URL explicitly when it enters enrollment mode.
+The enrollment service runs on the LAN, outside UHC. Configure each device with
+its full trainer WebSocket URL; never infer it from the production voice
+endpoint.
 
 ## Start and exercise without hardware
+
+These protocol examples use illustrative identifiers. Replace the device ID,
+profile, phrase, and workspace with values from your recipe and the registered
+profile catalog.
 
 ```sh
 python tools/run_enrollment_service.py --corpus work/device-corpus --port 8091
 
 python tools/simulate_enrollment_device.py \
   --endpoint ws://trainer-host:8091/v1/device \
-  --device-id simulated-stackchan-1 \
-  --device-profile m5stack_stackchan_k151_cores3_v1 \
+  --device-id simulated-mic-1 \
+  --device-profile my_microphone_profile_v1 \
   --no-detected
 ```
 
@@ -22,14 +26,14 @@ Queue one bounded attempt through the trainer's separate HTTP control API:
 curl -X POST http://trainer-host:8091/v1/captures \
   -H 'content-type: application/json' \
   -d '{
-    "capture_id":"speaker-a-stackchan-train-001",
-    "device_id":"simulated-stackchan-1",
-    "device_profile":"m5stack_stackchan_k151_cores3_v1",
-    "phrase":"Hi-Fi Kizz",
-    "pronunciation":"hi_fi",
+    "capture_id":"speaker-a-mic-train-001",
+    "device_id":"simulated-mic-1",
+    "device_profile":"my_microphone_profile_v1",
+    "phrase":"My Wake Phrase",
+    "pronunciation":"primary_reading",
     "truth":"positive",
     "speaker_id":"speaker-a",
-    "session_id":"speaker-a-stackchan-train",
+    "session_id":"speaker-a-mic-train",
     "split":"train",
     "duration_ms":2000,
     "conditions":{"distance_cm":100,"room":"kitchen"}
@@ -48,8 +52,8 @@ On `GET /v1/device`, a microphone device sends:
 ```json
 {
   "type": "hello",
-  "device_id": "kizz-1",
-  "device_profile": "m5stack_stackchan_k151_cores3_v1",
+  "device_id": "mic-1",
+  "device_profile": "my_microphone_profile_v1",
   "firmware_sha": "18433e0",
   "audio": {
     "sample_rate": 16000,
@@ -64,16 +68,14 @@ On `GET /v1/device`, a microphone device sends:
 
 `device_id` addresses an instance. `device_profile` identifies an acoustic
 domain shared by equivalent hardware and preprocessing. The repository-level
-`device-profiles.json` inventory classifies every current controller target.
-Seven have onboard microphones: Waveshare Dial, Frame, RLCD, M5Stack Tough,
-M5StickS3, StopWatch, and Kizz/StackChan. M5Stack Dial v1.1 and the plain
-AtomS3 JoyStick target do not.
+[`device-profiles.json`](../device-profiles.json) catalog records each profile's
+microphone capability and corpus/enrollment status.
 
-Those seven profiles are candidates for evaluating one shared model before
-held-out evidence warrants a device-specific model. A catalog entry does not
-claim that enrollment firmware or a real corpus exists: those are separate,
-explicit statuses. At present only Kizz has the enrollment firmware path, and
-no target is marked as having a collected corpus.
+Evaluate one shared model across all microphone-equipped profiles before
+held-out evidence warrants a device-specific model. Catalog presence,
+enrollment-firmware support, and a collected real corpus are separate statuses.
+The included Kizz path is a reference implementation, not a statement about
+which profiles the framework supports.
 
 The server sends `training_capture`; the device responds with
 `training_sample` followed by one binary PCM message. Attempts are bounded to
@@ -97,9 +99,9 @@ python tools/validate_device_corpus.py --corpus work/device-corpus
 python tools/build_device_corpus_features.py \
   --corpus work/device-corpus --output work/device-features
 python tools/write_recipe_training_config.py \
-  --workspace work/kizz --train-dir work/kizz/trained \
+  --workspace work/my-wake-word --train-dir work/my-wake-word/trained \
   --device-features-dir work/device-features \
-  --output work/kizz/training_parameters.yaml
+  --output work/my-wake-word/training_parameters.yaml
 ```
 
 The builder consumes the manifest's predetermined splits without randomizing

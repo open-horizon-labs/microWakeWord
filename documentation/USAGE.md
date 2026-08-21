@@ -1,16 +1,16 @@
 # Usage
 
-This guide covers the reproducible path supplied by the Open Horizon Labs fork:
-install the trainer, generate a recipe corpus, build features, train and evaluate
-a quantized streaming model, then qualify it with held-out device recordings.
-The HiPhi Kizz recipe is the worked example.
+This guide takes the Open Horizon Labs fork from trainer setup through device
+qualification: generate a recipe corpus, build features, train and evaluate a
+quantized streaming model, then test it with held-out device recordings. The
+The included Kizz recipe is a worked example, not a framework limitation.
 
 ## Training workflow at a glance
 
 Wake-word development runs through two evidence loops. Synthetic audio lets us
 design the wake class, expose likely collisions, and reject weak models before
-using anyone's time to collect device recordings. Real microphone audio then
-tests whether that design survives the devices and rooms where it must work.
+collecting device recordings. Real microphone audio then tests the design on the
+devices and rooms where it must work.
 
 | Stage | What we do | Exit gate |
 | --- | --- | --- |
@@ -21,7 +21,7 @@ tests whether that design survives the devices and rooms where it must work.
 | [Challenge the candidate](#7-evaluate-every-trained-pronunciation) | Score every trained pronunciation, confusable phrase, unseen probe, and ambient negative cohort separately. | All declared synthetic gates pass. A failure sends us back to the recipe, data balance, or training configuration. |
 | [Verify enrollment](#8-exercise-enrollment-without-hardware) | Run the simulated microphone path and prove that directed captures, including provisional detector misses, enter the corpus. | The standalone enrollment and corpus contracts pass end to end without hardware. |
 | [Collect, retrain, and compare](#9-add-real-device-evidence) | Record real attempts through available microphone profiles, add those features, retrain one shared model, and inspect held-out cohort results. | Every claimed profile meets the frozen gates; split models only if held-out evidence requires it. |
-| [Qualify the artifact](#10-qualification-checklist) | Freeze the model and cutoff, flash that exact quantized artifact, and run physical recall and false-wake acceptance tests. | The tested artifact is eligible for release on the targets that passed. |
+| [Qualify the artifact](#10-qualification-checklist) | Freeze the model and cutoff, flash it, and run physical recall and false-wake tests. | The tested artifact is eligible for release on the targets that passed. |
 
 Setup through enrollment verification is hardware-independent. Collection,
 retraining, and qualification require real devices and acoustic evidence.
@@ -92,9 +92,9 @@ python tools/generate_recipe_samples.py \
   --batch-size 16
 ```
 
-Generation skips a phrase directory that already contains the exact requested
-count and refuses a directory with surplus files. The feature builder later
-rejects incomplete or mismatched corpora. The resulting
+Generation skips a phrase directory that already contains the requested count
+and refuses one with surplus files. The feature builder later rejects incomplete
+or mismatched corpora. The resulting
 `generation-manifest.json` records the recipe and generator-model hashes.
 
 ## 4. Build on-device-compatible features
@@ -112,8 +112,8 @@ python tools/build_recipe_features.py \
   --impulses room-impulses
 ```
 
-The builder validates the generation manifest before it creates the exact
-40-feature `micro_speech` representation used by the device model. It preserves
+The builder validates the generation manifest before it creates the 40-feature
+`micro_speech` representation used by the device model. It preserves
 deterministic train, validation, and test splits.
 
 ## 5. Supply general negative features
@@ -151,7 +151,7 @@ python -m microwakeword.model_train_eval \
 ```
 
 The generated config gives confusable speech explicit sampling and penalty
-weight and uses it again as evaluation-only evidence. Checkpoint
+weights, then keeps it as evaluation-only evidence. Checkpoint
 selection first minimizes ambient false accepts per hour to its configured
 target, then maximizes viable recall. Training exports the selected quantized
 streaming model to:
@@ -162,7 +162,7 @@ work/kizz/trained/tflite_stream_state_internal_quant/stream_state_internal_quant
 
 To resume an interrupted run from its checkpoint, repeat the training command
 with `--restore_checkpoint 1`. Review the learning-rate schedule before doing
-so; restoring weights does not decide an appropriate new schedule for you.
+so; restoring weights does not choose an appropriate new schedule.
 
 ## 7. Evaluate every trained pronunciation
 
@@ -183,15 +183,15 @@ The report separates each positive spelling and hard-negative phrase. Do not
 replace those cohorts with one aggregate acceptance rate.
 
 [`recipes/kizz/probes.yaml`](../recipes/kizz/probes.yaml) contains plausible
-HiPhi readings deliberately absent from training. Generate it into a separate
+readings deliberately absent from training. Generate it into a separate
 directory and evaluate it with `--split all` to test acoustic generalization.
 Never merge probe audio into the training corpus after observing its score; add
 new held-out probes first if the training recipe changes.
 
 ## 8. Exercise enrollment without hardware
 
-The training endpoint is standalone. It is not UHC, it is not the production
-voice endpoint, and it may run on another host.
+The training endpoint is a standalone LAN service, separate from UHC and the
+production voice endpoint. It may run on another host.
 
 Start the service and a simulated microphone device in separate terminals:
 
@@ -202,15 +202,16 @@ python tools/run_enrollment_service.py \
 
 python tools/simulate_enrollment_device.py \
   --endpoint ws://trainer-host:8091/v1/device \
-  --device-id simulated-stackchan-1 \
-  --device-profile m5stack_stackchan_k151_cores3_v1 \
+  --device-id simulated-mic-1 \
+  --device-profile my_microphone_profile_v1 \
   --no-detected
 ```
 
 Follow [Device corpus enrollment](device_enrollment.md) to queue bounded
-positive, hard-negative, and ambient attempts. The simulator is a first-class
-fixture: it proves an attempt marked as missed by the provisional detector is
-still retained by the corpus contract.
+positive, hard-negative, and ambient attempts. The simulator proves that an
+attempt marked as missed by the provisional detector is still retained by the
+corpus contract. Replace the illustrative profile with a registered profile
+from `device-profiles.json`.
 
 ## 9. Add real-device evidence
 
@@ -258,11 +259,10 @@ A candidate is ready for physical qualification only when:
 - held-out positive pronunciations and confusable phrases meet explicit gates;
 - ambient false accepts are measured over representative duration;
 - provisional detector misses are present in the device evaluation;
-- the exact quantized artifact is flashed and accepted on each claimed target.
+- the tested quantized artifact is flashed and accepted on each claimed target.
 
-Synthetic-only results belong in the
-[experiment log](../recipes/kizz/EXPERIMENTS.md), not in a hardware-qualified
-release claim.
+Put synthetic-only results in the [experiment log](../recipes/kizz/EXPERIMENTS.md);
+they do not support a hardware-qualified release claim.
 
 ## Troubleshooting
 
