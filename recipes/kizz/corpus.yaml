@@ -1,0 +1,109 @@
+recipe_version: 4
+name: hiphi_kizz
+sample_rate_hz: 16000
+clip_duration_ms: 2000
+random_seed: 231
+
+# All positive spellings train one full-phrase output class. A bare one-syllable
+# "Kizz" model is deliberately separate: combining it with the brand readings
+# produced poor per-phrase recall and unacceptable near-word false accepts.
+positive_phrases:
+  - text: Hi-Fi Kizz
+    samples: 3000
+  - text: High-Fi Kizz
+    samples: 3000
+  - text: Hi Phi Kizz
+    samples: 3000
+  - text: Hee Fee Kizz
+    samples: 3000
+  - text: Hippy Kizz
+    samples: 3000
+  - text: High Fee Kizz
+    samples: 3000
+  - text: Hee Fye Kizz
+    samples: 3000
+  - text: High Fye Kizz
+    samples: 3000
+  - text: Hiffy Kizz
+    samples: 3000
+
+# These are not aliases. They are deliberately confusing speech that must not
+# wake Kizz, with extra weight on the short-word neighbors most likely to fire.
+hard_negative_phrases:
+  - text: Kizz
+    samples: 3000
+  - text: kids
+    samples: 1800
+  - text: kiss
+    samples: 2500
+  - text: quiz
+    samples: 2000
+  - text: fizz
+    samples: 600
+  - text: Liz
+    samples: 300
+  - text: his
+    samples: 300
+  - text: this
+    samples: 600
+  - text: it is
+    samples: 250
+  - text: Kizzy
+    samples: 600
+  - text: Hi-Fi
+    samples: 300
+  - text: Hi Phi
+    samples: 300
+  - text: hippy kids
+    samples: 1800
+  - text: high five kids
+    samples: 1500
+  - text: hi kids
+    samples: 800
+  - text: hee fee kids
+    samples: 1000
+  - text: high fee kids
+    samples: 1000
+  - text: hiffy kids
+    samples: 1000
+
+  # Conjunction-mining negatives: require both an accepted HiPhi prefix and the
+  # Kizz suffix. These prevent the model from solving the diverse positive class
+  # by learning only the common final word.
+  - text: Hi-Fi Kiss
+    samples: 1000
+  - text: Hi Phi Kiss
+    samples: 1000
+  - text: Hee Fee Kiss
+    samples: 1000
+  - text: Hippy Kiss
+    samples: 1000
+  - text: High Fee Kiss
+    samples: 1000
+  - text: Hee Fye Kiss
+    samples: 1000
+  - text: Hiffy Kiss
+    samples: 1000
+  - text: Wi-Fi Kizz
+    samples: 1000
+  - text: Sci-Fi Kizz
+    samples: 1000
+  - text: High Five Kizz
+    samples: 1000
+  - text: Happy Kizz
+    samples: 1000
+  - text: Coffee Kizz
+    samples: 1000
+  - text: Baby Kizz
+    samples: 1000
+  - text: Okay Kizz
+    samples: 1000
+  - text: Hey Kizz
+    samples: 1000
+
+generation:
+  length_scales: [0.72, 0.85, 1.0, 1.15, 1.32]
+  noise_scales: [0.55, 0.667, 0.8, 0.95, 1.15]
+  noise_scale_ws: [0.65, 0.8, 0.95]
+  slerp_weights: [0.2, 0.4, 0.6, 0.8]
+  max_speakers: 700

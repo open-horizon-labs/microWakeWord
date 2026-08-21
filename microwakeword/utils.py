@@ -286,6 +286,15 @@ def model_to_saved(
     return model
 
 
+def streaming_calibration_slices(spectrogram, stride):
+    """Yield complete streaming inputs, ignoring only a trailing partial stride."""
+    if stride <= 0:
+        raise ValueError("stride must be positive")
+    usable_slices = spectrogram.shape[0] - (spectrogram.shape[0] % stride)
+    for index in range(0, usable_slices, stride):
+        yield spectrogram[index : index + stride, :].astype(np.float32)
+
+
 def convert_saved_model_to_tflite(
     config, audio_processor, path_to_model, folder, fname, quantize=False
 ):
@@ -318,10 +327,7 @@ def convert_saved_model_to_tflite(
         stride = config["stride"]
 
         for spectrogram in sample_fingerprints:
-            assert spectrogram.shape[0] % stride == 0
-
-            for i in range(0, spectrogram.shape[0] - stride, stride):
-                sample = spectrogram[i : i + stride, :].astype(np.float32)
+            for sample in streaming_calibration_slices(spectrogram, stride):
                 yield [sample]
 
     converter = tf.lite.TFLiteConverter.from_saved_model(path_to_model)

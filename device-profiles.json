@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "targets": [
+    {
+      "target_id": "hiphi_dial",
+      "exact_hardware": "Waveshare ESP32-S3-Knob-Touch-LCD-1.8",
+      "microphone": {
+        "present": true,
+        "hardware": "onboard digital microphone",
+        "evidence": "https://www.waveshare.com/wiki/ESP32-S3-Knob-Touch-LCD-1.8"
+      },
+      "enrollment": {
+        "device_profile": "waveshare_esp32_s3_knob_touch_lcd_1_8_v1",
+        "firmware_status": "not_implemented",
+        "corpus_status": "not_collected"
+      }
+    },
+    {
+      "target_id": "hiphi_frame",
+      "exact_hardware": "Waveshare ESP32-S3-PhotoPainter, 7.3-inch E6",
+      "microphone": {
+        "present": true,
+        "hardware": "ES7210 dual-microphone array",
+        "evidence": "https://www.waveshare.com/product/esp32-s3-photopainter.htm"
+      },
+      "enrollment": {
+        "device_profile": "waveshare_esp32_s3_photopainter_e6_v1",
+        "firmware_status": "not_implemented",
+        "corpus_status": "not_collected"
+      }
+    },
+    {
+      "target_id": "hiphi_rlcd",
+      "exact_hardware": "Waveshare ESP32-S3-RLCD-4.2",
+      "microphone": {
+        "present": true,
+        "hardware": "ES7210 dual-microphone array",
+        "evidence": "https://www.waveshare.com/product/esp32-s3-rlcd-4.2.htm"
+      },
+      "enrollment": {
+        "device_profile": "waveshare_esp32_s3_rlcd_4_2_v1",
+        "firmware_status": "not_implemented",
+        "corpus_status": "not_collected"
+      }
+    },
+    {
+      "target_id": "hiphi_joy",
+      "exact_hardware": "M5Atom JoyStick with M5AtomS3, SKU K137/C123",
+      "microphone": {
+        "present": false,
+        "hardware": null,
+        "evidence": "https://docs.m5stack.com/en/core/AtomS3"
+      },
+      "enrollment": {
+        "device_profile": null,
+        "firmware_status": "not_applicable",
+        "corpus_status": "not_applicable"
+      }
+    },
+    {
+      "target_id": "hiphi_tough",
+      "exact_hardware": "M5Stack Tough, SKU K034",
+      "microphone": {
+        "present": true,
+        "hardware": "onboard PDM microphone",
+        "evidence": "https://docs.m5stack.com/en/core/tough"
+      },
+      "enrollment": {
+        "device_profile": "m5stack_tough_k034_v1",
+        "firmware_status": "not_implemented",
+        "corpus_status": "not_collected"
+      }
+    },
+    {
+      "target_id": "hiphi_m5dial",
+      "exact_hardware": "M5Stack Dial v1.1, SKU K130-V11",
+      "microphone": {
+        "present": false,
+        "hardware": null,
+        "evidence": "https://docs.m5stack.com/en/core/M5Dial%20V1.1"
+      },
+      "enrollment": {
+        "device_profile": null,
+        "firmware_status": "not_applicable",
+        "corpus_status": "not_applicable"
+      }
+    },
+    {
+      "target_id": "hiphi_sticks3",
+      "exact_hardware": "M5StickS3, SKU K150",
+      "microphone": {
+        "present": true,
+        "hardware": "ES8311 codec with MEMS microphone",
+        "evidence": "https://docs.m5stack.com/en/core/StickS3"
+      },
+      "enrollment": {
+        "device_profile": "m5stack_sticks3_k150_v1",
+        "firmware_status": "not_implemented",
+        "corpus_status": "not_collected"
+      }
+    },
+    {
+      "target_id": "hiphi_stopwatch",
+      "exact_hardware": "M5Stack StopWatch, SKU C152",
+      "microphone": {
+        "present": true,
+        "hardware": "ES8311 codec with MEMS microphone",
+        "evidence": "https://docs.m5stack.com/en/core/StopWatch"
+      },
+      "enrollment": {
+        "device_profile": "m5stack_stopwatch_c152_v1",
+        "firmware_status": "not_implemented",
+        "corpus_status": "not_collected"
+      }
+    },
+    {
+      "target_id": "hiphi_kizz",
+      "exact_hardware": "M5StackChan, SKU K151, with CoreS3 SKU K128",
+      "microphone": {
+        "present": true,
+        "hardware": "ES7210 dual-microphone input",
+        "evidence": "https://docs.m5stack.com/en/core/CoreS3"
+      },
+      "enrollment": {
+        "device_profile": "m5stack_stackchan_k151_cores3_v1",
+        "firmware_status": "implemented",
+        "corpus_status": "not_collected"
+      }
+    }
+  ]
+}

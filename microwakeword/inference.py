@@ -63,6 +63,12 @@ class Model:
 
         self.model = interpreter
 
+    def reset_states(self):
+        """Reset recurrent streaming state between independent audio tracks."""
+        reset = getattr(self.model, "reset_all_variables", None)
+        if reset is not None:
+            reset()
+
     def predict_clip(self, data: np.ndarray, step_ms: int = 20):
         """Run the model on a single clip of audio data
 
