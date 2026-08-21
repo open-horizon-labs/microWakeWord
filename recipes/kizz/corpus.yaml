@@ -26,6 +26,21 @@ positive_phrases:
     samples: 3000
   - text: Hiffy Kizz
     samples: 3000
+  # Speech recognizers and real microphones often render the intended phrase's
+  # final /z/ as the plural in "kids". These are acoustic pronunciations of the
+  # wake phrase, not safely separable collision phrases.
+  - text: hippy kids
+    samples: 1800
+  - text: high five kids
+    samples: 1500
+  - text: hee fee kids
+    samples: 1000
+  - text: high fee kids
+    samples: 1000
+  - text: hiffy kids
+    samples: 1000
+  - text: High Five Kizz
+    samples: 1000
 
 # These are not aliases. They are deliberately confusing speech that must not
 # wake Kizz, with extra weight on the short-word neighbors most likely to fire.
@@ -54,18 +69,8 @@ hard_negative_phrases:
     samples: 300
   - text: Hi Phi
     samples: 300
-  - text: hippy kids
-    samples: 1800
-  - text: high five kids
-    samples: 1500
   - text: hi kids
     samples: 800
-  - text: hee fee kids
-    samples: 1000
-  - text: high fee kids
-    samples: 1000
-  - text: hiffy kids
-    samples: 1000
 
   # Conjunction-mining negatives: require both an accepted HiPhi prefix and the
   # Kizz suffix. These prevent the model from solving the diverse positive class
@@ -87,8 +92,6 @@ hard_negative_phrases:
   - text: Wi-Fi Kizz
     samples: 1000
   - text: Sci-Fi Kizz
-    samples: 1000
-  - text: High Five Kizz
     samples: 1000
   - text: Happy Kizz
     samples: 1000

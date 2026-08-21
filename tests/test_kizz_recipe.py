@@ -57,18 +57,37 @@ class KizzRecipeTest(unittest.TestCase):
         self.assertIn("Hee Fye Kizz", phrases)
         self.assertIn("High Fye Kizz", phrases)
         self.assertIn("Hiffy Kizz", phrases)
+        self.assertTrue(
+            {
+                "hippy kids",
+                "high five kids",
+                "hee fee kids",
+                "high fee kids",
+                "hiffy kids",
+                "High Five Kizz",
+            }.issubset(phrases)
+        )
         counts = {
             entry["text"]: entry["samples"] for entry in self.recipe["positive_phrases"]
         }
         self.assertGreaterEqual(counts["Hee Fee Kizz"], 2000)
         self.assertGreaterEqual(counts["Hippy Kizz"], 2000)
-        self.assertTrue(all(count >= 3000 for count in counts.values()))
 
     def test_near_sounding_words_are_hard_negatives(self):
         phrases = {entry["text"] for entry in self.recipe["hard_negative_phrases"]}
         self.assertTrue({"Kizz", "kids", "kiss", "quiz", "Hi-Fi"}.issubset(phrases))
         self.assertTrue(
             {"Hi-Fi Kiss", "Hippy Kiss", "Wi-Fi Kizz", "Happy Kizz"}.issubset(phrases)
+        )
+        self.assertTrue(
+            {
+                "hippy kids",
+                "high five kids",
+                "hee fee kids",
+                "high fee kids",
+                "hiffy kids",
+                "High Five Kizz",
+            }.isdisjoint(phrases)
         )
 
     def test_pronunciation_probes_are_unseen_during_training(self):

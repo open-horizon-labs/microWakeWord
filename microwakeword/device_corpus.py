@@ -33,6 +33,30 @@ def _required(item: dict, key: str, kind: type):
     return value
 
 
+def _validate_phrase_span(item: dict, capture_id: str, duration_ms: float) -> None:
+    span = item.get("phrase_span")
+    if span is None:
+        return
+    if not isinstance(span, dict):
+        raise ValueError(f"capture {capture_id} phrase_span must be an object")
+    start_ms = span.get("start_ms")
+    end_ms = span.get("end_ms")
+    if (
+        not isinstance(start_ms, (int, float))
+        or isinstance(start_ms, bool)
+        or not isinstance(end_ms, (int, float))
+        or isinstance(end_ms, bool)
+    ):
+        raise ValueError(
+            f"capture {capture_id} phrase_span requires numeric start_ms and end_ms"
+        )
+    if start_ms < 0 or end_ms <= start_ms or end_ms > duration_ms:
+        raise ValueError(
+            f"capture {capture_id} phrase_span must satisfy "
+            f"0 <= start_ms < end_ms <= {duration_ms:g}"
+        )
+
+
 def validate_device_corpus(root: Path) -> dict:
     manifest_path = root / MANIFEST_NAME
     if not manifest_path.is_file():
@@ -136,6 +160,8 @@ def validate_device_corpus(root: Path) -> dict:
                 raise ValueError(
                     f"capture {capture_id} sample count does not match WAV"
                 )
+            duration_ms = wav.getnframes() * 1000 / wav.getframerate()
+            _validate_phrase_span(item, capture_id, duration_ms)
         if sha256(wav_path) != item.get("sha256"):
             raise ValueError(f"capture {capture_id} SHA-256 does not match WAV")
     return manifest

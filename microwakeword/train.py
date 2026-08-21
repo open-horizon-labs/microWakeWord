@@ -43,6 +43,25 @@ def constrain_faph_by_negative_false_accepts(ambient_faph, negative_false_positi
     return np.where(np.asarray(negative_false_positives) > 0, np.inf, ambient_faph)
 
 
+def configure_trainable_layers(model, config):
+    """Apply bounded fine-tuning policy before compiling the model."""
+    if config.get("freeze_feature_extractor"):
+        for layer in model.layers:
+            layer.trainable = False
+        classifiers = [
+            layer for layer in model.layers if isinstance(layer, tf.keras.layers.Dense)
+        ]
+        if not classifiers:
+            raise ValueError("freeze_feature_extractor requires a Dense classifier")
+        classifiers[-1].trainable = True
+        return
+
+    if config.get("freeze_batch_normalization"):
+        for layer in model.layers:
+            if isinstance(layer, tf.keras.layers.BatchNormalization):
+                layer.trainable = False
+
+
 def validate_nonstreaming(config, data_processor, model, test_set):
     testing_fingerprints, testing_ground_truth, _ = data_processor.get_data(
         test_set,
@@ -219,10 +238,7 @@ def train(model, config, data_processor):
         tf.keras.metrics.BinaryCrossentropy(name="loss"),
     ]
 
-    if config.get("freeze_batch_normalization"):
-        for layer in model.layers:
-            if isinstance(layer, tf.keras.layers.BatchNormalization):
-                layer.trainable = False
+    configure_trainable_layers(model, config)
 
     model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
 
