@@ -5,6 +5,29 @@ install the trainer, generate a recipe corpus, build features, train and evaluat
 a quantized streaming model, then qualify it with held-out device recordings.
 The HiPhi Kizz recipe is the worked example.
 
+## Training workflow at a glance
+
+Wake-word development runs through two evidence loops. Synthetic audio lets us
+design the wake class, expose likely collisions, and reject weak models before
+using anyone's time to collect device recordings. Real microphone audio then
+tests whether that design survives the devices and rooms where it must work.
+
+| Stage | What we do | Exit gate |
+| --- | --- | --- |
+| [Set up](#1-install-the-trainer) | Install and test the trainer; obtain the Piper generator. | The test suite passes and the generator model is available. |
+| [Define and generate](#3-inspect-and-generate-the-kizz-corpus) | List accepted pronunciations, nearby speech that must not wake the device, and unseen probes; generate varied synthetic speech. | The recipe, source hashes, phrase counts, and generation manifest validate. |
+| [Build features](#4-build-on-device-compatible-features) | Mix representative noise and room responses, add general negative audio, and extract the same `micro_speech` features used on-device. | Deterministic train, validation, and test feature sets are ready. |
+| [Train and select](#6-write-the-training-configuration-and-train) | Train the streaming model, minimize ambient false accepts first, then maximize viable recall, and export a quantized candidate. | A candidate and its frozen validation cutoff are ready for challenge testing. |
+| [Challenge the candidate](#7-evaluate-every-trained-pronunciation) | Score every trained pronunciation, confusable phrase, unseen probe, and ambient negative cohort separately. | All declared synthetic gates pass. A failure sends us back to the recipe, data balance, or training configuration. |
+| [Verify enrollment](#8-exercise-enrollment-without-hardware) | Run the simulated microphone path and prove that directed captures, including provisional detector misses, enter the corpus. | The standalone enrollment and corpus contracts pass end to end without hardware. |
+| [Collect, retrain, and compare](#9-add-real-device-evidence) | Record real attempts through available microphone profiles, add those features, retrain one shared model, and inspect held-out cohort results. | Every claimed profile meets the frozen gates; split models only if held-out evidence requires it. |
+| [Qualify the artifact](#10-qualification-checklist) | Freeze the model and cutoff, flash that exact quantized artifact, and run physical recall and false-wake acceptance tests. | The tested artifact is eligible for release on the targets that passed. |
+
+Setup through enrollment verification is hardware-independent. Collection,
+retraining, and qualification require real devices and acoustic evidence.
+Rejected candidates and their rejection reasons belong in the
+[experiment log](../recipes/kizz/EXPERIMENTS.md).
+
 ## 1. Install the trainer
 
 Use Python 3.10 or newer. A local virtual environment keeps TensorFlow and audio
