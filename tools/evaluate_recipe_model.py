@@ -113,6 +113,17 @@ def clips_by_group(root: Path, split: str, split_seed: int) -> dict[str, list[Pa
     return dict(grouped)
 
 
+def phrase_labels(generated: Path) -> dict[str, str]:
+    manifest_path = generated / "generation-manifest.json"
+    if not manifest_path.exists():
+        return {}
+    manifest = json.loads(manifest_path.read_text())
+    return {
+        Path(item["output"]).name: item["text"]
+        for item in manifest.get("plan", [])
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path, required=True)
@@ -141,11 +152,12 @@ def main() -> int:
         "positive": {},
         "hard_negative": {},
     }
+    labels = phrase_labels(args.generated)
     for truth in ("positive", "hard_negative"):
         seed = args.split_seed + (1 if truth == "hard_negative" else 0)
         grouped = clips_by_group(args.generated / truth, args.split, seed)
         for name, clips in sorted(grouped.items()):
-            result[truth][name] = evaluate_group(
+            result[truth][labels.get(name, name)] = evaluate_group(
                 args.model,
                 clips,
                 args.cutoff,
