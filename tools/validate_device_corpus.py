@@ -10,7 +10,7 @@ from microwakeword.device_corpus import validate_device_corpus
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("corpus", type=Path)
+    parser.add_argument("--corpus", type=Path, required=True)
     args = parser.parse_args()
     manifest = validate_device_corpus(args.corpus)
     print(
