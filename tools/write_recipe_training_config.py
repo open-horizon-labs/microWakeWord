@@ -45,7 +45,7 @@ def training_config(
         "time_mask_count": [1, 1],
         "freq_mask_max_size": [3, 3],
         "freq_mask_count": [1, 1],
-        "eval_step_interval": 500,
+        "eval_step_interval": 1000,
         "clip_duration_ms": 2000,
         "target_minimization": 0.5,
         "minimization_metric": "ambient_false_positives_per_hour",

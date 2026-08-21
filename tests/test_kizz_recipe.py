@@ -137,6 +137,7 @@ class KizzRecipeTest(unittest.TestCase):
         )
         self.assertFalse(hard_negative["truth"])
         self.assertGreaterEqual(hard_negative["penalty_weight"], 4.0)
+        self.assertLessEqual(config["eval_step_interval"], 1000)
 
     def test_microfrontend_accepts_current_pybind_api(self):
         from microwakeword.audio.audio_utils import generate_features_for_clip
