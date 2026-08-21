@@ -5,19 +5,28 @@
 Build a custom wake word, find out what it confuses with, and test the same
 streaming model against the microphones and rooms where it must work.
 
-This Open Horizon Labs fork extends
-[Kevin Ahrendt's microWakeWord](https://github.com/kahrendt/microWakeWord). It
-keeps its TensorFlow training and streaming TensorFlow Lite export, and adds
-reproducible recipes, confusable speech, cohort evaluation, device enrollment,
-and artifact qualification.
+This Open Horizon Labs fork builds on
+[Kevin Ahrendt's microWakeWord](https://github.com/kahrendt/microWakeWord) and
+retains its TensorFlow training and streaming TensorFlow Lite export.
 
-## When this fork is useful
+## What this fork adds
 
-- the wake phrase is a name, brand, or invented word without a ready-made model;
-- people may pronounce the phrase several ways;
-- nearby words and partial phrases must not wake the device;
-- one candidate must be compared across different microphone frontends;
-- a detector miss must become training evidence instead of disappearing.
+Upstream microWakeWord provides the TensorFlow trainer, audio augmentation,
+checkpoint selection, streaming conversion, and quantized TensorFlow Lite
+export. This fork adds the workflow for developing and qualifying a custom wake
+word across real devices.
+
+| Upstream provides | This fork adds |
+| --- | --- |
+| Piper sample generation and notebook-driven training | Versioned recipes, resumable generation, source hashes, and manifest validation |
+| Weighted training sources and ambient false-accept metrics | Named pronunciation and confusable-speech cohorts used in training, checkpoint selection, and evaluation |
+| Streaming TensorFlow Lite export | Per-phrase and unseen-pronunciation evaluation with isolated streaming state |
+| Model training and test datasets | A device-corpus contract that retains every commanded attempt, including wake-detector misses |
+| A model artifact | Device-profile comparisons, leak-safe held-out splits, and a physical qualification checklist |
+
+Use upstream when you need the trainer and exporter. Use this fork when you also
+need reproducible experiments and evidence that a candidate works on its target
+microphones.
 
 ## The training and qualification loop
 
