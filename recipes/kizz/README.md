@@ -59,6 +59,7 @@ python tools/write_recipe_training_config.py \
 When a later recipe revision changes only one class, pass `--class-name
 hard_negative` or `--class-name positive`; the complete recipe/manifest and all
 corpus directories are still validated before the selected class is rebuilt.
+Pass that alternate feature root to the config writer with `--features-dir`.
 
 After exporting the quantized streaming model, measure every spelling
 separately so a strong aggregate score cannot hide a weak pronunciation:

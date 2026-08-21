@@ -20,9 +20,11 @@ def feature(path: Path, weight: float, penalty: float, truth: bool, strategy: st
     }
 
 
-def training_config(workspace: Path, train_dir: Path) -> dict:
+def training_config(
+    workspace: Path, train_dir: Path, features_dir: Path | None = None
+) -> dict:
     negatives = workspace / "negative-datasets"
-    features = workspace / "features"
+    features = features_dir or workspace / "features"
     return {
         "window_step_ms": 10,
         "train_dir": str(train_dir),
@@ -55,10 +57,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--train-dir", type=Path, required=True)
+    parser.add_argument("--features-dir", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.write_text(
-        yaml.safe_dump(training_config(args.workspace, args.train_dir), sort_keys=False)
+        yaml.safe_dump(
+            training_config(args.workspace, args.train_dir, args.features_dir),
+            sort_keys=False,
+        )
     )
     return 0
 
