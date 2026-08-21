@@ -299,11 +299,20 @@ class MmapFeatureGenerator(object):
                 spectrogram = spectrogram.astype(np.float32) * 0.0390625
 
             if truncation_strategy == "split":
+                if spectrogram.shape[0] <= features_length:
+                    yield fixed_length_spectrogram(
+                        spectrogram,
+                        features_length,
+                        "truncate_start",
+                    )
+                    continue
+
+                split_step = max(1, int(1000 * self.step * self.stride))
                 for feature_start_index in range(
                     0,
-                    spectrogram.shape[0] - features_length,
-                    int(1000 * self.step * self.stride),
-                ):  # 10*2 features corresponds to 200 ms
+                    spectrogram.shape[0] - features_length + 1,
+                    split_step,
+                ):
                     split_spectrogram = spectrogram[
                         feature_start_index : feature_start_index + features_length
                     ]
@@ -414,6 +423,7 @@ class FeatureHandler(object):
         config: dict,
     ):
         self.feature_providers = []
+        self.evaluation_enabled = []
 
         logging.info("Loading and analyzing data sets.")
 
@@ -450,6 +460,9 @@ class FeatureHandler(object):
                         feature_set["truncation_strategy"],
                     )
                 )
+            self.evaluation_enabled.append(
+                feature_set.get("evaluation_enabled", True)
+            )
             set_modes = [
                 "training",
                 "validation",
@@ -476,7 +489,11 @@ class FeatureHandler(object):
         """
 
         sample_duration = 0
-        for provider in self.feature_providers:
+        for provider, evaluation_enabled in zip(
+            self.feature_providers, self.evaluation_enabled
+        ):
+            if mode != "training" and not evaluation_enabled:
+                continue
             sample_duration += provider.get_mode_duration(mode)
         return sample_duration
 
@@ -490,7 +507,11 @@ class FeatureHandler(object):
             count of spectrograms in given mode
         """
         sample_count = 0
-        for provider in self.feature_providers:
+        for provider, evaluation_enabled in zip(
+            self.feature_providers, self.evaluation_enabled
+        ):
+            if mode != "training" and not evaluation_enabled:
+                continue
             sample_count += provider.get_mode_size(mode)
         return sample_count
 
@@ -568,7 +589,11 @@ class FeatureHandler(object):
                 labels.append(float(provider.label))
                 weights.append(float(provider.penalty_weight))
         else:
-            for provider in self.feature_providers:
+            for provider, evaluation_enabled in zip(
+                self.feature_providers, self.evaluation_enabled
+            ):
+                if not evaluation_enabled:
+                    continue
                 generator = provider.get_feature_generator(
                     mode, features_length, truncation_strategy
                 )

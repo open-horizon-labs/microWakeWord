@@ -61,6 +61,7 @@ class DeviceCorpusTest(unittest.TestCase):
             "capture_id": capture_id,
             "path": f"audio/{capture_id}.wav",
             "truth": "positive",
+            "source": "human",
             "phrase": "Hi-Fi Kizz",
             "pronunciation": "hi_fi",
             "speaker_id": "speaker-a",
@@ -149,6 +150,74 @@ class DeviceCorpusTest(unittest.TestCase):
                 },
                 {"train": 1, "validation": 1, "test": 1},
             )
+
+    def test_production_features_allow_synthetic_playback_only_in_training(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_corpus(
+                root,
+                [
+                    self.capture("train", source="synthetic_playback"),
+                    self.capture(
+                        "validation",
+                        speaker_id="speaker-b",
+                        session_id="session-b",
+                        split="validation",
+                    ),
+                    self.capture(
+                        "test",
+                        speaker_id="speaker-c",
+                        session_id="session-c",
+                        split="test",
+                    ),
+                ],
+            )
+            manifest = validate_device_corpus(root)
+            clips = FEATURE_MODULE.explicit_clips(root, manifest, "positive")
+            self.assertEqual(
+                {split: len(clips.split_clips[split]) for split in FEATURE_MODULE.SPLITS},
+                {"train": 1, "validation": 1, "test": 1},
+            )
+
+    def test_production_features_reject_synthetic_holdouts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_corpus(
+                root,
+                [
+                    self.capture("train", source="synthetic_playback"),
+                    self.capture(
+                        "validation",
+                        source="synthetic_playback",
+                        speaker_id="speaker-b",
+                        session_id="session-b",
+                        split="validation",
+                    ),
+                    self.capture(
+                        "test",
+                        source="synthetic_playback",
+                        speaker_id="speaker-c",
+                        session_id="session-c",
+                        split="test",
+                    ),
+                ],
+            )
+            manifest = validate_device_corpus(root)
+            with self.assertRaisesRegex(ValueError, "eligible captures"):
+                FEATURE_MODULE.explicit_clips(root, manifest, "positive")
+
+    def test_train_only_features_accept_synthetic_device_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_corpus(
+                root,
+                [self.capture("train", source="synthetic_playback")],
+            )
+            manifest = validate_device_corpus(root)
+            clips = FEATURE_MODULE.explicit_clips(
+                root, manifest, "positive", splits={"train"}
+            )
+            self.assertEqual(len(clips.split_clips["train"]), 1)
 
     def test_ambient_holdouts_feed_false_accept_metrics(self):
         self.assertEqual(

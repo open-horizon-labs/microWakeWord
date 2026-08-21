@@ -40,11 +40,12 @@ def peak_probability(
             16000 // divisor,
             sample_rate // divisor,
         ).astype(np.float32)
-    target_samples = 16000 * clip_duration_ms // 1000
-    if pcm.shape[0] < target_samples:
-        pcm = np.pad(pcm, (target_samples - pcm.shape[0], 0))
-    elif pcm.shape[0] > target_samples:
-        pcm = pcm[-target_samples:]
+    if clip_duration_ms:
+        target_samples = 16000 * clip_duration_ms // 1000
+        if pcm.shape[0] < target_samples:
+            pcm = np.pad(pcm, (target_samples - pcm.shape[0], 0))
+        elif pcm.shape[0] > target_samples:
+            pcm = pcm[-target_samples:]
     reset_model(model)
     probabilities = np.asarray(model.predict_clip(pcm, step_ms=10), dtype=np.float32)
     probabilities = probabilities[ignore_initial:]
@@ -131,7 +132,12 @@ def main() -> int:
     parser.add_argument("--cutoff", type=float, required=True)
     parser.add_argument("--sliding-window", type=int, default=5)
     parser.add_argument("--ignore-initial", type=int, default=25)
-    parser.add_argument("--clip-duration-ms", type=int, default=2000)
+    parser.add_argument(
+        "--clip-duration-ms",
+        type=int,
+        default=0,
+        help="Optionally crop clips to this duration; 0 evaluates the full recording",
+    )
     parser.add_argument("--limit-per-phrase", type=int, default=0)
     parser.add_argument(
         "--split",

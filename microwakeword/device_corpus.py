@@ -10,6 +10,7 @@ import wave
 MANIFEST_NAME = "device-corpus.json"
 TRUTHS = {"positive", "hard_negative", "ambient_negative"}
 SPLITS = {"train", "validation", "test"}
+CAPTURE_SOURCES = {"human", "synthetic_playback", "ambient", "simulated"}
 REQUIRED_AUDIO = {
     "sample_rate": 16000,
     "channels": 1,
@@ -81,6 +82,7 @@ def validate_device_corpus(root: Path) -> dict:
             raise ValueError(f"duplicate capture_id: {capture_id}")
         capture_ids.add(capture_id)
         truth = _required(item, "truth", str)
+        source = _required(item, "source", str)
         split = _required(item, "split", str)
         speaker = _required(item, "speaker_id", str)
         session = _required(item, "session_id", str)
@@ -97,6 +99,12 @@ def validate_device_corpus(root: Path) -> dict:
         _required(item, "phrase", str)
         if truth not in TRUTHS:
             raise ValueError(f"unsupported truth for {capture_id}: {truth}")
+        if source not in CAPTURE_SOURCES:
+            raise ValueError(f"unsupported source for {capture_id}: {source}")
+        if truth == "ambient_negative" and source not in {"ambient", "simulated"}:
+            raise ValueError(
+                f"ambient capture {capture_id} requires ambient or simulated source"
+            )
         if split not in SPLITS:
             raise ValueError(f"unsupported split for {capture_id}: {split}")
         if not isinstance(item.get("detected"), bool):
