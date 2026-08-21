@@ -49,6 +49,17 @@ python tools/write_recipe_training_config.py \
   --output work/kizz/training_parameters.yaml
 ```
 
+After exporting the quantized streaming model, measure every spelling
+separately so a strong aggregate score cannot hide a weak pronunciation:
+
+```sh
+python tools/evaluate_recipe_model.py \
+  --model work/kizz/trained/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite \
+  --generated work/kizz/generated \
+  --cutoff 0.96 \
+  --output work/kizz/pronunciation_metrics.json
+```
+
 ## Quality bar
 
 Model selection must minimize ambient false accepts before maximizing recall.
