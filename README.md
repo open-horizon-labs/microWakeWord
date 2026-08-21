@@ -7,10 +7,9 @@ streaming model against the microphones and rooms where it must work.
 
 This Open Horizon Labs fork extends
 [Kevin Ahrendt's microWakeWord](https://github.com/kahrendt/microWakeWord). It
-keeps the upstream TensorFlow training and streaming TensorFlow Lite export,
-then adds the workflow they lack: reproducible recipes,
-confusable speech, cohort-level evaluation, real-microphone enrollment, and
-artifact qualification.
+keeps its TensorFlow training and streaming TensorFlow Lite export, and adds
+reproducible recipes, confusable speech, cohort evaluation, device enrollment,
+and artifact qualification.
 
 ## When this fork is useful
 
@@ -40,96 +39,83 @@ phrase + pronunciations + confusable speech
        physical artifact qualification
 ```
 
-A failed gate sends the work back to the recipe, corpus balance, or training
-configuration. Record rejected candidates in the experiment ledger. Aggregate
-scores do not satisfy the release gate.
+When a gate fails, revise the recipe, corpus balance, or training configuration.
+Record rejected candidates; aggregate scores never satisfy a release gate.
 
 ## Worked recipe: Kizz
 
-The included [Kizz recipe](recipes/kizz/README.md) is one application of the
-framework. It treats natural readings of **HiPhi Kizz** as one wake class and
-explicitly tests `Kizz`, `kids`, `kiss`, and `quiz`, plus valid prefixes with
-the wrong final word and wrong prefixes followed by `Kizz`.
+The [Kizz recipe](recipes/kizz/README.md) treats natural readings of **HiPhi
+Kizz** as one wake class. It tests `Kizz`, `kids`, `kiss`, `quiz`, valid prefixes
+with the wrong final word, and wrong prefixes followed by `Kizz`.
 
-The current synthetic candidates are rejected. Their per-phrase results exposed
-confusable acceptance and weak unseen-pronunciation recall that an aggregate
-result would hide. See the [experiment ledger](recipes/kizz/EXPERIMENTS.md).
-The repository does not publish a hardware-qualified Kizz model.
+Its synthetic candidates are rejected: per-phrase results exposed confusable
+acceptance and weak unseen-pronunciation recall. See the
+[experiment ledger](recipes/kizz/EXPERIMENTS.md); no Kizz model is
+hardware-qualified.
 
 ## Start here
 
-- Follow the [end-to-end usage guide](documentation/USAGE.md).
-- Read the [technique and reference ledger](documentation/techniques.md) to see
-  what comes from upstream research and what this fork adds.
-- Use the [standalone device enrollment service](documentation/device_enrollment.md)
-  to collect bounded real-microphone attempts, including provisional misses.
-- Check [data-source and license notes](documentation/data_sources.md) before
-  building or distributing a corpus.
+- [Usage guide](documentation/USAGE.md): train and qualify a model.
+- [Techniques and references](documentation/techniques.md): methods, sources,
+  and fork-specific policies.
+- [Device enrollment](documentation/device_enrollment.md): collect bounded
+  microphone attempts, including provisional misses.
+- [Data sources](documentation/data_sources.md): corpus licensing and provenance.
 
 ## What a run produces
 
-- a recipe and generation manifest with source hashes and phrase counts;
-- deterministic train, validation, and test feature sets;
-- a quantized streaming TensorFlow Lite candidate;
-- separate reports for pronunciations, confusable phrases, ambient audio,
-  device profiles, and prior detector outcomes;
-- a versioned real-device corpus with audio hashes and leak-safe splits;
+- recipe, generation manifest, and source hashes;
+- deterministic train, validation, and test features;
+- quantized streaming TensorFlow Lite candidate and cohort reports;
+- versioned device corpus with leak-safe splits;
 - evidence for a flash or release decision.
 
 ## Status and qualification boundary
 
 This is experimental training and qualification tooling. Synthetic evaluation
-can reject a model; it cannot qualify one for a room or microphone it has never
-heard. A model release still requires representative real-device corpora,
-frozen held-out evaluation, the tested quantized artifact, and physical
-acceptance on every claimed target.
+can reject a model, not qualify it. Release requires representative device
+corpora, frozen held-out evaluation, the tested artifact, and physical
+acceptance on each claimed target.
 
 The [device profile catalog](device-profiles.json) records microphone capability
-and acoustic-domain metadata so product corpora can be compared through one
-contract. A catalog entry does not imply enrollment firmware or real recordings.
-The included Kizz enrollment path is a reference implementation, not a limit on
-the devices this framework can qualify.
+and acoustic-domain metadata. A catalog entry does not imply enrollment firmware
+or real recordings. Kizz enrollment is a reference implementation, not a device
+limit.
 
 ## How microWakeWord detects a wake phrase
 
-The detector has two stages. First, mono 16 kHz audio is converted into 40
-features every 10 ms by the TensorFlow Lite Micro
+The detector first converts mono 16 kHz audio into 40 features every 10 ms with
+the TensorFlow Lite Micro
 [`micro_speech` frontend](https://github.com/tensorflow/tflite-micro/tree/main/tensorflow/lite/micro/examples/micro_speech).
-The frontend uses a 30 ms window with 20 ms of overlap and applies noise
-reduction and gain normalization suited to small devices.
+frontend: 30 ms window, 20 ms overlap, noise reduction, and gain normalization.
 
-Second, a streaming neural network updates from the newest feature slice and
-emits a wake probability. The model uses
+Then a streaming neural network consumes each new feature slice and emits a
+wake probability. It uses
 [MixConv](https://arxiv.org/abs/1907.09595) depthwise convolutions and code
 derived from Google Research's
 [`kws_streaming`](https://github.com/google-research/google-research/tree/master/kws_streaming)
-work described in
-[Streaming Keyword Spotting on Mobile Devices](https://arxiv.org/abs/2005.06720).
-The runtime requires several consecutive high probabilities before declaring a
-wake.
+described in [Streaming Keyword Spotting on Mobile Devices](https://arxiv.org/abs/2005.06720).
+Several consecutive high probabilities trigger a wake.
 
-Training uses whole spectrograms, then exports a streaming model for incremental
-inference. The upstream pipeline supports
+Training uses whole spectrograms and exports an incremental streaming model. It
+supports
 [SpecAugment](https://arxiv.org/abs/1904.08779), weighted sampling and penalties,
 ambient false-accept estimation, streaming conversion, and integer
-quantization. The [technique ledger](documentation/techniques.md) maps each
-method to its implementation and source.
+quantization. The [technique ledger](documentation/techniques.md) maps methods
+to implementations and sources.
 
 ## Models and training data
 
 Upstream-compatible published models are available from
 [ESPHome's micro wake word model repository](https://github.com/esphome/micro-wake-word-models).
-The framework can consume upstream
-[pre-generated negative features](https://huggingface.co/datasets/kahrendt/microwakeword).
-The [data-source notes](documentation/data_sources.md) identify the underlying
-public corpora and their licenses.
+It can consume upstream [pre-generated negative features](https://huggingface.co/datasets/kahrendt/microwakeword).
+See [data sources](documentation/data_sources.md) for corpora and licenses.
 
 ## Upstream relationship
 
-This fork preserves upstream attribution and aims to retain compatibility with
-microWakeWord. General improvements should be upstreamable when possible. Open
-Horizon Labs recipes, device profiles, and product-qualification evidence may
-remain fork-specific. Bug reports should say whether the problem reproduces on
+This fork retains upstream attribution and compatibility where possible. General
+improvements should be upstreamable; recipes, device profiles, and qualification
+evidence may remain fork-specific. Bug reports should say whether the problem reproduces on
 [`kahrendt/microWakeWord`](https://github.com/kahrendt/microWakeWord) or only on
 this fork.
 

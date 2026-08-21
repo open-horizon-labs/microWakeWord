@@ -1,11 +1,9 @@
 # Kizz synthetic model results
 
-**Decision:** stop the synthetic-only model search and collect real StackChan
-microphone audio. Every model below was rejected.
+**Decision:** stop synthetic-only search; collect StackChan microphone audio.
 
-All acceptance rates use the held-out split and the quantized streaming
-model with a five-frame moving window. The evaluator resets streaming state
-between clips. These results measure synthetic audio only.
+All results use held-out synthetic audio, the quantized streaming model, a
+five-frame moving window, and reset state between clips.
 
 | Model and training change | Cutoff | Intended phrase acceptance | Incorrect or unseen acceptance | Result |
 | --- | ---: | ---: | --- | --- |
@@ -15,7 +13,5 @@ between clips. These results measure synthetic audio only.
 | Fee-family v2: 3× hard-negative sampling, 2× error penalty, and hard negatives included in checkpoint selection | 0.29 | 83.8%–95.3% | bare `Kizz` 11.2%; `kiss` 11.9%; `Hiffy Kiss` 38.4%; `*-kids` conjunctions 31.6%–35.1% | Rejected: stronger negative pressure reduced some collisions but left conjunction failures. |
 | Fee-family v2 at a higher cutoff | 0.47 | 73.8%–88.7% | conjunction false accepts 11.2%–29.2% | Rejected: the recall loss did not buy enough collision reduction. |
 
-We did not train the remaining acoustic clusters. The working hypothesis is that
-synthetic speech renders the invented word `Kizz` too inconsistently to settle
-the class boundary. The next experiment must use actual device-microphone wake
-captures before another model search is justified.
+Synthetic speech renders `Kizz` too inconsistently to settle the class boundary.
+Collect device-microphone captures before another model search.

@@ -1,10 +1,8 @@
 # Techniques and references
 
-This ledger distinguishes the upstream methods retained by the fork from the
-Open Horizon Labs additions. “Reference” means either a primary publication or
-the upstream project that defines the method. Fork-specific product and corpus
-policies cite their implementation and experiment evidence instead of implying
-that they came from a paper.
+This ledger separates upstream methods from fork additions. References are
+primary publications or defining upstream projects; fork policies cite their
+implementation and experiment evidence.
 
 ## Detection and model architecture
 
@@ -14,7 +12,7 @@ that they came from a paper.
 | Streaming keyword spotting | Train with complete feature windows, then convert to a stateful model that consumes new feature slices. | [`microwakeword/layers/stream.py`](../microwakeword/layers/stream.py), [`microwakeword/model_train_eval.py`](../microwakeword/model_train_eval.py) | [Streaming Keyword Spotting on Mobile Devices](https://arxiv.org/abs/2005.06720), [Google Research `kws_streaming`](https://github.com/google-research/google-research/tree/master/kws_streaming) |
 | Mixed depthwise convolutions | Use multiple temporal kernel sizes efficiently in the small streaming network. | [`microwakeword/mixednet.py`](../microwakeword/mixednet.py) | [MixConv: Mixed Depthwise Convolutional Kernels](https://arxiv.org/abs/1907.09595) |
 | Integer quantization | Export a smaller, faster TensorFlow Lite streaming artifact using representative training features. | [`microwakeword/utils.py`](../microwakeword/utils.py) | [TensorFlow model optimization: post-training integer quantization](https://www.tensorflow.org/model_optimization/guide/quantization/post_training) |
-| Complete-stride calibration | Exclude only an incomplete trailing streaming stride from representative calibration, rather than discarding valid terminal frames. | [`microwakeword/utils.py`](../microwakeword/utils.py), [`tests/test_kizz_recipe.py`](../tests/test_kizz_recipe.py) | Fork correctness fix; verified by regression test. |
+| Complete-stride calibration | Exclude only incomplete trailing streaming strides from calibration. | [`microwakeword/utils.py`](../microwakeword/utils.py), [`tests/test_kizz_recipe.py`](../tests/test_kizz_recipe.py) | Fork correctness fix; regression-tested. |
 
 ## Corpus generation and augmentation
 
@@ -62,12 +60,11 @@ that they came from a paper.
 | Immutable, leak-safe corpus manifest | Require unique capture IDs and hashes, explicit truth/splits, registered profiles, and no speaker or session crossing splits. | [`microwakeword/device_corpus.py`](../microwakeword/device_corpus.py), [`tests/test_device_corpus.py`](../tests/test_device_corpus.py) | Fork data-integrity contract. |
 | Predetermined device splits | Build features from manifest-assigned train/validation/test captures without re-randomizing them. | [`tools/build_device_corpus_features.py`](../tools/build_device_corpus_features.py) | Fork evaluation-integrity design. |
 | Multi-dimensional held-out reporting | Group device results by truth, phrase, pronunciation, profile, and provisional detector outcome. | [`tools/evaluate_device_corpus_model.py`](../tools/evaluate_device_corpus_model.py) | Fork qualification contract. |
-| Shared-model-first comparison | Evaluate one model across all microphone-equipped product corpora, then split models only when held-out evidence shows a profile-specific failure. | [`device-profiles.json`](../device-profiles.json), [Device enrollment](device_enrollment.md) | Fork product strategy; not a claim that all profiles are already qualified. |
+| Shared-model-first comparison | Evaluate one model across microphone-equipped corpora; split only for held-out profile failure. | [`device-profiles.json`](../device-profiles.json), [Device enrollment](device_enrollment.md) | Fork strategy; profiles are not all qualified. |
 
 ## Public training data
 
-The framework can use FSD50K, FMA, WHAM!, VOICES, Common Voice, and DiPCo for
-negative or ambient evaluation data. Their primary papers, project pages, and
-licenses are collected in [Data sources](data_sources.md). Dataset availability
-does not grant permission to redistribute derived audio or models; check every
-source's current terms before publishing an artifact.
+The framework can use FSD50K, FMA, WHAM!, VOICES, Common Voice, and DiPCo.
+See [data sources](data_sources.md) for papers, projects, and licenses. Dataset
+availability does not permit redistribution of derived audio or models; check
+each source's terms before publishing.

@@ -1,16 +1,13 @@
 # Usage
 
-This guide takes the Open Horizon Labs fork from trainer setup through device
-qualification: generate a recipe corpus, build features, train and evaluate a
-quantized streaming model, then test it with held-out device recordings. The
-The included Kizz recipe is a worked example, not a framework limitation.
+This guide covers setup, corpus generation, feature building, training,
+evaluation, and device qualification. Kizz is the worked example, not a
+framework limit.
 
 ## Training workflow at a glance
 
-Wake-word development runs through two evidence loops. Synthetic audio lets us
-design the wake class, expose likely collisions, and reject weak models before
-collecting device recordings. Real microphone audio then tests the design on the
-devices and rooms where it must work.
+Synthetic audio defines the wake class and rejects weak models. Device audio
+tests the survivors in their intended rooms.
 
 | Stage | What we do | Exit gate |
 | --- | --- | --- |
@@ -23,15 +20,12 @@ devices and rooms where it must work.
 | [Collect, retrain, and compare](#9-add-real-device-evidence) | Record real attempts through available microphone profiles, add those features, retrain one shared model, and inspect held-out cohort results. | Every claimed profile meets the frozen gates; split models only if held-out evidence requires it. |
 | [Qualify the artifact](#10-qualification-checklist) | Freeze the model and cutoff, flash it, and run physical recall and false-wake tests. | The tested artifact is eligible for release on the targets that passed. |
 
-Setup through enrollment verification is hardware-independent. Collection,
-retraining, and qualification require real devices and acoustic evidence.
-Rejected candidates and their rejection reasons belong in the
-[experiment log](../recipes/kizz/EXPERIMENTS.md).
+Setup through enrollment verification needs no hardware. Record rejected models
+and reasons in the [experiment log](../recipes/kizz/EXPERIMENTS.md).
 
 ## 1. Install the trainer
 
-Use Python 3.10 or newer. A local virtual environment keeps TensorFlow and audio
-dependencies isolated:
+Use Python 3.10+ and a virtual environment:
 
 ```sh
 git clone https://github.com/open-horizon-labs/microWakeWord.git
@@ -43,18 +37,17 @@ python -m pip install -e .
 python -m pip install piper-sample-generator
 ```
 
-Run the tests before starting a long generation or training job:
+Run tests before long generation or training jobs:
 
 ```sh
 python -m unittest discover -s tests -v
 ```
 
-GPU acceleration is strongly recommended for corpus generation and training,
-but the commands are the same on CPU.
+GPU is recommended for generation and training; commands are unchanged on CPU.
 
 ## 2. Obtain the Piper generator model
 
-The Kizz recipe uses the LibriTTS-R multi-speaker generator published by
+Kizz uses the LibriTTS-R multi-speaker generator from
 [`piper-sample-generator`](https://github.com/rhasspy/piper-sample-generator):
 
 ```sh
@@ -64,15 +57,14 @@ curl -L \
   -o models/en_US-libritts_r-medium.pt
 ```
 
-If the installed package does not expose the current generator module, clone
-that repository beside this one and add
+If the installed package lacks the generator module, clone it beside this repo
+and add
 `--generator-source ../piper-sample-generator` to generation commands.
 
 ## 3. Inspect and generate the Kizz corpus
 
-[`recipes/kizz/corpus.yaml`](../recipes/kizz/corpus.yaml) is the source of truth
-for phrases, sample counts, pronunciation variants, confusables, and Piper
-variation settings. Inspect the complete plan without creating audio:
+[`recipes/kizz/corpus.yaml`](../recipes/kizz/corpus.yaml) defines phrases,
+counts, pronunciations, confusables, and Piper variation. Inspect it first:
 
 ```sh
 python tools/generate_recipe_samples.py \
@@ -92,16 +84,13 @@ python tools/generate_recipe_samples.py \
   --batch-size 16
 ```
 
-Generation skips a phrase directory that already contains the requested count
-and refuses one with surplus files. The feature builder later rejects incomplete
-or mismatched corpora. The resulting
-`generation-manifest.json` records the recipe and generator-model hashes.
+Generation skips completed phrase directories and rejects surplus, incomplete,
+or mismatched corpora. `generation-manifest.json` records recipe and model hashes.
 
 ## 4. Build on-device-compatible features
 
-Use representative room recordings and room impulse responses when available.
-Both arguments are repeatable, and omitting them disables those two augmentation
-classes:
+Add representative room recordings and impulse responses when available. Both
+arguments are repeatable:
 
 ```sh
 python tools/build_recipe_features.py \
@@ -112,9 +101,8 @@ python tools/build_recipe_features.py \
   --impulses room-impulses
 ```
 
-The builder validates the generation manifest before it creates the 40-feature
-`micro_speech` representation used by the device model. It preserves
-deterministic train, validation, and test splits.
+The builder validates the manifest, creates device-compatible `micro_speech`
+features, and preserves deterministic splits.
 
 ## 5. Supply general negative features
 
@@ -128,13 +116,10 @@ work/kizz/negative-datasets/
 └── speech/
 ```
 
-Use the upstream
-[pre-generated feature dataset](https://huggingface.co/datasets/kahrendt/microwakeword)
-or build equivalent archives from appropriately licensed sources. The starter
+Use upstream [pre-generated features](https://huggingface.co/datasets/kahrendt/microwakeword)
+or equivalent licensed archives. The starter
 [`basic_training_notebook.ipynb`](../notebooks/basic_training_notebook.ipynb)
-demonstrates upstream acquisition and feature preparation; source and license
-notes are in [Data sources](data_sources.md). Do not reuse evaluation audio as
-training data.
+shows acquisition and preparation. Never reuse evaluation audio for training.
 
 ## 6. Write the training configuration and train
 
@@ -150,25 +135,19 @@ python -m microwakeword.model_train_eval \
   mixednet
 ```
 
-The generated config gives confusable speech explicit sampling and penalty
-weights, then keeps it as evaluation-only evidence. Checkpoint
-selection first minimizes ambient false accepts per hour to its configured
-target, then maximizes viable recall. Training exports the selected quantized
-streaming model to:
+The config weights confusable speech in training and retains it for evaluation.
+Checkpoint selection minimizes ambient false accepts first, then maximizes
+viable recall. Training exports the selected model to:
 
 ```text
 work/kizz/trained/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite
 ```
 
-To resume an interrupted run from its checkpoint, repeat the training command
-with `--restore_checkpoint 1`. Review the learning-rate schedule before doing
-so; restoring weights does not choose an appropriate new schedule.
+Resume with `--restore_checkpoint 1`; review the learning-rate schedule first.
 
 ## 7. Evaluate every trained pronunciation
 
-Choose a cutoff from held-out validation evidence, then keep it fixed for the
-test pass. The `0.96` below illustrates the command shape; it is not a recommended
-Kizz threshold:
+Freeze the cutoff from held-out validation before testing. `0.96` is illustrative:
 
 ```sh
 python tools/evaluate_recipe_model.py \
@@ -179,19 +158,16 @@ python tools/evaluate_recipe_model.py \
   --output work/kizz/pronunciation_metrics.json
 ```
 
-The report separates each positive spelling and hard-negative phrase. Do not
-replace those cohorts with one aggregate acceptance rate.
+Review each positive spelling and hard-negative phrase; do not use one aggregate.
 
-[`recipes/kizz/probes.yaml`](../recipes/kizz/probes.yaml) contains plausible
-readings deliberately absent from training. Generate it into a separate
-directory and evaluate it with `--split all` to test acoustic generalization.
-Never merge probe audio into the training corpus after observing its score; add
-new held-out probes first if the training recipe changes.
+[`recipes/kizz/probes.yaml`](../recipes/kizz/probes.yaml) holds readings absent
+from training. Generate them separately and evaluate with `--split all`. Never
+add scored probes to training; add new held-out probes after recipe changes.
 
 ## 8. Exercise enrollment without hardware
 
-The training endpoint is a standalone LAN service, separate from UHC and the
-production voice endpoint. It may run on another host.
+The training endpoint is a LAN service, separate from UHC and production voice.
+It may run on another host.
 
 Start the service and a simulated microphone device in separate terminals:
 
@@ -207,16 +183,13 @@ python tools/simulate_enrollment_device.py \
   --no-detected
 ```
 
-Follow [Device corpus enrollment](device_enrollment.md) to queue bounded
-positive, hard-negative, and ambient attempts. The simulator proves that an
-attempt marked as missed by the provisional detector is still retained by the
-corpus contract. Replace the illustrative profile with a registered profile
-from `device-profiles.json`.
+Use [device corpus enrollment](device_enrollment.md) to queue bounded attempts.
+The simulator retains provisional misses. Replace its profile with one from
+`device-profiles.json`.
 
 ## 9. Add real-device evidence
 
-After collecting real audio, validate it and build features without changing
-its declared splits:
+Validate real audio and build features without changing declared splits:
 
 ```sh
 python tools/validate_device_corpus.py --corpus work/device-corpus
@@ -232,9 +205,8 @@ python tools/write_recipe_training_config.py \
   --output work/kizz/device_training_parameters.yaml
 ```
 
-Train a new model from that configuration. Evaluate the frozen model against
-the held-out device test split. As above, replace the illustrative `0.96` with
-the cutoff frozen from validation:
+Train, then evaluate the frozen model on held-out device audio. Replace `0.96`
+with the validation cutoff:
 
 ```sh
 python tools/evaluate_device_corpus_model.py \
@@ -245,14 +217,10 @@ python tools/evaluate_device_corpus_model.py \
   --output work/kizz/device_test_metrics.json
 ```
 
-The report groups results by truth, phrase, pronunciation, device profile, and
-whether the source detector hit or missed. Evaluate one shared model across all
-available microphone profiles first. Fork a device-specific model only when
-held-out results show a material acoustic-domain failure.
+Review results by truth, phrase, pronunciation, profile, and detector outcome.
+Start with one model across profiles; split only for held-out acoustic failure.
 
 ## 10. Qualification checklist
-
-A candidate is ready for physical qualification only when:
 
 - recipe, generator model, training config, and corpus hashes are recorded;
 - no speaker or recording session crosses train, validation, and test splits;
@@ -261,8 +229,8 @@ A candidate is ready for physical qualification only when:
 - provisional detector misses are present in the device evaluation;
 - the tested quantized artifact is flashed and accepted on each claimed target.
 
-Put synthetic-only results in the [experiment log](../recipes/kizz/EXPERIMENTS.md);
-they do not support a hardware-qualified release claim.
+Synthetic-only results belong in the [experiment log](../recipes/kizz/EXPERIMENTS.md),
+not a hardware-qualified release claim.
 
 ## Troubleshooting
 

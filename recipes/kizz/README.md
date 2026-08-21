@@ -1,30 +1,23 @@
 # HiPhi Kizz wake-word recipe
 
-This recipe trains one wake class from several natural readings of **HiPhi
-Kizz**. It treats bare `Kizz`, `kids`, `kiss`, `quiz`, `Hi-Fi`, and similar
-speech as negatives. A one-syllable **Kizz** detector belongs in a
-separate model so its difficult near-word boundary cannot weaken the full brand
-phrase.
+This recipe trains one wake class from natural readings of **HiPhi Kizz**. Bare
+`Kizz`, `kids`, `kiss`, `quiz`, `Hi-Fi`, and similar speech are negatives. A
+one-syllable **Kizz** detector needs a separate model.
 
-The hard-negative corpus also includes conjunction-mining pairs: accepted
-HiPhi-like prefixes followed by the wrong final word, and wrong prefixes
-followed by the exact word `Kizz`. This prevents a multi-pronunciation model
-from learning the common suffix as a shortcut.
+Hard negatives pair accepted HiPhi-like prefixes with wrong suffixes and wrong
+prefixes with `Kizz`, preventing suffix shortcuts.
 
-Start with synthetic data, but do not call a model hardware qualified until it
-is evaluated against real device-microphone corpora using the standalone
+Start with synthetic data. A model is not hardware-qualified until real device
+corpora evaluate it through the standalone
 [device enrollment service](../../documentation/device_enrollment.md):
 
-1. Positive recordings spoken to the actual StackChan from varied positions,
-   voices, speeds, and room noise.
-2. Long negative recordings from normal conversation and music in the intended
-   room, used to measure false accepts per hour.
+1. Positive StackChan recordings across positions, voices, speeds, and noise.
+2. Long room conversation and music recordings for false accepts per hour.
 
 The same enrollment contract applies to every microphone-equipped profile in
 [`device-profiles.json`](../../device-profiles.json). Compare results by
-`device_profile` first; create device-specific models only when held-out
-evidence shows the shared model is inadequate. Catalog presence,
-enrollment-firmware support, and a collected real corpus are tracked separately.
+`device_profile` first; split only when held-out evidence requires it. Catalog,
+enrollment support, and collected corpus are separate statuses.
 
 ## Generate the phrase corpus
 
@@ -41,9 +34,8 @@ python tools/generate_recipe_samples.py \
   --batch-size 16
 ```
 
-The command is resumable per phrase and writes a manifest containing hashes of
-the recipe and generator model. `--dry-run` prints the complete generation plan
-without downloading or generating anything.
+The command resumes per phrase and writes recipe/model hashes. `--dry-run`
+prints the plan without generating audio.
 
 Build the `micro_speech` features used on-device, adding actual room music,
 noise, and impulse-response directories whenever available:
@@ -62,23 +54,17 @@ python tools/write_recipe_training_config.py \
   --output work/kizz/training_parameters.yaml
 ```
 
-When a later recipe revision changes only one class, pass `--class-name
-hard_negative` or `--class-name positive`; the complete recipe/manifest and all
-corpus directories are still validated before the selected class is rebuilt.
-Pass that alternate feature root to the config writer with `--features-dir`.
-For an acoustic-cluster experiment, repeat `--positive-text` with the recipe's
-phrase labels. The builder stages only those clips while preserving the same
-manifest and count validation.
+To rebuild one class, pass `--class-name hard_negative` or `positive`; the
+builder still validates the recipe, manifest, and corpus. Pass the alternate
+feature root to the config writer with `--features-dir`. For acoustic-cluster
+work, repeat `--positive-text` with recipe phrase labels.
 
-The generated training config includes the labeled hard-negative archive twice:
-once as a sampled training source and once as an evaluation-only long-form
-source. This makes checkpoint selection account for confusable phrases rather
-than reporting a flattering room-audio FAPH while accepting `Kizz` or `kiss`.
-Sampling and penalty pressure can be changed explicitly with
+The config uses hard negatives as both sampled training data and long-form
+evaluation data, preventing a flattering FAPH while accepting `Kizz` or `kiss`.
+Change sampling and penalty pressure with
 `--hard-negative-sampling-weight` and `--hard-negative-penalty-weight`.
 
-After exporting the quantized streaming model, measure every spelling
-separately so a strong aggregate score cannot hide a weak pronunciation:
+After export, measure each spelling separately:
 
 ```sh
 python tools/evaluate_recipe_model.py \
@@ -88,13 +74,11 @@ python tools/evaluate_recipe_model.py \
   --output work/kizz/pronunciation_metrics.json
 ```
 
-`probes.yaml` defines additional plausible HiPhi pronunciations that are kept
-out of training. Generate and score them after export to check acoustic
-generalization rather than memorization of the corpus spellings.
+`probes.yaml` holds plausible HiPhi pronunciations outside training. Generate
+and score them after export to test generalization.
 
 ## Quality bar
 
-Model selection must minimize ambient false accepts before maximizing recall.
-The release bundle must include the quantized streaming `.tflite`, ESPHome v2
-model JSON, recipe and training config, metrics, corpus provenance, and SHA-256
-hashes. Synthetic validation alone does not make a model releasable.
+Minimize ambient false accepts before recall. A release bundle includes the
+quantized `.tflite`, ESPHome v2 JSON, recipe, config, metrics, provenance, and
+SHA-256 hashes. Synthetic validation cannot release a model.

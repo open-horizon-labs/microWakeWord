@@ -6,9 +6,7 @@ endpoint.
 
 ## Start and exercise without hardware
 
-These protocol examples use illustrative identifiers. Replace the device ID,
-profile, phrase, and workspace with values from your recipe and the registered
-profile catalog.
+Replace these illustrative IDs, profile, phrase, and workspace with your own.
 
 ```sh
 python tools/run_enrollment_service.py --corpus work/device-corpus --port 8091
@@ -20,7 +18,7 @@ python tools/simulate_enrollment_device.py \
   --no-detected
 ```
 
-Queue one bounded attempt through the trainer's separate HTTP control API:
+Queue a bounded attempt through the trainer's HTTP control API:
 
 ```sh
 curl -X POST http://trainer-host:8091/v1/captures \
@@ -40,10 +38,10 @@ curl -X POST http://trainer-host:8091/v1/captures \
   }'
 ```
 
-The service commands only the addressed device. The device records the bounded
-window independently of its provisional wake decision, then sends a
-`training_sample` header and raw signed-16 PCM. `detected` records what the old
-model did; it never decides whether the attempt enters the corpus.
+The service commands only the addressed device. The device records the window
+regardless of its provisional wake decision, then sends a `training_sample`
+header and signed-16 PCM. `detected` records the old model's outcome; it never
+filters a capture.
 
 ## Device protocol
 
@@ -66,24 +64,21 @@ On `GET /v1/device`, a microphone device sends:
 }
 ```
 
-`device_id` addresses an instance. `device_profile` identifies an acoustic
-domain shared by equivalent hardware and preprocessing. The repository-level
-[`device-profiles.json`](../device-profiles.json) catalog records each profile's
-microphone capability and corpus/enrollment status.
+`device_id` identifies an instance. `device_profile` identifies an acoustic
+domain shared by equivalent hardware and preprocessing. The
+[`device-profiles.json`](../device-profiles.json) catalog records microphone,
+corpus, and enrollment status.
 
-Evaluate one shared model across all microphone-equipped profiles before
-held-out evidence warrants a device-specific model. Catalog presence,
-enrollment-firmware support, and a collected real corpus are separate statuses.
-The included Kizz path is a reference implementation, not a statement about
-which profiles the framework supports.
+Evaluate one model across microphone-equipped profiles before splitting by
+device. Catalog presence, enrollment support, and collected corpus are separate
+statuses. Kizz is a reference path, not a framework limit.
 
-The server sends `training_capture`; the device responds with
-`training_sample` followed by one binary PCM message. Attempts are bounded to
-0.5–5 seconds and 160,000 PCM bytes.
+The server sends `training_capture`; the device returns `training_sample` and
+one binary PCM message. Attempts are 0.5–5 seconds and at most 160,000 bytes.
 
 ## Corpus guarantees
 
-`device-corpus.json` is the durable contract. Validation requires:
+`device-corpus.json` requires:
 
 - registered, immutable audio profiles;
 - unique capture IDs and content hashes;
@@ -92,7 +87,7 @@ The server sends `training_capture`; the device responds with
 - no speaker or session crossing splits;
 - both provisional detector hits and misses.
 
-Build real-device feature archives and include them in training:
+Build device features and include them in training:
 
 ```sh
 python tools/validate_device_corpus.py --corpus work/device-corpus
@@ -104,6 +99,5 @@ python tools/write_recipe_training_config.py \
   --output work/my-wake-word/training_parameters.yaml
 ```
 
-The builder consumes the manifest's predetermined splits without randomizing
-them. Evaluation reports truth, phrase, pronunciation, device profile, and
-whether the provisional source detector hit or missed.
+The builder preserves manifest splits. Evaluation reports truth, phrase,
+pronunciation, profile, and provisional detector outcome.
