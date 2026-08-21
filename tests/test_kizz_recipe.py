@@ -132,11 +132,17 @@ class KizzRecipeTest(unittest.TestCase):
     def test_training_selects_for_ambient_false_accepts_first(self):
         config = CONFIG_MODULE.training_config(Path("work"), Path("trained"))
         self.assertEqual(config["minimization_metric"], "ambient_false_positives_per_hour")
-        hard_negative = next(
-            item for item in config["features"] if item["features_dir"].endswith("hard_negative")
-        )
-        self.assertFalse(hard_negative["truth"])
-        self.assertGreaterEqual(hard_negative["penalty_weight"], 4.0)
+        hard_negatives = [
+            item
+            for item in config["features"]
+            if item["features_dir"].endswith("hard_negative")
+        ]
+        self.assertEqual(len(hard_negatives), 2)
+        training_hard_negative, evaluation_hard_negative = hard_negatives
+        self.assertFalse(training_hard_negative["truth"])
+        self.assertGreaterEqual(training_hard_negative["penalty_weight"], 4.0)
+        self.assertEqual(evaluation_hard_negative["sampling_weight"], 0.0)
+        self.assertEqual(evaluation_hard_negative["truncation_strategy"], "split")
         self.assertLessEqual(config["eval_step_interval"], 1000)
 
     def test_microfrontend_accepts_current_pybind_api(self):

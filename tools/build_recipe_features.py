@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
+import os
 import random
 from pathlib import Path
+import tempfile
+from collections.abc import Iterator
 
 import numpy as np
 import yaml
@@ -18,7 +22,7 @@ from microwakeword.audio.clips import Clips
 from microwakeword.audio.spectrograms import SpectrogramGeneration
 
 
-def validate_generated_corpus(recipe_path: Path, generated: Path) -> None:
+def validate_generated_corpus(recipe_path: Path, generated: Path) -> dict:
     manifest_path = generated / "generation-manifest.json"
     if not manifest_path.exists():
         raise ValueError(f"missing generation manifest: {manifest_path}")
@@ -55,6 +59,33 @@ def validate_generated_corpus(recipe_path: Path, generated: Path) -> None:
                     f"{phrase_dir} has {actual_count} WAVs; "
                     f"manifest requires {expected_count}"
                 )
+    return manifest
+
+
+def selected_phrase_directories(
+    manifest: dict, class_name: str, texts: list[str]
+) -> list[Path]:
+    by_text = {
+        item["text"]: Path(item["output"])
+        for item in manifest.get("plan", [])
+        if item.get("class") == class_name
+    }
+    unknown = sorted(set(texts) - set(by_text))
+    if unknown:
+        raise ValueError(f"unknown {class_name} phrase(s): {unknown}")
+    return [by_text[text] for text in texts]
+
+
+@contextmanager
+def staged_clip_source(source_dirs: list[Path]) -> Iterator[Path]:
+    """Expose selected phrase directories as one flat, temporary clip corpus."""
+    with tempfile.TemporaryDirectory(prefix="mww-selected-clips-") as temporary:
+        root = Path(temporary)
+        for source in source_dirs:
+            for clip in source.glob("*.wav"):
+                destination = root / f"{source.name}--{clip.name}"
+                os.symlink(clip, destination)
+        yield root
 
 
 def generate_class_features(
@@ -106,9 +137,17 @@ def main() -> int:
         default="both",
         help="Rebuild one class when the other class corpus is unchanged",
     )
+    parser.add_argument(
+        "--positive-text",
+        action="append",
+        default=[],
+        help="Build positive features from only this exact recipe phrase; repeatable",
+    )
     args = parser.parse_args()
 
-    validate_generated_corpus(args.recipe, args.generated)
+    if args.positive_text and args.class_name == "hard_negative":
+        parser.error("--positive-text requires positive or both class generation")
+    manifest = validate_generated_corpus(args.recipe, args.generated)
     recipe = yaml.safe_load(args.recipe.read_text())
     seed = int(recipe["random_seed"])
     random.seed(seed)
@@ -136,9 +175,21 @@ def main() -> int:
         max_jitter_s=0.30,
     )
     if args.class_name in ("both", "positive"):
-        generate_class_features(
-            args.generated / "positive", args.output / "positive", augmenter, seed
-        )
+        if args.positive_text:
+            selected = selected_phrase_directories(
+                manifest, "positive", args.positive_text
+            )
+            with staged_clip_source(selected) as source:
+                generate_class_features(
+                    source, args.output / "positive", augmenter, seed
+                )
+        else:
+            generate_class_features(
+                args.generated / "positive",
+                args.output / "positive",
+                augmenter,
+                seed,
+            )
     if args.class_name in ("both", "hard_negative"):
         generate_class_features(
             args.generated / "hard_negative",

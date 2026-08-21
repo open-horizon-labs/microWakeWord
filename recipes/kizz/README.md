@@ -60,6 +60,16 @@ When a later recipe revision changes only one class, pass `--class-name
 hard_negative` or `--class-name positive`; the complete recipe/manifest and all
 corpus directories are still validated before the selected class is rebuilt.
 Pass that alternate feature root to the config writer with `--features-dir`.
+For an acoustic-cluster experiment, repeat `--positive-text` with exact phrase
+labels from the recipe. The builder stages only those clips while preserving the
+same manifest and count validation.
+
+The generated training config includes the labeled hard-negative archive twice:
+once as a sampled training source and once as an evaluation-only long-form
+source. This makes checkpoint selection account for confusable phrases rather
+than reporting a flattering room-audio FAPH while accepting `Kizz` or `kiss`.
+Sampling and penalty pressure can be changed explicitly with
+`--hard-negative-sampling-weight` and `--hard-negative-penalty-weight`.
 
 After exporting the quantized streaming model, measure every spelling
 separately so a strong aggregate score cannot hide a weak pronunciation:

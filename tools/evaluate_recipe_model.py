@@ -87,6 +87,8 @@ def evaluate_group(
 
 
 def clips_by_group(root: Path, split: str, split_seed: int) -> dict[str, list[Path]]:
+    if not root.exists():
+        return {}
     if split == "all":
         return {
             group.name: sorted(group.glob("*.wav"))

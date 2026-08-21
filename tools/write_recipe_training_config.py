@@ -21,7 +21,11 @@ def feature(path: Path, weight: float, penalty: float, truth: bool, strategy: st
 
 
 def training_config(
-    workspace: Path, train_dir: Path, features_dir: Path | None = None
+    workspace: Path,
+    train_dir: Path,
+    features_dir: Path | None = None,
+    hard_negative_sampling_weight: float = 8.0,
+    hard_negative_penalty_weight: float = 4.0,
 ) -> dict:
     negatives = workspace / "negative-datasets"
     features = features_dir or workspace / "features"
@@ -30,10 +34,19 @@ def training_config(
         "train_dir": str(train_dir),
         "features": [
             feature(features / "positive", 3.0, 1.0, True, "truncate_start"),
-            feature(features / "hard_negative", 8.0, 4.0, False, "random"),
+            feature(
+                features / "hard_negative",
+                hard_negative_sampling_weight,
+                hard_negative_penalty_weight,
+                False,
+                "random",
+            ),
             feature(negatives / "speech", 10.0, 1.5, False, "random"),
             feature(negatives / "dinner_party", 10.0, 1.5, False, "random"),
             feature(negatives / "no_speech", 6.0, 1.0, False, "random"),
+            # Include labeled confusables in the long-form false-accept metric.
+            # Otherwise checkpoint selection can ignore words such as "kiss".
+            feature(features / "hard_negative", 0.0, 1.0, False, "split"),
             feature(negatives / "dinner_party_eval", 0.0, 1.0, False, "split"),
         ],
         "training_steps": [20000, 10000],
@@ -58,11 +71,19 @@ def main() -> int:
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--train-dir", type=Path, required=True)
     parser.add_argument("--features-dir", type=Path)
+    parser.add_argument("--hard-negative-sampling-weight", type=float, default=8.0)
+    parser.add_argument("--hard-negative-penalty-weight", type=float, default=4.0)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.write_text(
         yaml.safe_dump(
-            training_config(args.workspace, args.train_dir, args.features_dir),
+            training_config(
+                args.workspace,
+                args.train_dir,
+                args.features_dir,
+                args.hard_negative_sampling_weight,
+                args.hard_negative_penalty_weight,
+            ),
             sort_keys=False,
         )
     )
