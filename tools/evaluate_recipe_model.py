@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy.io import wavfile
+from scipy.signal import resample_poly
 
 from microwakeword.inference import Model
 
@@ -20,13 +21,29 @@ def reset_model(model: Model) -> None:
 
 
 def peak_probability(
-    model: Model, wav_path: Path, sliding_window: int, ignore_initial: int
+    model: Model,
+    wav_path: Path,
+    sliding_window: int,
+    ignore_initial: int,
+    clip_duration_ms: int,
 ) -> float:
     sample_rate, pcm = wavfile.read(wav_path)
-    if sample_rate != 16000 or pcm.dtype != np.int16:
-        raise ValueError(f"{wav_path} must be mono signed-16 PCM at 16 kHz")
+    if pcm.dtype != np.int16:
+        raise ValueError(f"{wav_path} must be signed-16 PCM")
     if pcm.ndim != 1:
         raise ValueError(f"{wav_path} must be mono")
+    if sample_rate != 16000:
+        divisor = np.gcd(sample_rate, 16000)
+        pcm = resample_poly(
+            pcm.astype(np.float32) / 32768.0,
+            16000 // divisor,
+            sample_rate // divisor,
+        ).astype(np.float32)
+    target_samples = 16000 * clip_duration_ms // 1000
+    if pcm.shape[0] < target_samples:
+        pcm = np.pad(pcm, (target_samples - pcm.shape[0], 0))
+    elif pcm.shape[0] > target_samples:
+        pcm = pcm[-target_samples:]
     reset_model(model)
     probabilities = np.asarray(model.predict_clip(pcm, step_ms=10), dtype=np.float32)
     probabilities = probabilities[ignore_initial:]
@@ -44,6 +61,7 @@ def evaluate_group(
     cutoff: float,
     sliding_window: int,
     ignore_initial: int,
+    clip_duration_ms: int,
     limit: int,
 ) -> dict:
     model = Model(str(model_path), stride=3)
@@ -51,7 +69,9 @@ def evaluate_group(
     if limit:
         clips = clips[:limit]
     peaks = [
-        peak_probability(model, clip, sliding_window, ignore_initial)
+        peak_probability(
+            model, clip, sliding_window, ignore_initial, clip_duration_ms
+        )
         for clip in clips
     ]
     accepted = sum(peak > cutoff for peak in peaks)
@@ -72,6 +92,7 @@ def main() -> int:
     parser.add_argument("--cutoff", type=float, required=True)
     parser.add_argument("--sliding-window", type=int, default=5)
     parser.add_argument("--ignore-initial", type=int, default=25)
+    parser.add_argument("--clip-duration-ms", type=int, default=2000)
     parser.add_argument("--limit-per-phrase", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -92,6 +113,7 @@ def main() -> int:
                     args.cutoff,
                     args.sliding_window,
                     args.ignore_initial,
+                    args.clip_duration_ms,
                     args.limit_per_phrase,
                 )
 

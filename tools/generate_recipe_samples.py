@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -89,7 +88,11 @@ def main() -> int:
                 existing = len(list(phrase_dir.glob("*.wav")))
                 if existing == phrase["samples"]:
                     continue
-                shutil.rmtree(phrase_dir)
+                if existing > phrase["samples"]:
+                    raise ValueError(
+                        f"{phrase_dir} has {existing} WAVs but recipe requests "
+                        f"{phrase['samples']}; move it aside before shrinking"
+                    )
             phrase_dir.mkdir(parents=True, exist_ok=True)
             environment = os.environ.copy()
             if args.generator_source:

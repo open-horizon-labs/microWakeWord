@@ -31,6 +31,13 @@ class KizzRecipeTest(unittest.TestCase):
         self.assertIn("Hi-Fi Kizz", phrases)
         self.assertIn("Hi Phi Kizz", phrases)
         self.assertIn("Hee Fee Kizz", phrases)
+        self.assertIn("Hippy Kizz", phrases)
+        counts = {
+            entry["text"]: entry["samples"]
+            for entry in self.recipe["positive_phrases"]
+        }
+        self.assertGreaterEqual(counts["Hee Fee Kizz"], 2000)
+        self.assertGreaterEqual(counts["Hippy Kizz"], 2000)
 
     def test_near_sounding_words_are_hard_negatives(self):
         phrases = {entry["text"] for entry in self.recipe["hard_negative_phrases"]}

@@ -10,33 +10,33 @@ positive_phrases:
   - text: Kizz
     samples: 3600
   - text: Hi-Fi Kizz
-    samples: 1400
+    samples: 2400
   - text: High-Fi Kizz
-    samples: 1000
+    samples: 2400
   - text: Hi Phi Kizz
-    samples: 1000
+    samples: 2400
   - text: Hee Fee Kizz
-    samples: 600
+    samples: 2400
   - text: Hippy Kizz
-    samples: 400
+    samples: 2400
 
 # These are not aliases. They are deliberately confusing speech that must not
 # wake Kizz, with extra weight on the short-word neighbors most likely to fire.
 hard_negative_phrases:
   - text: kids
-    samples: 500
+    samples: 1000
   - text: kiss
-    samples: 500
+    samples: 1000
   - text: quiz
-    samples: 400
+    samples: 2000
   - text: fizz
-    samples: 300
+    samples: 600
   - text: Liz
     samples: 300
   - text: his
     samples: 300
   - text: this
-    samples: 300
+    samples: 600
   - text: it is
     samples: 250
   - text: Kizzy
@@ -46,11 +46,11 @@ hard_negative_phrases:
   - text: Hi Phi
     samples: 300
   - text: hippy kids
-    samples: 350
+    samples: 1000
   - text: high five kids
-    samples: 350
+    samples: 800
   - text: hi kids
-    samples: 350
+    samples: 800
 
 generation:
   length_scales: [0.72, 0.85, 1.0, 1.15, 1.32]
@@ -58,4 +58,3 @@ generation:
   noise_scale_ws: [0.65, 0.8, 0.95]
   slerp_weights: [0.2, 0.4, 0.6, 0.8]
   max_speakers: 700
-
