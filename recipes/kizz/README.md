@@ -6,6 +6,11 @@ and similar speech as negatives. A one-syllable **Kizz** detector belongs in a
 separate model so its difficult near-word boundary cannot weaken the full brand
 phrase.
 
+The hard-negative corpus also includes conjunction-mining pairs: accepted
+HiPhi-like prefixes followed by the wrong final word, and wrong prefixes
+followed by the exact word `Kizz`. This prevents a multi-pronunciation model
+from learning the common suffix as a shortcut.
+
 The first model is synthetic-data-first, but it is not considered hardware
 qualified until it is evaluated against two device-microphone corpora:
 
@@ -50,6 +55,10 @@ python tools/write_recipe_training_config.py \
   --train-dir work/kizz/trained \
   --output work/kizz/training_parameters.yaml
 ```
+
+When a later recipe revision changes only one class, pass `--class-name
+hard_negative` or `--class-name positive`; the complete recipe/manifest and all
+corpus directories are still validated before the selected class is rebuilt.
 
 After exporting the quantized streaming model, measure every spelling
 separately so a strong aggregate score cannot hide a weak pronunciation:

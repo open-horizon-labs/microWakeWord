@@ -67,6 +67,11 @@ class KizzRecipeTest(unittest.TestCase):
     def test_near_sounding_words_are_hard_negatives(self):
         phrases = {entry["text"] for entry in self.recipe["hard_negative_phrases"]}
         self.assertTrue({"Kizz", "kids", "kiss", "quiz", "Hi-Fi"}.issubset(phrases))
+        self.assertTrue(
+            {"Hi-Fi Kiss", "Hippy Kiss", "Wi-Fi Kizz", "Happy Kizz"}.issubset(
+                phrases
+            )
+        )
 
     def test_pronunciation_probes_are_unseen_during_training(self):
         probes = yaml.safe_load(
@@ -131,7 +136,7 @@ class KizzRecipeTest(unittest.TestCase):
             item for item in config["features"] if item["features_dir"].endswith("hard_negative")
         )
         self.assertFalse(hard_negative["truth"])
-        self.assertGreater(hard_negative["penalty_weight"], 1.0)
+        self.assertGreaterEqual(hard_negative["penalty_weight"], 8.0)
 
     def test_microfrontend_accepts_current_pybind_api(self):
         from microwakeword.audio.audio_utils import generate_features_for_clip

@@ -100,6 +100,12 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--background", type=Path, action="append", default=[])
     parser.add_argument("--impulses", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--class-name",
+        choices=("both", "positive", "hard_negative"),
+        default="both",
+        help="Rebuild one class when the other class corpus is unchanged",
+    )
     args = parser.parse_args()
 
     validate_generated_corpus(args.recipe, args.generated)
@@ -129,15 +135,17 @@ def main() -> int:
         min_jitter_s=0.15,
         max_jitter_s=0.30,
     )
-    generate_class_features(
-        args.generated / "positive", args.output / "positive", augmenter, seed
-    )
-    generate_class_features(
-        args.generated / "hard_negative",
-        args.output / "hard_negative",
-        augmenter,
-        seed + 1,
-    )
+    if args.class_name in ("both", "positive"):
+        generate_class_features(
+            args.generated / "positive", args.output / "positive", augmenter, seed
+        )
+    if args.class_name in ("both", "hard_negative"):
+        generate_class_features(
+            args.generated / "hard_negative",
+            args.output / "hard_negative",
+            augmenter,
+            seed + 1,
+        )
     return 0
 
 

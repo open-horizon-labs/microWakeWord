@@ -1,4 +1,4 @@
-recipe_version: 3
+recipe_version: 4
 name: hiphi_kizz
 sample_rate_hz: 16000
 clip_duration_ms: 2000
@@ -65,6 +65,40 @@ hard_negative_phrases:
   - text: high fee kids
     samples: 1000
   - text: hiffy kids
+    samples: 1000
+
+  # Conjunction-mining negatives: require both an accepted HiPhi prefix and the
+  # Kizz suffix. These prevent the model from solving the diverse positive class
+  # by learning only the common final word.
+  - text: Hi-Fi Kiss
+    samples: 1000
+  - text: Hi Phi Kiss
+    samples: 1000
+  - text: Hee Fee Kiss
+    samples: 1000
+  - text: Hippy Kiss
+    samples: 1000
+  - text: High Fee Kiss
+    samples: 1000
+  - text: Hee Fye Kiss
+    samples: 1000
+  - text: Hiffy Kiss
+    samples: 1000
+  - text: Wi-Fi Kizz
+    samples: 1000
+  - text: Sci-Fi Kizz
+    samples: 1000
+  - text: High Five Kizz
+    samples: 1000
+  - text: Happy Kizz
+    samples: 1000
+  - text: Coffee Kizz
+    samples: 1000
+  - text: Baby Kizz
+    samples: 1000
+  - text: Okay Kizz
+    samples: 1000
+  - text: Hey Kizz
     samples: 1000
 
 generation:
