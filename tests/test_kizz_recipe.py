@@ -1,4 +1,6 @@
 import importlib.util
+import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -30,20 +32,29 @@ EVALUATOR_MODULE = importlib.util.module_from_spec(EVALUATOR_SPEC)
 sys.modules[EVALUATOR_SPEC.name] = EVALUATOR_MODULE
 EVALUATOR_SPEC.loader.exec_module(EVALUATOR_MODULE)
 
+FEATURE_SCRIPT = ROOT / "tools" / "build_recipe_features.py"
+FEATURE_SPEC = importlib.util.spec_from_file_location(
+    "build_recipe_features", FEATURE_SCRIPT
+)
+FEATURE_MODULE = importlib.util.module_from_spec(FEATURE_SPEC)
+sys.modules[FEATURE_SPEC.name] = FEATURE_MODULE
+FEATURE_SPEC.loader.exec_module(FEATURE_MODULE)
+
 
 class KizzRecipeTest(unittest.TestCase):
     def setUp(self):
         self.recipe = yaml.safe_load((ROOT / "recipes/kizz/corpus.yaml").read_text())
 
-    def test_one_class_contains_short_and_brand_forms(self):
+    def test_one_class_contains_brand_pronunciations(self):
         phrases = {entry["text"] for entry in self.recipe["positive_phrases"]}
-        self.assertIn("Kizz", phrases)
+        self.assertNotIn("Kizz", phrases)
         self.assertIn("Hi-Fi Kizz", phrases)
         self.assertIn("Hi Phi Kizz", phrases)
         self.assertIn("Hee Fee Kizz", phrases)
         self.assertIn("Hippy Kizz", phrases)
         self.assertIn("High Fee Kizz", phrases)
         self.assertIn("Hee Fye Kizz", phrases)
+        self.assertIn("High Fye Kizz", phrases)
         self.assertIn("Hiffy Kizz", phrases)
         counts = {
             entry["text"]: entry["samples"]
@@ -51,11 +62,11 @@ class KizzRecipeTest(unittest.TestCase):
         }
         self.assertGreaterEqual(counts["Hee Fee Kizz"], 2000)
         self.assertGreaterEqual(counts["Hippy Kizz"], 2000)
-        self.assertGreaterEqual(counts["Kizz"], 5000)
+        self.assertTrue(all(count >= 3000 for count in counts.values()))
 
     def test_near_sounding_words_are_hard_negatives(self):
         phrases = {entry["text"] for entry in self.recipe["hard_negative_phrases"]}
-        self.assertTrue({"kids", "kiss", "quiz", "Hi-Fi"}.issubset(phrases))
+        self.assertTrue({"Kizz", "kids", "kiss", "quiz", "Hi-Fi"}.issubset(phrases))
 
     def test_pronunciation_probes_are_unseen_during_training(self):
         probes = yaml.safe_load(
@@ -69,7 +80,7 @@ class KizzRecipeTest(unittest.TestCase):
             phrase["text"].casefold()
             for phrase in probes["positive_phrases"]
         }
-        self.assertIn("high fye kizz", probe_phrases)
+        self.assertIn("high phi kizz", probe_phrases)
         self.assertTrue(training.isdisjoint(probe_phrases))
 
     def test_generator_command_preserves_variation_grid(self):
@@ -85,6 +96,33 @@ class KizzRecipeTest(unittest.TestCase):
         self.assertIn("--noise-scales", command)
         self.assertIn("--noise-scale-ws", command)
         self.assertIn("--slerp-weights", command)
+
+    def test_feature_build_rejects_stale_corpus_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recipe = root / "recipe.yaml"
+            recipe.write_text("name: test\n")
+            expected = root / "generated" / "positive" / "expected"
+            expected.mkdir(parents=True)
+            (root / "generated" / "hard_negative").mkdir()
+            manifest = {
+                "recipe_sha256": hashlib.sha256(recipe.read_bytes()).hexdigest(),
+                "plan": [
+                    {
+                        "class": "positive",
+                        "output": str(expected),
+                        "samples": 0,
+                    }
+                ],
+            }
+            (root / "generated" / "generation-manifest.json").write_text(
+                json.dumps(manifest)
+            )
+            (root / "generated" / "positive" / "stale").mkdir()
+            with self.assertRaisesRegex(ValueError, "extra="):
+                FEATURE_MODULE.validate_generated_corpus(
+                    recipe, root / "generated"
+                )
 
     def test_training_selects_for_ambient_false_accepts_first(self):
         config = CONFIG_MODULE.training_config(Path("work"), Path("trained"))

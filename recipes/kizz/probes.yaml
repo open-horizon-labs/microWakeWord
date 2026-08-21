@@ -8,8 +8,6 @@ random_seed: 9231
 # the trained acoustic class generalizes to plausible human readings of HiPhi
 # instead of merely memorizing the text spellings used to synthesize training.
 positive_phrases:
-  - text: High Fye Kizz
-    samples: 300
   - text: High Phi Kizz
     samples: 300
   - text: High Pie Kizz

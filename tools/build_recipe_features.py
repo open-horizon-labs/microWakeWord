@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import random
 from pathlib import Path
 
@@ -14,6 +16,45 @@ from mmap_ninja.ragged import RaggedMmap
 from microwakeword.audio.augmentation import Augmentation
 from microwakeword.audio.clips import Clips
 from microwakeword.audio.spectrograms import SpectrogramGeneration
+
+
+def validate_generated_corpus(recipe_path: Path, generated: Path) -> None:
+    manifest_path = generated / "generation-manifest.json"
+    if not manifest_path.exists():
+        raise ValueError(f"missing generation manifest: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text())
+    recipe_sha256 = hashlib.sha256(recipe_path.read_bytes()).hexdigest()
+    if manifest.get("recipe_sha256") != recipe_sha256:
+        raise ValueError(
+            "generated corpus recipe hash does not match the requested recipe"
+        )
+
+    for class_name in ("positive", "hard_negative"):
+        expected = {
+            Path(item["output"]).resolve(): int(item["samples"])
+            for item in manifest.get("plan", [])
+            if item.get("class") == class_name
+        }
+        class_root = generated / class_name
+        actual = {
+            path.resolve()
+            for path in class_root.iterdir()
+            if path.is_dir()
+        }
+        if actual != set(expected):
+            missing = sorted(str(path) for path in set(expected) - actual)
+            extra = sorted(str(path) for path in actual - set(expected))
+            raise ValueError(
+                f"{class_name} corpus does not match manifest; "
+                f"missing={missing}, extra={extra}"
+            )
+        for phrase_dir, expected_count in expected.items():
+            actual_count = len(list(phrase_dir.glob("*.wav")))
+            if actual_count != expected_count:
+                raise ValueError(
+                    f"{phrase_dir} has {actual_count} WAVs; "
+                    f"manifest requires {expected_count}"
+                )
 
 
 def generate_class_features(
@@ -61,6 +102,7 @@ def main() -> int:
     parser.add_argument("--impulses", type=Path, action="append", default=[])
     args = parser.parse_args()
 
+    validate_generated_corpus(args.recipe, args.generated)
     recipe = yaml.safe_load(args.recipe.read_text())
     seed = int(recipe["random_seed"])
     random.seed(seed)
@@ -101,4 +143,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -1,8 +1,10 @@
 # HiPhi Kizz wake-word recipe
 
-This recipe trains one wake class from the short name **Kizz** and several
-natural readings of **HiPhi Kizz**. It intentionally treats `kids`, `kiss`,
-`quiz`, `Hi-Fi`, and similar speech as negatives.
+This recipe trains one wake class from several natural readings of **HiPhi
+Kizz**. It intentionally treats bare `Kizz`, `kids`, `kiss`, `quiz`, `Hi-Fi`,
+and similar speech as negatives. A one-syllable **Kizz** detector belongs in a
+separate model so its difficult near-word boundary cannot weaken the full brand
+phrase.
 
 The first model is synthetic-data-first, but it is not considered hardware
 qualified until it is evaluated against two device-microphone corpora:

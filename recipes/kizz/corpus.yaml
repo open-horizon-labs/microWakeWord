@@ -1,34 +1,37 @@
-recipe_version: 2
+recipe_version: 3
 name: hiphi_kizz
 sample_rate_hz: 16000
 clip_duration_ms: 2000
 random_seed: 231
 
-# All positive spellings train one output class. The variants deliberately cover
-# how people and TTS engines naturally read the HiPhi brand name.
+# All positive spellings train one full-phrase output class. A bare one-syllable
+# "Kizz" model is deliberately separate: combining it with the brand readings
+# produced poor per-phrase recall and unacceptable near-word false accepts.
 positive_phrases:
-  - text: Kizz
-    samples: 6000
   - text: Hi-Fi Kizz
-    samples: 2400
+    samples: 3000
   - text: High-Fi Kizz
-    samples: 2400
+    samples: 3000
   - text: Hi Phi Kizz
-    samples: 2400
+    samples: 3000
   - text: Hee Fee Kizz
-    samples: 2400
+    samples: 3000
   - text: Hippy Kizz
-    samples: 2400
+    samples: 3000
   - text: High Fee Kizz
-    samples: 2400
+    samples: 3000
   - text: Hee Fye Kizz
-    samples: 2400
+    samples: 3000
+  - text: High Fye Kizz
+    samples: 3000
   - text: Hiffy Kizz
-    samples: 2400
+    samples: 3000
 
 # These are not aliases. They are deliberately confusing speech that must not
 # wake Kizz, with extra weight on the short-word neighbors most likely to fire.
 hard_negative_phrases:
+  - text: Kizz
+    samples: 3000
   - text: kids
     samples: 1800
   - text: kiss
@@ -57,6 +60,12 @@ hard_negative_phrases:
     samples: 1500
   - text: hi kids
     samples: 800
+  - text: hee fee kids
+    samples: 1000
+  - text: high fee kids
+    samples: 1000
+  - text: hiffy kids
+    samples: 1000
 
 generation:
   length_scales: [0.72, 0.85, 1.0, 1.15, 1.32]
