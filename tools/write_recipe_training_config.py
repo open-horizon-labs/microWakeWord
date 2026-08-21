@@ -30,7 +30,7 @@ def training_config(
         "train_dir": str(train_dir),
         "features": [
             feature(features / "positive", 3.0, 1.0, True, "truncate_start"),
-            feature(features / "hard_negative", 16.0, 8.0, False, "random"),
+            feature(features / "hard_negative", 8.0, 4.0, False, "random"),
             feature(negatives / "speech", 10.0, 1.5, False, "random"),
             feature(negatives / "dinner_party", 10.0, 1.5, False, "random"),
             feature(negatives / "no_speech", 6.0, 1.0, False, "random"),

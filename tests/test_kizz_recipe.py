@@ -136,7 +136,7 @@ class KizzRecipeTest(unittest.TestCase):
             item for item in config["features"] if item["features_dir"].endswith("hard_negative")
         )
         self.assertFalse(hard_negative["truth"])
-        self.assertGreaterEqual(hard_negative["penalty_weight"], 8.0)
+        self.assertGreaterEqual(hard_negative["penalty_weight"], 4.0)
 
     def test_microfrontend_accepts_current_pybind_api(self):
         from microwakeword.audio.audio_utils import generate_features_for_clip
