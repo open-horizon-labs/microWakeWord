@@ -202,8 +202,18 @@ python tools/write_recipe_training_config.py \
   --workspace work/kizz \
   --train-dir work/kizz/trained-with-devices \
   --device-features-dir work/device-features \
+  --device-truncation-strategy random \
   --output work/kizz/device_training_parameters.yaml
 ```
+
+Device recordings are often longer than the model window and the wake phrase
+may occur anywhere in them. `random` samples across the recording during
+training. Use `truncate_start` or `truncate_end` only when capture timing
+guarantees the phrase is aligned to that edge; the chosen strategy is written
+into the training configuration. For a longer recording, add
+`phrase_span.start_ms` and `phrase_span.end_ms` to its manifest entry. The device
+feature builder then uses the phrase with 250 ms of context without changing the
+source WAV.
 
 Train, then evaluate the frozen model on held-out device audio. Replace `0.96`
 with the validation cutoff:

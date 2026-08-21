@@ -1,5 +1,6 @@
 import hashlib
 import json
+import struct
 import tempfile
 import unittest
 import wave
@@ -18,12 +19,17 @@ sys.modules[FEATURE_SPEC.name] = FEATURE_MODULE
 FEATURE_SPEC.loader.exec_module(FEATURE_MODULE)
 
 
-def write_wav(path: Path, samples: int = 32000) -> None:
+def write_wav(
+    path: Path, samples: int = 32000, impulse_sample: int | None = None
+) -> None:
+    pcm = bytearray(b"\0\0" * samples)
+    if impulse_sample is not None:
+        pcm[impulse_sample * 2 : impulse_sample * 2 + 2] = struct.pack("<h", 1234)
     with wave.open(str(path), "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)
         wav.setframerate(16000)
-        wav.writeframes(b"\0\0" * samples)
+        wav.writeframes(pcm)
 
 
 class DeviceCorpusTest(unittest.TestCase):
@@ -31,7 +37,7 @@ class DeviceCorpusTest(unittest.TestCase):
         for item in captures:
             path = root / item["path"]
             path.parent.mkdir(parents=True, exist_ok=True)
-            write_wav(path)
+            write_wav(path, impulse_sample=item.pop("_impulse_sample", None))
             item["samples"] = 32000
             item["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
         (root / "device-corpus.json").write_text(
@@ -83,6 +89,47 @@ class DeviceCorpusTest(unittest.TestCase):
             manifest = validate_device_corpus(root)
             self.assertFalse(manifest["captures"][0]["detected"])
             self.assertEqual(manifest["captures"][0]["truth"], "positive")
+
+    def test_rejects_phrase_span_outside_capture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_corpus(
+                root,
+                [
+                    self.capture(
+                        "bad-span",
+                        phrase_span={"start_ms": 1500, "end_ms": 2100},
+                    )
+                ],
+            )
+            with self.assertRaisesRegex(ValueError, "phrase_span must satisfy"):
+                validate_device_corpus(root)
+
+    def test_phrase_span_keeps_missed_wake_phrase_in_long_capture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_corpus(
+                root,
+                [
+                    self.capture(
+                        "missed-long",
+                        detected=False,
+                        phrase_span={"start_ms": 1200, "end_ms": 1800},
+                        _impulse_sample=25600,
+                    )
+                ],
+            )
+            manifest = validate_device_corpus(root)
+            aligned = FEATURE_MODULE.aligned_capture_path(
+                root,
+                manifest["captures"][0],
+                root / "audio/missed-long.wav",
+                root / "features/aligned",
+            )
+            with wave.open(str(aligned), "rb") as wav:
+                self.assertEqual(wav.getnframes(), 16800)
+                self.assertIn(struct.pack("<h", 1234), wav.readframes(16800))
+            self.assertFalse(manifest["captures"][0]["detected"])
 
     def test_rejects_speaker_leakage_across_splits(self):
         with tempfile.TemporaryDirectory() as directory:

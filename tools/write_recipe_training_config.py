@@ -9,6 +9,9 @@ from pathlib import Path
 import yaml
 
 
+DEVICE_TRUNCATION_STRATEGIES = ("random", "truncate_start", "truncate_end")
+
+
 def feature(
     path: Path,
     weight: float,
@@ -44,6 +47,8 @@ def training_config(
     initial_weights: Path | None = None,
     device_positive_sampling_weight: float = 6.0,
     device_hard_negative_sampling_weight: float = 8.0,
+    freeze_feature_extractor: bool = False,
+    device_truncation_strategy: str = "random",
 ) -> dict:
     negatives = workspace / "negative-datasets"
     features = features_dir or workspace / "features"
@@ -54,6 +59,11 @@ def training_config(
         raise ValueError("device training requires --device-features-dir")
     if device_positive_only and not selected_device_modes:
         raise ValueError("--device-positive-only requires a device training mode")
+    if device_truncation_strategy not in DEVICE_TRUNCATION_STRATEGIES:
+        raise ValueError(
+            "device truncation strategy must be one of: "
+            + ", ".join(DEVICE_TRUNCATION_STRATEGIES)
+        )
     general_evaluation = not device_adaptation
     feature_sources = (
         []
@@ -112,7 +122,7 @@ def training_config(
                 device_positive_sampling_weight,
                 2.0,
                 True,
-                "truncate_end",
+                device_truncation_strategy,
                 False,
             )
         )
@@ -123,7 +133,7 @@ def training_config(
                     device_hard_negative_sampling_weight,
                     4.0,
                     False,
-                    "truncate_end",
+                    device_truncation_strategy,
                     False,
                 )
             )
@@ -131,10 +141,18 @@ def training_config(
         feature_sources.extend(
             [
                 feature(
-                    device_features_dir / "positive", 6.0, 2.0, True, "truncate_end"
+                    device_features_dir / "positive",
+                    6.0,
+                    2.0,
+                    True,
+                    device_truncation_strategy,
                 ),
                 feature(
-                    device_features_dir / "hard_negative", 8.0, 4.0, False, "truncate_end"
+                    device_features_dir / "hard_negative",
+                    8.0,
+                    4.0,
+                    False,
+                    device_truncation_strategy,
                 ),
                 feature(
                     device_features_dir / "ambient_negative", 4.0, 2.0, False, "split"
@@ -187,6 +205,10 @@ def training_config(
     if initial_weights is not None:
         config["initial_weights"] = str(initial_weights)
         config["freeze_batch_normalization"] = True
+    if freeze_feature_extractor:
+        if initial_weights is None:
+            raise ValueError("freezing the feature extractor requires initial weights")
+        config["freeze_feature_extractor"] = True
     return config
 
 
@@ -233,6 +255,20 @@ def main() -> int:
     parser.add_argument(
         "--device-hard-negative-sampling-weight", type=float, default=8.0
     )
+    parser.add_argument(
+        "--freeze-feature-extractor",
+        action="store_true",
+        help="Fine-tune only the final classifier from compatible initial weights",
+    )
+    parser.add_argument(
+        "--device-truncation-strategy",
+        choices=DEVICE_TRUNCATION_STRATEGIES,
+        default="random",
+        help=(
+            "Choose how device recordings longer than the training window are "
+            "sampled. Random preserves speech that is not aligned to a clip edge."
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.write_text(
@@ -251,6 +287,8 @@ def main() -> int:
                 args.initial_weights,
                 args.device_positive_sampling_weight,
                 args.device_hard_negative_sampling_weight,
+                args.freeze_feature_extractor,
+                args.device_truncation_strategy,
             ),
             sort_keys=False,
         )

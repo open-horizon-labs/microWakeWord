@@ -90,6 +90,18 @@ one binary PCM message. Attempts are 0.5–5 seconds and at most 160,000 bytes.
 - no speaker or session crossing splits;
 - both provisional detector hits and misses.
 
+Phrase-bearing captures may include a measured span:
+
+```json
+"phrase_span": {"start_ms": 160, "end_ms": 960}
+```
+
+When present, feature building uses the phrase plus 250 ms of surrounding audio.
+This keeps a wake attempt inside the training example even when it occurs in the
+middle of a longer recording. The span describes the intended phrase, regardless
+of whether the provisional detector fired; it may come from human annotation or
+an alignment service. The original WAV and its hash remain unchanged.
+
 Production feature building accepts live human and synthetic-playback positives
 and hard negatives in the training split. Validation and test require human
 speech; ambient-negative splits require ambient recordings. Simulation remains
@@ -104,8 +116,13 @@ python tools/build_device_corpus_features.py \
 python tools/write_recipe_training_config.py \
   --workspace work/my-wake-word --train-dir work/my-wake-word/trained \
   --device-features-dir work/device-features \
+  --device-truncation-strategy random \
   --output work/my-wake-word/training_parameters.yaml
 ```
 
-The builder preserves manifest splits. Evaluation reports truth, phrase,
-pronunciation, profile, and provisional detector outcome.
+The builder preserves manifest splits and writes aligned derivatives under the
+feature output directory. Evaluation reports truth, phrase,
+pronunciation, profile, and provisional detector outcome. Random temporal
+sampling keeps wake phrases that are not aligned to a recording edge in the
+training pass. Prefer measured phrase spans for long captures; edge truncation
+should be used only when the capture protocol itself guarantees alignment.

@@ -55,8 +55,47 @@ class DeviceTrainingConfigTest(unittest.TestCase):
         )
         self.assertEqual(
             [source["truncation_strategy"] for source in config["features"][-3:]],
-            ["truncate_end", "truncate_end", "split"],
+            ["random", "random", "split"],
         )
+
+    def test_device_temporal_alignment_is_explicit_and_configurable(self):
+        default_config = training_config(
+            Path("workspace"),
+            Path("trained"),
+            device_features_dir=Path("device-features"),
+            device_train_only=True,
+        )
+        self.assertEqual(
+            [
+                source["truncation_strategy"]
+                for source in default_config["features"][-2:]
+            ],
+            ["random", "random"],
+        )
+
+        edge_aligned_config = training_config(
+            Path("workspace"),
+            Path("trained"),
+            device_features_dir=Path("device-features"),
+            device_train_only=True,
+            device_truncation_strategy="truncate_end",
+        )
+        self.assertEqual(
+            [
+                source["truncation_strategy"]
+                for source in edge_aligned_config["features"][-2:]
+            ],
+            ["truncate_end", "truncate_end"],
+        )
+
+        with self.assertRaisesRegex(ValueError, "device truncation strategy"):
+            training_config(
+                Path("workspace"),
+                Path("trained"),
+                device_features_dir=Path("device-features"),
+                device_train_only=True,
+                device_truncation_strategy="guess",
+            )
 
     def test_train_only_device_subset_does_not_claim_device_validation(self):
         config = training_config(
@@ -130,6 +169,21 @@ class DeviceTrainingConfigTest(unittest.TestCase):
             [source["features_dir"] for source in config["features"]],
         )
 
+    def test_frozen_feature_extractor_requires_compatible_initial_weights(self):
+        with self.assertRaisesRegex(ValueError, "initial weights"):
+            training_config(
+                Path("workspace"),
+                Path("trained"),
+                freeze_feature_extractor=True,
+            )
+
+        config = training_config(
+            Path("workspace"),
+            Path("trained"),
+            initial_weights=Path("base/best_weights.weights.h5"),
+            freeze_feature_extractor=True,
+        )
+        self.assertTrue(config["freeze_feature_extractor"])
 
 if __name__ == "__main__":
     unittest.main()

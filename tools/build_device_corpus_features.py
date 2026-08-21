@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import random
 from pathlib import Path
+import wave
 
 import datasets
 import numpy as np
@@ -39,6 +40,37 @@ PRODUCTION_SOURCES = {
     },
 }
 
+PHRASE_CONTEXT_MS = 250
+
+
+def aligned_capture_path(
+    root: Path, item: dict, path: Path, aligned_audio_dir: Path | None
+) -> Path:
+    """Materialize a phrase-aligned copy when the manifest supplies its span."""
+    span = item.get("phrase_span")
+    if span is None or aligned_audio_dir is None:
+        return path
+
+    destination = aligned_audio_dir / item["split"] / f'{item["capture_id"]}.wav'
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "rb") as source:
+        sample_rate = source.getframerate()
+        start = max(
+            0,
+            round((span["start_ms"] - PHRASE_CONTEXT_MS) * sample_rate / 1000),
+        )
+        end = min(
+            source.getnframes(),
+            round((span["end_ms"] + PHRASE_CONTEXT_MS) * sample_rate / 1000),
+        )
+        source.setpos(start)
+        frames = source.readframes(end - start)
+        parameters = source.getparams()
+    with wave.open(str(destination), "wb") as target:
+        target.setparams(parameters)
+        target.writeframes(frames)
+    return destination
+
 
 def explicit_clips(
     root: Path,
@@ -46,12 +78,13 @@ def explicit_clips(
     truth: str,
     include_sources: set[str] | None = None,
     splits: set[str] | None = None,
+    aligned_audio_dir: Path | None = None,
 ) -> Clips:
     """Create a Clips source without re-randomizing the manifest's splits."""
     selected_splits = splits or SPLITS
     split_paths = {
         split: [
-            str(path)
+            str(aligned_capture_path(root, item, path, aligned_audio_dir))
             for item, path in captures_for(root, manifest, truth, split)
             if item["source"]
             in (include_sources or PRODUCTION_SOURCES[truth][split])
@@ -116,7 +149,13 @@ def build_truth(
         max_jitter_s=0.15,
     )
     selected_splits = splits or SPLITS
-    clips = explicit_clips(root, manifest, truth, splits=selected_splits)
+    clips = explicit_clips(
+        root,
+        manifest,
+        truth,
+        splits=selected_splits,
+        aligned_audio_dir=output / "aligned-audio" / truth,
+    )
     for split in sorted(selected_splits):
         is_training = split == "train"
         spectrograms = SpectrogramGeneration(

@@ -21,7 +21,7 @@ word across real devices.
 | Piper sample generation and notebook-driven training | Versioned recipes, resumable generation, source hashes, and manifest validation |
 | Weighted training sources and ambient false-accept metrics | Named pronunciation and confusable-speech cohorts used in training, checkpoint selection, and evaluation |
 | Streaming TensorFlow Lite export | Per-phrase and unseen-pronunciation evaluation with isolated streaming state |
-| Model training and test datasets | A device-corpus contract that retains every commanded attempt, including wake-detector misses |
+| Model training and test datasets | A device-corpus contract that retains every commanded attempt, including detector misses, and aligns phrases inside long captures |
 | A model artifact | Device-profile comparisons, leak-safe held-out splits, and a physical qualification checklist |
 
 Use upstream when you need the trainer and exporter. Use this fork when you also
