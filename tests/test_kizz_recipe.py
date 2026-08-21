@@ -65,6 +65,15 @@ class KizzRecipeTest(unittest.TestCase):
         features = generate_features_for_clip(np.zeros(1600, dtype=np.int16))
         self.assertEqual(features.shape[1], 40)
 
+    def test_quantization_ignores_only_partial_trailing_stride(self):
+        from microwakeword.utils import streaming_calibration_slices
+
+        spectrogram = np.arange(8 * 40, dtype=np.float32).reshape(8, 40)
+        chunks = list(streaming_calibration_slices(spectrogram, 3))
+        self.assertEqual(len(chunks), 2)
+        np.testing.assert_array_equal(chunks[0], spectrogram[0:3])
+        np.testing.assert_array_equal(chunks[1], spectrogram[3:6])
+
 
 if __name__ == "__main__":
     unittest.main()
