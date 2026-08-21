@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Generate collision-free positive and hard-negative TTS corpora from a recipe."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+
+def slug(text: str) -> str:
+    readable = "_".join("".join(c.lower() if c.isalnum() else " " for c in text).split())
+    return f"{readable}-{hashlib.sha256(text.encode()).hexdigest()[:8]}"
+
+
+def generator_command(
+    phrase: dict, generation: dict, model: Path, output_dir: Path, batch_size: int
+) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "piper_sample_generator",
+        phrase["text"],
+        "--model",
+        str(model),
+        "--max-samples",
+        str(phrase["samples"]),
+        "--batch-size",
+        str(batch_size),
+        "--output-dir",
+        str(output_dir),
+    ]
+    for option, key in (
+        ("--length-scales", "length_scales"),
+        ("--noise-scales", "noise_scales"),
+        ("--noise-scale-ws", "noise_scale_ws"),
+        ("--slerp-weights", "slerp_weights"),
+    ):
+        command.extend([option, *(str(value) for value in generation[key])])
+    command.extend(["--max-speakers", str(generation["max_speakers"])])
+    return command
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--recipe", type=Path, required=True)
+    parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument(
+        "--generator-source",
+        type=Path,
+        help="Source checkout to add to PYTHONPATH (needed by current Piper source)",
+    )
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    recipe_bytes = args.recipe.read_bytes()
+    recipe = yaml.safe_load(recipe_bytes)
+    plan = []
+    for class_name, key in (
+        ("positive", "positive_phrases"),
+        ("hard_negative", "hard_negative_phrases"),
+    ):
+        for phrase in recipe[key]:
+            phrase_dir = args.output / class_name / slug(phrase["text"])
+            command = generator_command(
+                phrase, recipe["generation"], args.model, phrase_dir, args.batch_size
+            )
+            plan.append(
+                {
+                    "class": class_name,
+                    "text": phrase["text"],
+                    "samples": phrase["samples"],
+                    "output": str(phrase_dir),
+                    "command": command,
+                }
+            )
+            if args.dry_run:
+                continue
+            if phrase_dir.exists():
+                existing = len(list(phrase_dir.glob("*.wav")))
+                if existing == phrase["samples"]:
+                    continue
+                shutil.rmtree(phrase_dir)
+            phrase_dir.mkdir(parents=True, exist_ok=True)
+            environment = os.environ.copy()
+            if args.generator_source:
+                prior = environment.get("PYTHONPATH")
+                environment["PYTHONPATH"] = str(args.generator_source)
+                if prior:
+                    environment["PYTHONPATH"] += os.pathsep + prior
+            completed = subprocess.run(command, check=False, env=environment)
+            generated = len(list(phrase_dir.glob("*.wav")))
+            if completed.returncode != 0 and generated != phrase["samples"]:
+                completed.check_returncode()
+
+    manifest = {
+        "recipe": str(args.recipe),
+        "recipe_sha256": hashlib.sha256(recipe_bytes).hexdigest(),
+        "generator_model": str(args.model),
+        "generator_model_sha256": (
+            hashlib.sha256(args.model.read_bytes()).hexdigest()
+            if args.model.exists()
+            else None
+        ),
+        "generator_source": str(args.generator_source) if args.generator_source else None,
+        "plan": plan,
+    }
+    if args.dry_run:
+        print(json.dumps(manifest, indent=2))
+    else:
+        args.output.mkdir(parents=True, exist_ok=True)
+        (args.output / "generation-manifest.json").write_text(
+            json.dumps(manifest, indent=2) + "\n"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

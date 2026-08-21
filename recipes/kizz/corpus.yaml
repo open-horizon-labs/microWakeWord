@@ -1,0 +1,61 @@
+recipe_version: 1
+name: hiphi_kizz
+sample_rate_hz: 16000
+clip_duration_ms: 2000
+random_seed: 231
+
+# All positive spellings train one output class. The variants deliberately cover
+# how people and TTS engines naturally read the HiPhi brand name.
+positive_phrases:
+  - text: Kizz
+    samples: 3600
+  - text: Hi-Fi Kizz
+    samples: 1400
+  - text: High-Fi Kizz
+    samples: 1000
+  - text: Hi Phi Kizz
+    samples: 1000
+  - text: Hee Fee Kizz
+    samples: 600
+  - text: Hippy Kizz
+    samples: 400
+
+# These are not aliases. They are deliberately confusing speech that must not
+# wake Kizz, with extra weight on the short-word neighbors most likely to fire.
+hard_negative_phrases:
+  - text: kids
+    samples: 500
+  - text: kiss
+    samples: 500
+  - text: quiz
+    samples: 400
+  - text: fizz
+    samples: 300
+  - text: Liz
+    samples: 300
+  - text: his
+    samples: 300
+  - text: this
+    samples: 300
+  - text: it is
+    samples: 250
+  - text: Kizzy
+    samples: 250
+  - text: Hi-Fi
+    samples: 300
+  - text: Hi Phi
+    samples: 300
+  - text: hippy kids
+    samples: 350
+  - text: high five kids
+    samples: 350
+  - text: hi kids
+    samples: 350
+
+generation:
+  length_scales: [0.72, 0.85, 1.0, 1.15, 1.32]
+  noise_scales: [0.55, 0.667, 0.8, 0.95, 1.15]
+  noise_scale_ws: [0.65, 0.8, 0.95]
+  slerp_weights: [0.2, 0.4, 0.6, 0.8]
+  max_speakers: 700
+
