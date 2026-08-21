@@ -1,17 +1,19 @@
-"""Standalone LAN enrollment service for microphone-equipped HiPhi devices."""
+"""Standalone LAN enrollment and calibration service for microphone devices."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+import time
 import wave
 
 from aiohttp import WSMsgType, web
 
 from microwakeword.device_corpus import (
+    CAPTURE_SOURCES,
     MANIFEST_NAME,
     SPLITS,
     TRUTHS,
@@ -59,6 +61,8 @@ def validate_capture_request(request: object) -> dict:
         raise ValueError("phrase is invalid")
     if request.get("truth") not in TRUTHS:
         raise ValueError("truth is invalid")
+    if request.get("source") not in CAPTURE_SOURCES:
+        raise ValueError("source is invalid")
     if request.get("split") not in SPLITS:
         raise ValueError("split is invalid")
     duration = request.get("duration_ms")
@@ -72,12 +76,37 @@ def validate_capture_request(request: object) -> dict:
     return request
 
 
+def validate_wake_config_request(request: object) -> dict:
+    if not isinstance(request, dict):
+        raise ValueError("wake config request must be an object")
+    if not valid_token(request.get("device_id")):
+        raise ValueError("device_id is invalid")
+    cutoff = request.get("probability_cutoff")
+    window = request.get("sliding_window")
+    end_silence_ms = request.get("end_silence_ms")
+    max_utterance_ms = request.get("max_utterance_ms")
+    diagnostics_enabled = request.get("diagnostics_enabled")
+    if not isinstance(cutoff, (int, float)) or not 0.10 <= cutoff <= 0.99:
+        raise ValueError("probability_cutoff must be between 0.10 and 0.99")
+    if not isinstance(window, int) or not 1 <= window <= 20:
+        raise ValueError("sliding_window must be between 1 and 20")
+    if not isinstance(end_silence_ms, int) or not 300 <= end_silence_ms <= 5000:
+        raise ValueError("end_silence_ms must be between 300 and 5000")
+    if not isinstance(max_utterance_ms, int) or not 3000 <= max_utterance_ms <= 20000:
+        raise ValueError("max_utterance_ms must be between 3000 and 20000")
+    if not isinstance(diagnostics_enabled, bool):
+        raise ValueError("diagnostics_enabled must be a boolean")
+    return request
+
+
 @dataclass
 class Device:
     websocket: web.WebSocketResponse
     profile: str
     audio: dict
     firmware_sha: str | None
+    wake_config: dict | None = None
+    voice_telemetry: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -85,6 +114,8 @@ class PendingCapture:
     request: dict
     detected: bool | None = None
     byte_count: int | None = None
+    audio: bytearray = field(default_factory=bytearray)
+    queued_at: float = 0.0
 
 
 class EnrollmentService:
@@ -92,6 +123,7 @@ class EnrollmentService:
         self.corpus = corpus
         self.devices: dict[str, Device] = {}
         self.pending: dict[str, PendingCapture] = {}
+        self.recent_errors: list[dict] = []
         self.lock = asyncio.Lock()
 
     def application(self) -> web.Application:
@@ -99,7 +131,22 @@ class EnrollmentService:
         app.router.add_get("/v1/device", self.device_socket)
         app.router.add_post("/v1/captures", self.enqueue_capture)
         app.router.add_get("/v1/devices", self.list_devices)
+        app.router.add_get("/v1/status", self.status)
+        app.router.add_post("/v1/wake-config", self.configure_wake)
         return app
+
+    async def status(self, _request: web.Request) -> web.Response:
+        async with self.lock:
+            pending = {
+                capture_id: {
+                    "device_id": value.request["device_id"],
+                    "declared_bytes": value.byte_count,
+                    "received_bytes": len(value.audio),
+                }
+                for capture_id, value in self.pending.items()
+            }
+            errors = list(self.recent_errors[-20:])
+        return web.json_response({"pending": pending, "recent_errors": errors})
 
     async def list_devices(self, _request: web.Request) -> web.Response:
         async with self.lock:
@@ -108,10 +155,51 @@ class EnrollmentService:
                     "device_id": key,
                     "device_profile": value.profile,
                     "audio": value.audio,
+                    "wake_config": value.wake_config,
+                    "voice_telemetry": value.voice_telemetry[-20:],
                 }
                 for key, value in sorted(self.devices.items())
             ]
         return web.json_response({"devices": devices})
+
+    async def configure_wake(self, http_request: web.Request) -> web.Response:
+        try:
+            request = validate_wake_config_request(await http_request.json())
+        except (ValueError, json.JSONDecodeError) as error:
+            return web.json_response({"error": str(error)}, status=400)
+        async with self.lock:
+            device = self.devices.get(request["device_id"])
+            if device is None:
+                return web.json_response(
+                    {"error": "addressed device is not connected"}, status=503
+                )
+            try:
+                await device.websocket.send_json(
+                    {
+                        "type": "wake_config",
+                        "probability_cutoff": request["probability_cutoff"],
+                        "sliding_window": request["sliding_window"],
+                        "end_silence_ms": request["end_silence_ms"],
+                        "max_utterance_ms": request["max_utterance_ms"],
+                        "diagnostics_enabled": request["diagnostics_enabled"],
+                    }
+                )
+            except ConnectionError:
+                return web.json_response(
+                    {"error": "addressed device disconnected"}, status=503
+                )
+        return web.json_response(
+            {
+                "device_id": request["device_id"],
+                "state": "queued",
+                "probability_cutoff": request["probability_cutoff"],
+                "sliding_window": request["sliding_window"],
+                "end_silence_ms": request["end_silence_ms"],
+                "max_utterance_ms": request["max_utterance_ms"],
+                "diagnostics_enabled": request["diagnostics_enabled"],
+            },
+            status=202,
+        )
 
     async def enqueue_capture(self, http_request: web.Request) -> web.Response:
         try:
@@ -119,6 +207,13 @@ class EnrollmentService:
         except (ValueError, json.JSONDecodeError) as error:
             return web.json_response({"error": str(error)}, status=400)
         async with self.lock:
+            now = time.monotonic()
+            for capture_id in [
+                key
+                for key, pending in self.pending.items()
+                if now - pending.queued_at > 10.0
+            ]:
+                self.pending.pop(capture_id, None)
             device = self.devices.get(request["device_id"])
             if device is None:
                 return web.json_response(
@@ -145,7 +240,9 @@ class EnrollmentService:
                 self._validate_split_assignment(request)
             except ValueError as error:
                 return web.json_response({"error": str(error)}, status=409)
-            self.pending[capture_id] = PendingCapture(request=dict(request))
+            self.pending[capture_id] = PendingCapture(
+                request=dict(request), queued_at=now
+            )
             try:
                 await device.websocket.send_json(
                     {
@@ -178,15 +275,41 @@ class EnrollmentService:
                         )
                     elif event.get("type") == "training_sample":
                         await self._sample_header(device_id, event)
+                    elif event.get("type") == "training_sample_end":
+                        await self._sample_end(device_id, event)
                     elif event.get("type") == "training_error":
                         await self._training_error(device_id, event)
+                    elif event.get("type") == "wake_config_applied":
+                        await self._wake_config_applied(device_id, event)
+                    elif event.get("type") == "wake_config_error":
+                        pass
+                    elif event.get("type") == "voice_telemetry":
+                        await self._voice_telemetry(device_id, event)
                     else:
                         await websocket.send_json(
                             {"type": "error", "message": "unknown event"}
                         )
                 elif message.type == WSMsgType.BINARY:
-                    await self._sample_audio(device_id, bytes(message.data))
+                    capture_id, received_bytes = await self._sample_audio(
+                        device_id, bytes(message.data)
+                    )
+                    await websocket.send_json(
+                        {
+                            "type": "training_chunk",
+                            "capture_id": capture_id,
+                            "received_bytes": received_bytes,
+                        }
+                    )
         except (ValueError, json.JSONDecodeError) as error:
+            async with self.lock:
+                self.recent_errors.append(
+                    {
+                        "device_id": device_id,
+                        "message": str(error),
+                        "received_at": time.time(),
+                    }
+                )
+                del self.recent_errors[:-20]
             await websocket.send_json({"type": "error", "message": str(error)})
         finally:
             if device_id is not None:
@@ -215,6 +338,55 @@ class EnrollmentService:
             self.devices[device_id] = Device(websocket, profile, audio, firmware_sha)
         return device_id
 
+    async def _wake_config_applied(
+        self, device_id: str | None, event: dict
+    ) -> None:
+        if device_id is None:
+            raise ValueError("device must send hello before wake config status")
+        config = validate_wake_config_request(
+            {
+                "device_id": device_id,
+                "probability_cutoff": event.get("probability_cutoff"),
+                "sliding_window": event.get("sliding_window"),
+                "end_silence_ms": event.get("end_silence_ms"),
+                "max_utterance_ms": event.get("max_utterance_ms"),
+                "diagnostics_enabled": event.get("diagnostics_enabled"),
+            }
+        )
+        async with self.lock:
+            device = self.devices.get(device_id)
+            if device is not None:
+                device.wake_config = {
+                    "probability_cutoff": config["probability_cutoff"],
+                    "sliding_window": config["sliding_window"],
+                    "end_silence_ms": config["end_silence_ms"],
+                    "max_utterance_ms": config["max_utterance_ms"],
+                    "diagnostics_enabled": config["diagnostics_enabled"],
+                }
+
+    async def _voice_telemetry(self, device_id: str | None, event: dict) -> None:
+        if device_id is None:
+            raise ValueError("device must send hello before voice telemetry")
+        if event.get("event") != "endpoint" or event.get("reason") not in {
+            "deepgram_flux", "vad_silence", "max_duration", "no_command"
+        }:
+            raise ValueError("voice telemetry event is invalid")
+        integer_fields = (
+            "turn_id", "wake_to_commit_ms", "command_ms", "trailing_silence_ms",
+            "audio_bytes", "speech_frames", "silence_frames", "end_silence_ms",
+            "max_utterance_ms",
+        )
+        if any(not isinstance(event.get(key), int) or event[key] < 0
+               for key in integer_fields):
+            raise ValueError("voice telemetry metrics are invalid")
+        sample = {key: event[key] for key in ("event", "reason", *integer_fields)}
+        sample["received_at"] = time.time()
+        async with self.lock:
+            device = self.devices.get(device_id)
+            if device is not None:
+                device.voice_telemetry.append(sample)
+                del device.voice_telemetry[:-100]
+
     async def _sample_header(self, device_id: str | None, event: dict) -> None:
         if device_id is None:
             raise ValueError("device must send hello before a sample")
@@ -242,7 +414,9 @@ class EnrollmentService:
                 raise ValueError("training_error does not match a pending capture")
             self.pending.pop(capture_id, None)
 
-    async def _sample_audio(self, device_id: str | None, pcm: bytes) -> None:
+    async def _sample_audio(
+        self, device_id: str | None, pcm: bytes
+    ) -> tuple[str, int]:
         async with self.lock:
             matches = [
                 (capture_id, pending)
@@ -255,12 +429,31 @@ class EnrollmentService:
                     "binary audio does not have exactly one pending header"
                 )
             capture_id, pending = matches[0]
-            if len(pcm) != pending.byte_count or len(pcm) % 2:
+            if not pcm or len(pcm) % 2:
+                raise ValueError("binary audio chunk is invalid")
+            if len(pending.audio) + len(pcm) > pending.byte_count:
+                raise ValueError("binary audio exceeds its declared length")
+            pending.audio.extend(pcm)
+            return capture_id, len(pending.audio)
+
+    async def _sample_end(self, device_id: str | None, event: dict) -> None:
+        capture_id = event.get("capture_id")
+        if device_id is None or not valid_token(capture_id):
+            raise ValueError("training_sample_end is invalid")
+        async with self.lock:
+            pending = self.pending.get(capture_id)
+            if (
+                pending is None
+                or pending.request["device_id"] != device_id
+                or pending.byte_count is None
+            ):
+                raise ValueError("training_sample_end does not match a sample")
+            if len(pending.audio) != pending.byte_count:
                 raise ValueError("binary audio length does not match its header")
             device = self.devices.get(device_id)
             if device is None:
                 raise ValueError("device disconnected before capture completed")
-            self._persist(capture_id, pending, device, pcm)
+            self._persist(capture_id, pending, device, bytes(pending.audio))
             self.pending.pop(capture_id, None)
             await device.websocket.send_json(
                 {"type": "stored", "capture_id": capture_id}
@@ -337,6 +530,7 @@ class EnrollmentService:
                 "capture_id": capture_id,
                 "path": str(relative),
                 "truth": request["truth"],
+                "source": request["source"],
                 "phrase": request["phrase"],
                 "pronunciation": request.get("pronunciation"),
                 "speaker_id": request["speaker_id"],

@@ -30,6 +30,7 @@ curl -X POST http://trainer-host:8091/v1/captures \
     "phrase":"My Wake Phrase",
     "pronunciation":"primary_reading",
     "truth":"positive",
+    "source":"human",
     "speaker_id":"speaker-a",
     "session_id":"speaker-a-mic-train",
     "split":"train",
@@ -84,8 +85,15 @@ one binary PCM message. Attempts are 0.5–5 seconds and at most 160,000 bytes.
 - unique capture IDs and content hashes;
 - mono 16 kHz signed-16 PCM WAVs;
 - explicit truth and train/validation/test assignment;
+- explicit capture source (`human`, `synthetic_playback`, `ambient`, or
+  `simulated`);
 - no speaker or session crossing splits;
 - both provisional detector hits and misses.
+
+Production feature building accepts live human and synthetic-playback positives
+and hard negatives in the training split. Validation and test require human
+speech; ambient-negative splits require ambient recordings. Simulation remains
+available for pipeline tests but is excluded from production features.
 
 Build device features and include them in training:
 

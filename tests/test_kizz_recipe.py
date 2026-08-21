@@ -121,10 +121,10 @@ class KizzRecipeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "extra="):
                 FEATURE_MODULE.validate_generated_corpus(recipe, root / "generated")
 
-    def test_training_selects_for_ambient_false_accepts_first(self):
+    def test_training_selects_for_all_validation_false_accepts_first(self):
         config = CONFIG_MODULE.training_config(Path("work"), Path("trained"))
         self.assertEqual(
-            config["minimization_metric"], "ambient_false_positives_per_hour"
+            config["minimization_metric"], "validation_false_positives"
         )
         hard_negatives = [
             item
@@ -148,7 +148,7 @@ class KizzRecipeTest(unittest.TestCase):
             for item in config["features"]
             if item["features_dir"].startswith("device-features/")
         ]
-        self.assertEqual(len(device_sources), 4)
+        self.assertEqual(len(device_sources), 3)
         self.assertTrue(any(item["truth"] for item in device_sources))
         self.assertTrue(any(not item["truth"] for item in device_sources))
         self.assertTrue(
@@ -189,19 +189,25 @@ class KizzRecipeTest(unittest.TestCase):
                 all(path.parent.name in {"hi_fi", "hee_fee"} for path in held_out)
             )
 
-    def test_streaming_model_state_can_be_reset_between_independent_clips(self):
+    def test_streaming_model_state_reloads_after_inference(self):
         from microwakeword.inference import Model
 
-        class Interpreter:
-            reset_count = 0
+        model = Model.__new__(Model)
+        model._state_dirty = True
+        reloads = []
+        model._load_interpreter = lambda: reloads.append(True)
+        model.reset_states()
+        self.assertEqual(reloads, [True])
 
-            def reset_all_variables(self):
-                self.reset_count += 1
+    def test_streaming_model_state_does_not_reload_before_first_inference(self):
+        from microwakeword.inference import Model
 
         model = Model.__new__(Model)
-        model.model = Interpreter()
+        model._state_dirty = False
+        reloads = []
+        model._load_interpreter = lambda: reloads.append(True)
         model.reset_states()
-        self.assertEqual(model.model.reset_count, 1)
+        self.assertEqual(reloads, [])
 
 
 if __name__ == "__main__":

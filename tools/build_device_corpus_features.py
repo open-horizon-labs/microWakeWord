@@ -21,16 +21,49 @@ from microwakeword.device_corpus import (
     validate_device_corpus,
 )
 
+PRODUCTION_SOURCES = {
+    "positive": {
+        "train": {"human", "synthetic_playback"},
+        "validation": {"human"},
+        "test": {"human"},
+    },
+    "hard_negative": {
+        "train": {"human", "synthetic_playback"},
+        "validation": {"human"},
+        "test": {"human"},
+    },
+    "ambient_negative": {
+        "train": {"ambient"},
+        "validation": {"ambient"},
+        "test": {"ambient"},
+    },
+}
 
-def explicit_clips(root: Path, manifest: dict, truth: str) -> Clips:
+
+def explicit_clips(
+    root: Path,
+    manifest: dict,
+    truth: str,
+    include_sources: set[str] | None = None,
+    splits: set[str] | None = None,
+) -> Clips:
     """Create a Clips source without re-randomizing the manifest's splits."""
+    selected_splits = splits or SPLITS
     split_paths = {
-        split: [str(path) for _, path in captures_for(root, manifest, truth, split)]
-        for split in SPLITS
+        split: [
+            str(path)
+            for item, path in captures_for(root, manifest, truth, split)
+            if item["source"]
+            in (include_sources or PRODUCTION_SOURCES[truth][split])
+        ]
+        for split in selected_splits
     }
     missing = sorted(split for split, paths in split_paths.items() if not paths)
     if missing:
-        raise ValueError(f"{truth} requires captures in every split; missing={missing}")
+        raise ValueError(
+            f"{truth} requires eligible captures in every split; "
+            f"missing={missing}"
+        )
 
     clips = Clips.__new__(Clips)
     clips.trim_zeros = False
@@ -59,9 +92,15 @@ def feature_split_directory(truth: str, split: str) -> str:
     return {"train": "training", "validation": "validation", "test": "testing"}[split]
 
 
-def build_truth(root: Path, manifest: dict, truth: str, output: Path) -> None:
+def build_truth(
+    root: Path,
+    manifest: dict,
+    truth: str,
+    output: Path,
+    splits: set[str] | None = None,
+) -> None:
     augmenter = Augmentation(
-        augmentation_duration_s=2.0,
+        augmentation_duration_s=None,
         augmentation_probabilities={
             "SevenBandParametricEQ": 0.10,
             "TanhDistortion": 0.05,
@@ -76,12 +115,14 @@ def build_truth(root: Path, manifest: dict, truth: str, output: Path) -> None:
         min_jitter_s=0.05,
         max_jitter_s=0.15,
     )
-    clips = explicit_clips(root, manifest, truth)
-    for split in sorted(SPLITS):
+    selected_splits = splits or SPLITS
+    clips = explicit_clips(root, manifest, truth, splits=selected_splits)
+    for split in sorted(selected_splits):
+        is_training = split == "train"
         spectrograms = SpectrogramGeneration(
             clips=clips,
-            augmenter=augmenter,
-            slide_frames=1 if split == "test" else 5,
+            augmenter=augmenter if is_training else None,
+            slide_frames=5 if is_training else None,
             step_ms=10,
         )
         output_split = feature_split_directory(truth, split)
@@ -90,7 +131,7 @@ def build_truth(root: Path, manifest: dict, truth: str, output: Path) -> None:
         RaggedMmap.from_generator(
             out_dir=str(destination / "wakeword_mmap"),
             sample_generator=spectrograms.spectrogram_generator(
-                split=split, repeat=2 if split == "train" else 1
+                split=split, repeat=2 if is_training else 1
             ),
             batch_size=100,
             verbose=True,
@@ -102,6 +143,12 @@ def main() -> int:
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--truth", choices=("all", *sorted(TRUTHS)), default="all")
+    parser.add_argument(
+        "--split",
+        action="append",
+        choices=sorted(SPLITS),
+        help="Build only the selected manifest split; repeat for multiple splits",
+    )
     args = parser.parse_args()
 
     manifest = validate_device_corpus(args.corpus)
@@ -109,8 +156,9 @@ def main() -> int:
     random.seed(seed)
     np.random.seed(seed)
     truths = sorted(TRUTHS) if args.truth == "all" else [args.truth]
+    splits = set(args.split) if args.split else None
     for truth in truths:
-        build_truth(args.corpus, manifest, truth, args.output)
+        build_truth(args.corpus, manifest, truth, args.output, splits)
     return 0
 
 

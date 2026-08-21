@@ -52,7 +52,7 @@ def model_parameters(parser_nn):
     parser_nn.add_argument(
         "--residual_connection",
         type=str,
-        default="0,0,0,0,0",
+        default="0,0,0,0",
         help="Use a residual connection in each MixConv block",
     )
     parser_nn.add_argument(

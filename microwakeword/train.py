@@ -38,6 +38,11 @@ def swap_attribute(obj, attr, temp_value):
         setattr(obj, attr, original_value)
 
 
+def constrain_faph_by_negative_false_accepts(ambient_faph, negative_false_positives):
+    """Marks a cutoff unusable while any labeled negative is accepted."""
+    return np.where(np.asarray(negative_false_positives) > 0, np.inf, ambient_faph)
+
+
 def validate_nonstreaming(config, data_processor, model, test_set):
     testing_fingerprints, testing_ground_truth, _ = data_processor.get_data(
         test_set,
@@ -68,6 +73,7 @@ def validate_nonstreaming(config, data_processor, model, test_set):
     metrics["cutoff_for_no_faph"] = 0
     metrics["ambient_false_positives"] = 0
     metrics["ambient_false_positives_per_hour"] = 0
+    metrics["validation_false_positives"] = 0
     metrics["average_viable_recall"] = 0
 
     test_set_fp = np.asarray(result["fp"])
@@ -111,7 +117,12 @@ def validate_nonstreaming(config, data_processor, model, test_set):
         recall_at_cutoffs = (
             all_true_positives / (all_true_positives + all_false_negatives)
         )
-        faph_at_cutoffs = ambient_false_positives / duration_of_ambient_set
+        ambient_faph_at_cutoffs = (
+            ambient_false_positives / duration_of_ambient_set
+        )
+        faph_at_cutoffs = constrain_faph_by_negative_false_accepts(
+            ambient_faph_at_cutoffs, test_set_fp
+        )
 
         target_faph_cutoff_probability = 1.0
         for index, cutoff in enumerate(np.linspace(0.0, 1.0, 101)):
@@ -120,33 +131,18 @@ def validate_nonstreaming(config, data_processor, model, test_set):
                 recall_at_no_faph = recall_at_cutoffs[index]
                 break
 
-        if faph_at_cutoffs[0] > 2:
-            # Use linear interpolation to estimate recall at 2 faph
-
-            # Increase index until we find a faph less than 2
-            index_of_first_viable = 1
-            while faph_at_cutoffs[index_of_first_viable] > 2:
-                index_of_first_viable += 1
-
-            x0 = faph_at_cutoffs[index_of_first_viable - 1]
-            y0 = recall_at_cutoffs[index_of_first_viable - 1]
-            x1 = faph_at_cutoffs[index_of_first_viable]
-            y1 = recall_at_cutoffs[index_of_first_viable]
-
-            recall_at_2faph = (y0 * (x1 - 2.0) + y1 * (2.0 - x0)) / (x1 - x0)
-        else:
-            # Lowest faph is already under 2, assume the recall is constant before this
-            index_of_first_viable = 0
-            recall_at_2faph = recall_at_cutoffs[0]
-
+        viable_indices = np.flatnonzero(
+            (test_set_fp == 0) & (ambient_faph_at_cutoffs <= 2.0)
+        )
+        first_viable_index = viable_indices[0]
         x_coordinates = [2.0]
-        y_coordinates = [recall_at_2faph]
+        y_coordinates = [recall_at_cutoffs[first_viable_index]]
 
-        for index in range(index_of_first_viable, len(recall_at_cutoffs)):
-            if faph_at_cutoffs[index] != x_coordinates[-1]:
+        for index in viable_indices:
+            if ambient_faph_at_cutoffs[index] != x_coordinates[-1]:
                 # Only add a point if it is a new faph
                 # This ensures if a faph rate is repeated, we use the highest recall
-                x_coordinates.append(faph_at_cutoffs[index])
+                x_coordinates.append(ambient_faph_at_cutoffs[index])
                 y_coordinates.append(recall_at_cutoffs[index])
 
         # Use trapezoid rule to estimate the area under the curve, then divide by 2.0 to get the average recall
@@ -157,7 +153,10 @@ def validate_nonstreaming(config, data_processor, model, test_set):
         metrics["recall_at_no_faph"] = recall_at_no_faph
         metrics["cutoff_for_no_faph"] = target_faph_cutoff_probability
         metrics["ambient_false_positives"] = ambient_false_positives[50]
-        metrics["ambient_false_positives_per_hour"] = faph_at_cutoffs[50]
+        metrics["ambient_false_positives_per_hour"] = ambient_faph_at_cutoffs[50]
+        metrics["validation_false_positives"] = (
+            test_set_fp[50] + ambient_false_positives[50]
+        )
         metrics["average_viable_recall"] = average_viable_recall
 
     return metrics
@@ -220,6 +219,11 @@ def train(model, config, data_processor):
         tf.keras.metrics.BinaryCrossentropy(name="loss"),
     ]
 
+    if config.get("freeze_batch_normalization"):
+        for layer in model.layers:
+            if isinstance(layer, tf.keras.layers.BatchNormalization):
+                layer.trainable = False
+
     model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
 
     # We un-decorate the `tf.function`, it's very slow to manually run training batches
@@ -230,7 +234,12 @@ def train(model, config, data_processor):
     checkpoint_directory = os.path.join(config["train_dir"], "restore/")
     checkpoint_prefix = os.path.join(checkpoint_directory, "ckpt")
     checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=model)
-    checkpoint.restore(tf.train.latest_checkpoint(checkpoint_directory))
+    latest_checkpoint = tf.train.latest_checkpoint(checkpoint_directory)
+    if latest_checkpoint:
+        checkpoint.restore(latest_checkpoint)
+    elif config.get("initial_weights"):
+        logging.info("Loading initial weights from %s", config["initial_weights"])
+        model.load_weights(config["initial_weights"])
 
     # Configure TensorBoard summaries
     train_writer = tf.summary.create_file_writer(

@@ -12,7 +12,11 @@ import numpy as np
 
 from microwakeword.device_corpus import captures_for, validate_device_corpus
 from microwakeword.inference import Model
-from tools.evaluate_recipe_model import peak_probability
+
+if __package__:
+    from tools.evaluate_recipe_model import peak_probability
+else:
+    from evaluate_recipe_model import peak_probability
 
 
 def summarize(peaks: list[float], cutoff: float) -> dict:
@@ -75,7 +79,12 @@ def main() -> int:
     parser.add_argument("--cutoff", type=float, required=True)
     parser.add_argument("--sliding-window", type=int, default=5)
     parser.add_argument("--ignore-initial", type=int, default=25)
-    parser.add_argument("--clip-duration-ms", type=int, default=2000)
+    parser.add_argument(
+        "--clip-duration-ms",
+        type=int,
+        default=0,
+        help="Optionally crop clips to this duration; 0 evaluates the full recording",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     manifest = validate_device_corpus(args.corpus)
