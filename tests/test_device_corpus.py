@@ -40,7 +40,7 @@ class DeviceCorpusTest(unittest.TestCase):
                     "schema_version": 1,
                     "corpus_id": "hiphi-device-v1",
                     "device_profiles": {
-                        "m5stack_stackchan_v1": {
+                        "m5stack_stackchan_k151_cores3_v1": {
                             "audio": {
                                 "sample_rate": 16000,
                                 "channels": 1,
@@ -68,7 +68,7 @@ class DeviceCorpusTest(unittest.TestCase):
             "split": "train",
             "detected": detected,
             "device_id": "kizz",
-            "device_profile": "m5stack_stackchan_v1",
+            "device_profile": "m5stack_stackchan_k151_cores3_v1",
             "firmware_sha": "18433e0",
             "conditions": {},
         }

@@ -12,7 +12,7 @@ python tools/run_enrollment_service.py --corpus work/device-corpus --port 8091
 python tools/simulate_enrollment_device.py \
   --endpoint ws://trainer-host:8091/v1/device \
   --device-id simulated-stackchan-1 \
-  --device-profile m5stack_stackchan_v1 \
+  --device-profile m5stack_stackchan_k151_cores3_v1 \
   --no-detected
 ```
 
@@ -24,7 +24,7 @@ curl -X POST http://trainer-host:8091/v1/captures \
   -d '{
     "capture_id":"speaker-a-stackchan-train-001",
     "device_id":"simulated-stackchan-1",
-    "device_profile":"m5stack_stackchan_v1",
+    "device_profile":"m5stack_stackchan_k151_cores3_v1",
     "phrase":"Hi-Fi Kizz",
     "pronunciation":"hi_fi",
     "truth":"positive",
@@ -49,7 +49,7 @@ On `GET /v1/device`, a microphone device sends:
 {
   "type": "hello",
   "device_id": "kizz-1",
-  "device_profile": "m5stack_stackchan_v1",
+  "device_profile": "m5stack_stackchan_k151_cores3_v1",
   "firmware_sha": "18433e0",
   "audio": {
     "sample_rate": 16000,
@@ -63,9 +63,17 @@ On `GET /v1/device`, a microphone device sends:
 ```
 
 `device_id` addresses an instance. `device_profile` identifies an acoustic
-domain shared by equivalent hardware and preprocessing. StackChan, Dial, and
-Frame corpora can therefore qualify one shared model and report results by
-profile. A device-specific model is justified only by held-out evidence.
+domain shared by equivalent hardware and preprocessing. The repository-level
+`device-profiles.json` inventory classifies every current controller target.
+Seven have onboard microphones: Waveshare Dial, Frame, RLCD, M5Stack Tough,
+M5StickS3, StopWatch, and Kizz/StackChan. M5Stack Dial v1.1 and the plain
+AtomS3 JoyStick target do not.
+
+Those seven profiles are candidates for evaluating one shared model before
+held-out evidence warrants a device-specific model. A catalog entry does not
+claim that enrollment firmware or a real corpus exists: those are separate,
+explicit statuses. At present only Kizz has the enrollment firmware path, and
+no target is marked as having a collected corpus.
 
 The server sends `training_capture`; the device responds with
 `training_sample` followed by one binary PCM message. Attempts are bounded to

@@ -22,7 +22,7 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
             {
                 "type": "hello",
                 "device_id": "sim-kizz-1",
-                "device_profile": "m5stack_stackchan_v1",
+                "device_profile": "m5stack_stackchan_k151_cores3_v1",
                 "firmware_sha": "simulated",
                 "audio": {
                     "sample_rate": 16000,
@@ -48,7 +48,7 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
             json={
                 "capture_id": "missed-positive",
                 "device_id": "sim-kizz-1",
-                "device_profile": "m5stack_stackchan_v1",
+                "device_profile": "m5stack_stackchan_k151_cores3_v1",
                 "phrase": "Hi-Fi Kizz",
                 "pronunciation": "hi_fi",
                 "truth": "positive",
@@ -85,7 +85,9 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
         manifest = validate_device_corpus(self.corpus)
         attempt = manifest["captures"][0]
         self.assertFalse(attempt["detected"])
-        self.assertEqual(attempt["device_profile"], "m5stack_stackchan_v1")
+        self.assertEqual(
+            attempt["device_profile"], "m5stack_stackchan_k151_cores3_v1"
+        )
 
     async def test_endpoint_routes_to_explicit_device_profile(self):
         response = await self.client.post(
@@ -108,7 +110,7 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
         request = {
             "capture_id": "first",
             "device_id": "sim-kizz-1",
-            "device_profile": "m5stack_stackchan_v1",
+            "device_profile": "m5stack_stackchan_k151_cores3_v1",
             "phrase": "Hi-Fi Kizz",
             "truth": "positive",
             "speaker_id": "speaker-b",

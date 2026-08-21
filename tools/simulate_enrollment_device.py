@@ -56,7 +56,9 @@ def main() -> int:
         help="Full trainer WebSocket URL; never derived from a voice URL",
     )
     parser.add_argument("--device-id", default="simulated-device-1")
-    parser.add_argument("--device-profile", default="m5stack_stackchan_v1")
+    parser.add_argument(
+        "--device-profile", default="m5stack_stackchan_k151_cores3_v1"
+    )
     parser.add_argument(
         "--detected", action=argparse.BooleanOptionalAction, default=False
     )

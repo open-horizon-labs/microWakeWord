@@ -20,9 +20,12 @@ the standalone [device enrollment service](../../documentation/device_enrollment
 2. Long negative recordings from normal conversation and music in the intended
    room, used to measure false accepts per hour.
 
-StackChan, Dial, Frame, and later microphone products use the same enrollment
-contract. Results are first compared by `device_profile`; device-specific models
-are created only when held-out evidence shows the shared model is inadequate.
+The seven current microphone-equipped targets in `device-profiles.json` use the
+same enrollment contract: Waveshare Dial, Frame, RLCD, M5Stack Tough,
+M5StickS3, StopWatch, and Kizz/StackChan. Results are first compared by exact
+`device_profile`; device-specific models are created only when held-out evidence
+shows the shared model is inadequate. Catalog presence, enrollment-firmware
+support, and a collected real corpus are tracked separately.
 
 ## Generate the phrase corpus
 
