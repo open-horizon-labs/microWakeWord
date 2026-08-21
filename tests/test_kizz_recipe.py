@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 import yaml
+import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +58,12 @@ class KizzRecipeTest(unittest.TestCase):
         )
         self.assertFalse(hard_negative["truth"])
         self.assertGreater(hard_negative["penalty_weight"], 1.0)
+
+    def test_microfrontend_accepts_current_pybind_api(self):
+        from microwakeword.audio.audio_utils import generate_features_for_clip
+
+        features = generate_features_for_clip(np.zeros(1600, dtype=np.int16))
+        self.assertEqual(features.shape[1], 40)
 
 
 if __name__ == "__main__":
