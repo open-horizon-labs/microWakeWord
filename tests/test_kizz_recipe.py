@@ -42,12 +42,16 @@ class KizzRecipeTest(unittest.TestCase):
         self.assertIn("Hi Phi Kizz", phrases)
         self.assertIn("Hee Fee Kizz", phrases)
         self.assertIn("Hippy Kizz", phrases)
+        self.assertIn("High Fee Kizz", phrases)
+        self.assertIn("Hee Fye Kizz", phrases)
+        self.assertIn("Hiffy Kizz", phrases)
         counts = {
             entry["text"]: entry["samples"]
             for entry in self.recipe["positive_phrases"]
         }
         self.assertGreaterEqual(counts["Hee Fee Kizz"], 2000)
         self.assertGreaterEqual(counts["Hippy Kizz"], 2000)
+        self.assertGreaterEqual(counts["Kizz"], 5000)
 
     def test_near_sounding_words_are_hard_negatives(self):
         phrases = {entry["text"] for entry in self.recipe["hard_negative_phrases"]}
@@ -107,6 +111,20 @@ class KizzRecipeTest(unittest.TestCase):
             held_out = [path for paths in grouped.values() for path in paths]
             self.assertEqual(len(held_out), 2)
             self.assertTrue(all(path.parent.name in {"hi_fi", "hee_fee"} for path in held_out))
+
+    def test_streaming_model_state_can_be_reset_between_independent_clips(self):
+        from microwakeword.inference import Model
+
+        class Interpreter:
+            reset_count = 0
+
+            def reset_all_variables(self):
+                self.reset_count += 1
+
+        model = Model.__new__(Model)
+        model.model = Interpreter()
+        model.reset_states()
+        self.assertEqual(model.model.reset_count, 1)
 
 
 if __name__ == "__main__":

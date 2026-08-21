@@ -1,4 +1,4 @@
-recipe_version: 1
+recipe_version: 2
 name: hiphi_kizz
 sample_rate_hz: 16000
 clip_duration_ms: 2000
@@ -8,7 +8,7 @@ random_seed: 231
 # how people and TTS engines naturally read the HiPhi brand name.
 positive_phrases:
   - text: Kizz
-    samples: 3600
+    samples: 6000
   - text: Hi-Fi Kizz
     samples: 2400
   - text: High-Fi Kizz
@@ -19,14 +19,20 @@ positive_phrases:
     samples: 2400
   - text: Hippy Kizz
     samples: 2400
+  - text: High Fee Kizz
+    samples: 2400
+  - text: Hee Fye Kizz
+    samples: 2400
+  - text: Hiffy Kizz
+    samples: 2400
 
 # These are not aliases. They are deliberately confusing speech that must not
 # wake Kizz, with extra weight on the short-word neighbors most likely to fire.
 hard_negative_phrases:
   - text: kids
-    samples: 1000
+    samples: 1800
   - text: kiss
-    samples: 1000
+    samples: 2500
   - text: quiz
     samples: 2000
   - text: fizz
@@ -40,15 +46,15 @@ hard_negative_phrases:
   - text: it is
     samples: 250
   - text: Kizzy
-    samples: 250
+    samples: 600
   - text: Hi-Fi
     samples: 300
   - text: Hi Phi
     samples: 300
   - text: hippy kids
-    samples: 1000
+    samples: 1800
   - text: high five kids
-    samples: 800
+    samples: 1500
   - text: hi kids
     samples: 800
 

@@ -333,6 +333,7 @@ def tflite_streaming_model_roc(
     logging.info("Testing the " + ambient_set + " set.")
     ambient_streaming_probabilities = []
     for spectrogram_track in test_ambient_fingerprints:
+        model.reset_states()
         streaming_probabilities = model.predict_spectrogram(spectrogram_track)
         sliding_window_probabilities = sliding_window_view(
             streaming_probabilities, sliding_window_length
@@ -364,6 +365,7 @@ def tflite_streaming_model_roc(
     for i in range(len(test_fingerprints)):
         if test_ground_truth[i]:
             # Only test positive samples
+            model.reset_states()
             streaming_probabilities = model.predict_spectrogram(test_fingerprints[i])
             sliding_window_probabilities = sliding_window_view(
                 streaming_probabilities[ignore_slices_after_accept:],

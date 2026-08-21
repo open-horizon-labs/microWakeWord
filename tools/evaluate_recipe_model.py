@@ -18,9 +18,7 @@ from microwakeword.inference import Model
 
 
 def reset_model(model: Model) -> None:
-    reset = getattr(model.model, "reset_all_variables", None)
-    if reset is not None:
-        reset()
+    model.reset_states()
 
 
 def peak_probability(
