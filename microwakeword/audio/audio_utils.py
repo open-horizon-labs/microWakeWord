@@ -53,9 +53,9 @@ def generate_features_for_clip(
         # pymicro-features has shipped both Python-style and pybind-style
         # spellings across supported revisions. Keep feature generation stable
         # across both APIs; their ProcessOutput fields are identical.
-        process_samples = getattr(
-            micro_frontend, "process_samples", micro_frontend.ProcessSamples
-        )
+        process_samples = getattr(micro_frontend, "process_samples", None)
+        if process_samples is None:
+            process_samples = micro_frontend.ProcessSamples
         features = []
         audio_idx = 0
         num_audio_bytes = len(audio_samples)
