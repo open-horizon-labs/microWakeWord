@@ -1,70 +1,105 @@
 ![microWakeWord logo](etc/logo.png)
 
-# microWakeWord — Open Horizon Labs fork
+# microWakeWord for real devices
 
-This is Open Horizon Labs' experimental fork of
+Build a custom wake word, find out what it confuses with, and test the same
+streaming model against the microphones and rooms where it must work.
+
+This Open Horizon Labs fork extends
 [Kevin Ahrendt's microWakeWord](https://github.com/kahrendt/microWakeWord). It
-keeps the upstream TensorFlow training and streaming-export architecture, then
-adds a reproducible path for developing and qualifying custom wake words against
-the microphones that will run them.
+keeps the upstream TensorFlow training and streaming TensorFlow Lite export,
+then adds the product-development loop around them: reproducible recipes,
+confusable speech, cohort-level evaluation, real-microphone enrollment, and
+artifact qualification.
 
-The first complete recipe targets **HiPhi Kizz**. The framework itself is not
-Kizz-specific: its device-corpus contract represents every microphone-equipped
-HiPhi controller by `device_profile`, so one shared model can be evaluated across
-devices before evidence warrants separate models.
+## When this fork is useful
 
-> **Status:** research and model-development tooling. A successful synthetic
-> evaluation is not hardware qualification. No device profile is currently
-> marked as having a collected real corpus.
+Use it when:
+
+- the wake phrase is a name, brand, or invented word without a ready-made model;
+- people may pronounce the phrase several ways;
+- nearby words and partial phrases must not wake the device;
+- one candidate must be compared across different microphone frontends;
+- a detector miss must become training evidence instead of disappearing.
+
+## The training and qualification loop
+
+```text
+phrase + pronunciations + confusable speech
+                  ↓
+       reproducible synthetic corpus
+                  ↓
+     on-device-compatible audio features
+                  ↓
+       quantized streaming candidate
+                  ↓
+ pronunciation + collision + ambient tests
+                  ↓
+ real microphone corpus, including detector misses
+                  ↓
+ held-out comparison by device profile and cohort
+                  ↓
+     exact-artifact physical qualification
+```
+
+A failed gate sends the work back to the recipe, corpus balance, or training
+configuration. Record rejected candidates in the experiment ledger. Aggregate
+scores do not satisfy the release gate.
+
+## The HiPhi Kizz example
+
+The included [HiPhi Kizz recipe](recipes/kizz/README.md) treats natural readings
+of **HiPhi Kizz** as one wake class. It explicitly tests speech such as `Kizz`,
+`kids`, `kiss`, and `quiz`, plus valid prefixes with the wrong final word and
+wrong prefixes followed by `Kizz`.
+
+The current synthetic candidates are rejected. Their per-phrase results exposed
+confusable acceptance and weak unseen-pronunciation recall that an aggregate
+result would hide. See the [experiment ledger](recipes/kizz/EXPERIMENTS.md).
+The repository does not publish a hardware-qualified Kizz model.
 
 ## Start here
 
-- Follow the end-to-end [usage guide](documentation/USAGE.md).
-- Read the [HiPhi Kizz recipe](recipes/kizz/README.md) for its phrase and
-  collision policy.
-- See the [technique and reference ledger](documentation/techniques.md) for
-  what is inherited, what this fork adds, and the evidence behind each choice.
-- Use [device enrollment](documentation/device_enrollment.md) to collect hits
-  **and misses** through a standalone training endpoint.
-- Review the [experiment log](recipes/kizz/EXPERIMENTS.md) before changing the
-  wake class or its hard negatives.
+- Follow the [end-to-end usage guide](documentation/USAGE.md).
+- Read the [technique and reference ledger](documentation/techniques.md) to see
+  what comes from upstream research and what this fork adds.
+- Use the [standalone device enrollment service](documentation/device_enrollment.md)
+  to collect bounded real-microphone attempts, including provisional misses.
+- Check [data-source and license notes](documentation/data_sources.md) before
+  building or distributing a corpus.
 
-## Why this fork exists
+## What a run produces
 
-Upstream microWakeWord provides the neural-network architecture, training loop,
-audio frontend, and a starter notebook. This fork extends that foundation with
-the pieces needed to repeat and audit a product wake-word program:
+- a recipe and generation manifest with source hashes and phrase counts;
+- deterministic train, validation, and test feature sets;
+- a quantized streaming TensorFlow Lite candidate;
+- separate reports for pronunciations, confusable phrases, ambient audio,
+  device profiles, and prior detector outcomes;
+- a versioned real-device corpus with audio hashes and leak-safe splits;
+- the evidence needed to decide whether an exact artifact may be flashed or
+  released.
 
-| Addition | Why it exists |
-| --- | --- |
-| Manifest-driven recipes | Recreate generated corpora from explicit phrases, variation settings, seeds, and source hashes. |
-| Pronunciation and collision design | Train natural readings of `HiPhi` as one full-phrase class while testing nearby speech that must not wake the device. |
-| Confusable-aware model selection | Make hard negatives affect training and checkpoint selection instead of relying on aggregate recall alone. |
-| Standalone device enrollment | Collect bounded microphone captures without coupling training to UHC or assuming the training and voice endpoints share a host. |
-| Versioned device-corpus contract | Retain provisional detector misses, preserve explicit splits, prevent speaker/session leakage, and group evidence by acoustic profile. |
-| Cohort-level evaluation | Report results by phrase, pronunciation, truth, device profile, and prior detector outcome so weak cohorts cannot hide in an average. |
+## Status and qualification boundary
 
-The detailed implementation map and primary references are in
-[Techniques and references](documentation/techniques.md).
+This is experimental training and qualification tooling. Synthetic evaluation
+can reject a model; it cannot qualify one for a room or microphone it has never
+heard. A model release still requires representative real-device corpora,
+frozen held-out evaluation, the exact quantized artifact, and physical acceptance
+on every claimed target.
 
-## What this fork does not claim
+The repository catalogs the current microphone-equipped HiPhi targets so their
+corpora can be compared through one contract. A catalog entry does not mean that
+enrollment firmware or real recordings exist. At present, only Kizz has an
+implemented enrollment path, and no device profile is marked as having a
+collected real corpus.
 
-- Synthetic speech alone does not establish real-room recall or false accepts
-  per hour.
-- A cataloged microphone profile does not imply enrollment firmware or a real
-  corpus exists for that target.
-- The current Kizz thresholds and corpus weights are experiment inputs, not
-  universal defaults for every phrase or device.
-- Training remains compute-intensive and requires representative negative audio
-  plus held-out recordings from the intended hardware and environment.
-
-## How microWakeWord works
+## How microWakeWord detects a wake phrase
 
 The detector has two stages. First, mono 16 kHz audio is converted into 40
 features every 10 ms by the TensorFlow Lite Micro
 [`micro_speech` frontend](https://github.com/tensorflow/tflite-micro/tree/main/tensorflow/lite/micro/examples/micro_speech).
-The frontend uses a 30 ms window, with adjacent windows overlapping by 20 ms,
-and applies noise reduction and gain normalization suited to small devices.
+The frontend uses a 30 ms window with 20 ms of overlap and applies noise
+reduction and gain normalization suited to small devices.
 
 Second, a streaming neural network updates from the newest feature slice and
 emits a wake probability. The model uses
@@ -73,33 +108,31 @@ derived from Google Research's
 [`kws_streaming`](https://github.com/google-research/google-research/tree/master/kws_streaming)
 work described in
 [Streaming Keyword Spotting on Mobile Devices](https://arxiv.org/abs/2005.06720).
-Several consecutive high probabilities are required before the runtime declares
-a wake.
+The runtime requires several consecutive high probabilities before declaring a
+wake.
 
-Training uses whole spectrograms, then exports a streaming TensorFlow Lite model
-for incremental inference. The upstream training pipeline supports
+Training uses whole spectrograms, then exports a streaming model for incremental
+inference. The upstream pipeline supports
 [SpecAugment](https://arxiv.org/abs/1904.08779), weighted sampling and penalties,
 ambient false-accept estimation, streaming conversion, and integer
-quantization. See the [technique ledger](documentation/techniques.md) for the
-precise relationship between those inherited capabilities and this fork's
-extensions.
+quantization. The [technique ledger](documentation/techniques.md) maps each
+method to its implementation and source.
 
-## Models and data
+## Models and training data
 
 Upstream-compatible published models are available from
 [ESPHome's micro wake word model repository](https://github.com/esphome/micro-wake-word-models).
-The training framework can consume the upstream
-[pre-generated negative feature datasets](https://huggingface.co/datasets/kahrendt/microwakeword).
-Source and license notes for the underlying public corpora are in
-[Data sources](documentation/data_sources.md).
+The framework can consume upstream
+[pre-generated negative features](https://huggingface.co/datasets/kahrendt/microwakeword).
+The [data-source notes](documentation/data_sources.md) identify the underlying
+public corpora and their licenses.
 
 ## Upstream relationship
 
-This fork intends to preserve attribution and compatibility with upstream
-microWakeWord. General improvements should be suitable for upstreaming when
-possible; Open Horizon Labs recipes, device profiles, and product qualification
-evidence can remain fork-specific. When reporting a problem, state whether it
-reproduces on
+This fork preserves upstream attribution and aims to retain compatibility with
+microWakeWord. General improvements should be upstreamable when possible. Open
+Horizon Labs recipes, device profiles, and product-qualification evidence may
+remain fork-specific. Bug reports should say whether the problem reproduces on
 [`kahrendt/microWakeWord`](https://github.com/kahrendt/microWakeWord) or only on
 this fork.
 
