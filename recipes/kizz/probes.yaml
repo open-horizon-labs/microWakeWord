@@ -1,0 +1,29 @@
+recipe_version: 1
+name: hiphi_kizz_unseen_pronunciation_probes
+sample_rate_hz: 16000
+clip_duration_ms: 2000
+random_seed: 9231
+
+# These spellings are intentionally absent from corpus.yaml. They test whether
+# the trained acoustic class generalizes to plausible human readings of HiPhi
+# instead of merely memorizing the text spellings used to synthesize training.
+positive_phrases:
+  - text: High Fye Kizz
+    samples: 300
+  - text: High Phi Kizz
+    samples: 300
+  - text: High Pie Kizz
+    samples: 300
+  - text: Hi Pie Kizz
+    samples: 300
+  - text: Hippie Kizz
+    samples: 300
+
+hard_negative_phrases: []
+
+generation:
+  length_scales: [0.72, 0.85, 1.0, 1.15, 1.32]
+  noise_scales: [0.55, 0.667, 0.8, 0.95, 1.15]
+  noise_scale_ws: [0.65, 0.8, 0.95]
+  slerp_weights: [0.2, 0.4, 0.6, 0.8]
+  max_speakers: 700

@@ -57,6 +57,21 @@ class KizzRecipeTest(unittest.TestCase):
         phrases = {entry["text"] for entry in self.recipe["hard_negative_phrases"]}
         self.assertTrue({"kids", "kiss", "quiz", "Hi-Fi"}.issubset(phrases))
 
+    def test_pronunciation_probes_are_unseen_during_training(self):
+        probes = yaml.safe_load(
+            (ROOT / "recipes/kizz/probes.yaml").read_text()
+        )
+        training = {
+            phrase["text"].casefold()
+            for phrase in self.recipe["positive_phrases"]
+        }
+        probe_phrases = {
+            phrase["text"].casefold()
+            for phrase in probes["positive_phrases"]
+        }
+        self.assertIn("high fye kizz", probe_phrases)
+        self.assertTrue(training.isdisjoint(probe_phrases))
+
     def test_generator_command_preserves_variation_grid(self):
         phrase = self.recipe["positive_phrases"][0]
         command = MODULE.generator_command(

@@ -60,6 +60,10 @@ python tools/evaluate_recipe_model.py \
   --output work/kizz/pronunciation_metrics.json
 ```
 
+`probes.yaml` defines additional plausible HiPhi pronunciations that are kept
+out of training. Generate and score them after export to check acoustic
+generalization rather than memorization of the corpus spellings.
+
 ## Quality bar
 
 Model selection must minimize ambient false accepts before maximizing recall.
