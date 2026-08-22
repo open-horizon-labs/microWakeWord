@@ -13,7 +13,7 @@ tests the survivors in their intended rooms.
 | --- | --- | --- |
 | [Set up](#1-install-the-trainer) | Install and test the trainer; obtain the Piper generator. | The test suite passes and the generator model is available. |
 | [Define and generate](#3-inspect-and-generate-the-kizz-corpus) | List accepted pronunciations, nearby speech that must not wake the device, and unseen probes; generate varied synthetic speech. | The recipe, source hashes, phrase counts, and generation manifest validate. |
-| [Build features](#4-build-on-device-compatible-features) | Mix representative noise and room responses, add general negative audio, and extract the same `micro_speech` features used on-device. | Deterministic train, validation, and test feature sets are ready. |
+| [Screen and build features](#4-screen-synthetic-audio-and-build-features) | Compare generated speech with reviewed human phrase spans, exclude objective outliers, mix representative noise and room responses, and extract the on-device `micro_speech` features. | A provenance-bound quality mask and deterministic feature sets are ready. |
 | [Train and select](#6-write-the-training-configuration-and-train) | Train the streaming model, minimize ambient false accepts first, then maximize viable recall, and export a quantized candidate. | A candidate and its frozen validation cutoff are ready for challenge testing. |
 | [Challenge the candidate](#7-evaluate-every-trained-pronunciation) | Score every trained pronunciation, confusable phrase, unseen probe, and ambient negative cohort separately. | All declared synthetic gates pass. A failure sends us back to the recipe, data balance, or training configuration. |
 | [Verify enrollment](#8-exercise-enrollment-without-hardware) | Run the simulated microphone path and prove that directed captures, including provisional detector misses, enter the corpus. | The standalone enrollment and corpus contracts pass end to end without hardware. |
@@ -86,8 +86,41 @@ python tools/generate_recipe_samples.py \
 
 Generation skips completed phrase directories and rejects surplus, incomplete,
 or mismatched corpora. `generation-manifest.json` records recipe and model hashes.
+To reuse unchanged phrase audio from an earlier run, repeat
+`--reuse-generated work/earlier/generated`. Reuse requires the same phrase,
+sample count, generator model, and synthesis command. The new manifest records
+the source.
 
-## 4. Build on-device-compatible features
+## 4. Screen synthetic audio and build features
+
+Before production training, mark the intended phrase in at least three reviewed
+human-positive captures. This can be audio sent through the enrollment simulator;
+the target device need not be attached. Apply reviewed spans without rewriting
+the source WAVs:
+
+```sh
+python tools/apply_phrase_spans.py \
+  --corpus work/device-corpus \
+  --spans work/reviewed-phrase-spans.json
+```
+
+The spans file maps capture IDs to `start_ms` and `end_ms`. Build a quality mask
+that compares every generated WAV with the recorded span distribution:
+
+```sh
+python tools/build_synthetic_quality_mask.py \
+  --recipe recipes/kizz/corpus.yaml \
+  --generated work/kizz/generated \
+  --reference-corpus work/device-corpus \
+  --output work/kizz/generated/quality-mask.json
+```
+
+The report summarizes source duration, voiced span, and level by phrase. It
+rejects silence, clipping, implausible positive spans, and source clips that can
+lose audio when placed into the training window. Recipe, generation-manifest,
+and reference-corpus hashes make the decision auditable. Inspect the grouped
+report before using it; a mask that removes a large share of one phrase usually
+indicates a recipe or generator problem.
 
 Add representative room recordings and impulse responses when available. Both
 arguments are repeatable:
@@ -96,13 +129,15 @@ arguments are repeatable:
 python tools/build_recipe_features.py \
   --recipe recipes/kizz/corpus.yaml \
   --generated work/kizz/generated \
+  --quality-mask work/kizz/generated/quality-mask.json \
   --output work/kizz/features \
   --background room-backgrounds \
   --impulses room-impulses
 ```
 
-The builder validates the manifest, creates device-compatible `micro_speech`
-features, and preserves deterministic splits.
+The builder verifies that the mask belongs to the recipe and generated corpus,
+excludes rejected WAVs, creates device-compatible `micro_speech` features, and
+preserves deterministic splits.
 
 ## 5. Supply general negative features
 
@@ -227,7 +262,9 @@ python tools/evaluate_device_corpus_model.py \
   --output work/kizz/device_test_metrics.json
 ```
 
-Review results by truth, phrase, pronunciation, profile, and detector outcome.
+Review results by truth, phrase, pronunciation, profile, speaker, session, and
+detector outcome. `--split all` is useful for a corpus-wide diagnostic, but
+release claims must use held-out validation and test speakers.
 Start with one model across profiles; split only for held-out acoustic failure.
 
 ## 10. Qualification checklist
@@ -249,6 +286,9 @@ not a hardware-qualified release claim.
   blend old and new recipes.
 - **Feature building rejects the corpus:** the recipe hash, phrase directories,
   or WAV counts no longer match `generation-manifest.json`.
+- **The quality mask rejects many examples:** inspect its per-phrase reasons and
+  source metrics. Fix the generator or phrase recipe instead of weakening the
+  mask until the clips pass.
 - **Training cannot open a feature set:** populate every negative archive named
   in the generated YAML, or deliberately edit the YAML and record the changed
   experiment.

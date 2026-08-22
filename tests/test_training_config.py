@@ -185,5 +185,28 @@ class DeviceTrainingConfigTest(unittest.TestCase):
         )
         self.assertTrue(config["freeze_feature_extractor"])
 
+    def test_feature_classes_and_supplemental_collisions_can_be_separate(self):
+        config = training_config(
+            Path("workspace"),
+            Path("trained"),
+            positive_features_dir=Path("new-positive"),
+            hard_negative_features_dir=Path("established-negatives"),
+            additional_hard_negative_features_dirs=[Path("new-collision")],
+            additional_hard_negative_sampling_weight=2.0,
+            positive_sampling_weight=8.0,
+        )
+
+        sources = config["features"]
+        self.assertEqual(sources[0]["features_dir"], "new-positive")
+        self.assertEqual(sources[0]["sampling_weight"], 8.0)
+        self.assertEqual(sources[1]["features_dir"], "established-negatives")
+        supplemental = [
+            source for source in sources if source["features_dir"] == "new-collision"
+        ]
+        self.assertEqual(len(supplemental), 2)
+        self.assertEqual(supplemental[0]["sampling_weight"], 2.0)
+        self.assertEqual(supplemental[1]["sampling_weight"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

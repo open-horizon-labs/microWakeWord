@@ -31,11 +31,31 @@ def summarize(peaks: list[float], cutoff: float) -> dict:
     }
 
 
+def capture_dimensions(item: dict, truth: str) -> list[tuple[str, str]]:
+    outcome = "provisional_detected" if item["detected"] else "provisional_missed"
+    dimensions = [
+        ("truth", truth),
+        ("device_profile", item["device_profile"]),
+        ("device_profile_by_truth", f'{item["device_profile"]}:{truth}'),
+        ("speaker_id", item["speaker_id"]),
+        ("speaker_id_by_truth", f'{item["speaker_id"]}:{truth}'),
+        ("session_id", item["session_id"]),
+        ("session_id_by_truth", f'{item["session_id"]}:{truth}'),
+        ("phrase", item["phrase"]),
+        ("source_detector_outcome", outcome),
+        ("truth_by_source_detector_outcome", f"{truth}:{outcome}"),
+    ]
+    pronunciation = item.get("pronunciation")
+    if pronunciation:
+        dimensions.append(("pronunciation", pronunciation))
+    return dimensions
+
+
 def evaluate(
     corpus: Path,
     manifest: dict,
     model_path: Path,
-    split: str,
+    split: str | None,
     cutoff: float,
     sliding_window: int,
     ignore_initial: int,
@@ -48,23 +68,8 @@ def evaluate(
             peak = peak_probability(
                 model, path, sliding_window, ignore_initial, clip_duration_ms
             )
-            groups[("truth", truth)].append(peak)
-            groups[("device_profile", item["device_profile"])].append(peak)
-            groups[
-                ("device_profile_by_truth", f'{item["device_profile"]}:{truth}')
-            ].append(peak)
-            groups[("phrase", item["phrase"])].append(peak)
-            pronunciation = item.get("pronunciation")
-            if pronunciation:
-                groups[("pronunciation", pronunciation)].append(peak)
-            # This cohort proves provisional detector misses remain first-class data.
-            outcome = (
-                "provisional_detected" if item["detected"] else "provisional_missed"
-            )
-            groups[("source_detector_outcome", outcome)].append(peak)
-            groups[("truth_by_source_detector_outcome", f"{truth}:{outcome}")].append(
-                peak
-            )
+            for dimension in capture_dimensions(item, truth):
+                groups[dimension].append(peak)
     result: dict[str, dict] = defaultdict(dict)
     for (dimension, label), peaks in sorted(groups.items()):
         result[dimension][label] = summarize(peaks, cutoff)
@@ -75,7 +80,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--split", choices=("validation", "test"), default="test")
+    parser.add_argument(
+        "--split", choices=("all", "train", "validation", "test"), default="test"
+    )
     parser.add_argument("--cutoff", type=float, required=True)
     parser.add_argument("--sliding-window", type=int, default=5)
     parser.add_argument("--ignore-initial", type=int, default=25)
@@ -97,7 +104,7 @@ def main() -> int:
             args.corpus,
             manifest,
             args.model,
-            args.split,
+            None if args.split == "all" else args.split,
             args.cutoff,
             args.sliding_window,
             args.ignore_initial,

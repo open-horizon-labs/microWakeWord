@@ -35,7 +35,23 @@ python tools/generate_recipe_samples.py \
 ```
 
 The command resumes per phrase and writes recipe/model hashes. `--dry-run`
-prints the plan without generating audio.
+prints the plan without generating audio. Repeat `--reuse-generated` to reuse
+unchanged phrase audio from a compatible prior manifest.
+
+Before production feature generation, compare the synthetic corpus with reviewed
+human phrase spans:
+
+```sh
+python tools/build_synthetic_quality_mask.py \
+  --recipe recipes/kizz/corpus.yaml \
+  --generated work/kizz/generated \
+  --reference-corpus work/device-corpus \
+  --output work/kizz/generated/quality-mask.json
+```
+
+This is a framework quality gate, not a Kizz tuning heuristic. It removes
+silence, clipping, implausible voiced spans, and clips that can be truncated by
+the configured training window. Inspect its per-phrase summary before training.
 
 Build the `micro_speech` features used on-device, adding actual room music,
 noise, and impulse-response directories whenever available:
@@ -44,6 +60,7 @@ noise, and impulse-response directories whenever available:
 python tools/build_recipe_features.py \
   --recipe recipes/kizz/corpus.yaml \
   --generated work/kizz/generated \
+  --quality-mask work/kizz/generated/quality-mask.json \
   --output work/kizz/features \
   --background room-backgrounds \
   --impulses room-impulses
