@@ -1,4 +1,4 @@
-# Kizz synthetic model results
+# Kizz model decisions
 
 **Decision:** stop synthetic-only search; collect StackChan microphone audio.
 
@@ -15,3 +15,34 @@ five-frame moving window, and reset state between clips.
 
 Synthetic speech renders `Kizz` too inconsistently to settle the class boundary.
 Collect device-microphone captures before another model search.
+
+## Quality-masked device candidate — 2026-08-22
+
+**Decision:** flash for broader physical qualification; do not call it
+release-qualified yet.
+
+Eight reviewed human positives span 560–880 ms (840 ms median). Comparing those
+spans with all 67,150 generated clips rejected 148: 143 had an overly long
+voiced span and 64 could lose their beginning in the two-second augmented window;
+some clips failed both checks. The mask SHA-256 is
+`528a76f3b8aa45a14088131659ab3b8d65e75585ff2c3de2c128a24b619ddc5a`.
+
+The recipe now spells accepted kids-like realizations as `Hi-Fi Kids` variants
+and keeps the distinct `high five kids` reading as a hard negative. At the
+physical operating point (`0.70`, one-frame window), direct inference over all
+recorded Kizz attempts produced:
+
+| Candidate | Positive accepts | Hard-negative accepts | Ambient accepts |
+| --- | ---: | ---: | ---: |
+| Previously flashed broad model | 11/17 | 1/8 | 0/1 |
+| Label-corrected control | 14/17 | 6/8 | 0/1 |
+| Quality-masked candidate `91e7052d…` | 17/17 | 0/8 | 0/1 |
+
+The selected candidate's weakest positive scored `.949`; its strongest hard
+negative scored `.639`. A physical acoustic replay crossed `.70`, completed the
+listening turn, and re-armed without a crash.
+
+The evidence still covers one adult speaker family. A 100-clip-per-phrase
+synthetic diagnostic at `.70` also showed weak aggregate positive recall despite
+only 3/2,248 hard-negative accepts. Add child and independent-adult recordings,
+then judge held-out speaker/session results before release.

@@ -8,7 +8,6 @@ from pathlib import Path
 
 import yaml
 
-
 DEVICE_TRUNCATION_STRATEGIES = ("random", "truncate_start", "truncate_end")
 
 
@@ -49,9 +48,17 @@ def training_config(
     device_hard_negative_sampling_weight: float = 8.0,
     freeze_feature_extractor: bool = False,
     device_truncation_strategy: str = "random",
+    positive_features_dir: Path | None = None,
+    hard_negative_features_dir: Path | None = None,
+    additional_hard_negative_features_dirs: list[Path] | None = None,
+    additional_hard_negative_sampling_weight: float = 2.0,
+    positive_sampling_weight: float = 3.0,
 ) -> dict:
     negatives = workspace / "negative-datasets"
     features = features_dir or workspace / "features"
+    positive_features = positive_features_dir or features / "positive"
+    hard_negative_features = hard_negative_features_dir or features / "hard_negative"
+    additional_hard_negatives = additional_hard_negative_features_dirs or []
     selected_device_modes = sum((device_only, device_adaptation, device_train_only))
     if selected_device_modes > 1:
         raise ValueError("choose one device training mode")
@@ -70,15 +77,15 @@ def training_config(
         if device_only
         else [
             feature(
-                features / "positive",
-                3.0,
+                positive_features,
+                positive_sampling_weight,
                 1.0,
                 True,
                 "truncate_start",
                 general_evaluation,
             ),
             feature(
-                features / "hard_negative",
+                hard_negative_features,
                 hard_negative_sampling_weight,
                 hard_negative_penalty_weight,
                 False,
@@ -109,12 +116,24 @@ def training_config(
     if not device_adaptation and not device_only:
         feature_sources.extend(
             [
-                feature(features / "hard_negative", 0.0, 1.0, False, "split"),
-                feature(
-                    negatives / "dinner_party_eval", 0.0, 1.0, False, "split"
-                ),
+                feature(hard_negative_features, 0.0, 1.0, False, "split"),
+                feature(negatives / "dinner_party_eval", 0.0, 1.0, False, "split"),
             ]
         )
+    if not device_only:
+        for additional in additional_hard_negatives:
+            feature_sources.append(
+                feature(
+                    additional,
+                    additional_hard_negative_sampling_weight,
+                    hard_negative_penalty_weight,
+                    False,
+                    "random",
+                    general_evaluation,
+                )
+            )
+            if not device_adaptation:
+                feature_sources.append(feature(additional, 0.0, 1.0, False, "split"))
     if device_train_only:
         feature_sources.append(
             feature(
@@ -217,7 +236,19 @@ def main() -> int:
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--train-dir", type=Path, required=True)
     parser.add_argument("--features-dir", type=Path)
+    parser.add_argument("--positive-features-dir", type=Path)
+    parser.add_argument("--hard-negative-features-dir", type=Path)
+    parser.add_argument(
+        "--additional-hard-negative-features-dir",
+        type=Path,
+        action="append",
+        default=[],
+    )
+    parser.add_argument(
+        "--additional-hard-negative-sampling-weight", type=float, default=2.0
+    )
     parser.add_argument("--hard-negative-sampling-weight", type=float, default=8.0)
+    parser.add_argument("--positive-sampling-weight", type=float, default=3.0)
     parser.add_argument("--hard-negative-penalty-weight", type=float, default=4.0)
     parser.add_argument("--device-features-dir", type=Path)
     parser.add_argument(
@@ -289,6 +320,11 @@ def main() -> int:
                 args.device_hard_negative_sampling_weight,
                 args.freeze_feature_extractor,
                 args.device_truncation_strategy,
+                args.positive_features_dir,
+                args.hard_negative_features_dir,
+                args.additional_hard_negative_features_dir,
+                args.additional_hard_negative_sampling_weight,
+                args.positive_sampling_weight,
             ),
             sort_keys=False,
         )

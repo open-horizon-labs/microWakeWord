@@ -102,6 +102,19 @@ middle of a longer recording. The span describes the intended phrase, regardless
 of whether the provisional detector fired; it may come from human annotation or
 an alignment service. The original WAV and its hash remain unchanged.
 
+Apply reviewed spans in one validated update:
+
+```sh
+python tools/apply_phrase_spans.py \
+  --corpus work/device-corpus \
+  --spans work/reviewed-phrase-spans.json
+```
+
+The same spans can anchor the synthetic quality mask described in
+[Usage](USAGE.md#4-screen-synthetic-audio-and-build-features). This lets the
+recorded corpus prevent generated speech with implausible timing or truncation
+risk from entering feature generation.
+
 Production feature building accepts live human and synthetic-playback positives
 and hard negatives in the training split. Validation and test require human
 speech; ambient-negative splits require ambient recordings. Simulation remains
@@ -121,8 +134,8 @@ python tools/write_recipe_training_config.py \
 ```
 
 The builder preserves manifest splits and writes aligned derivatives under the
-feature output directory. Evaluation reports truth, phrase,
-pronunciation, profile, and provisional detector outcome. Random temporal
+feature output directory. Evaluation reports truth, phrase, pronunciation,
+profile, speaker, session, and provisional detector outcome. Random temporal
 sampling keeps wake phrases that are not aligned to a recording edge in the
 training pass. Prefer measured phrase spans for long captures; edge truncation
 should be used only when the capture protocol itself guarantees alignment.

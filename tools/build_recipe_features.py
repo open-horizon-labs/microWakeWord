@@ -20,6 +20,7 @@ from mmap_ninja.ragged import RaggedMmap
 from microwakeword.audio.augmentation import Augmentation
 from microwakeword.audio.clips import Clips
 from microwakeword.audio.spectrograms import SpectrogramGeneration
+from microwakeword.synthetic_quality import load_quality_mask
 
 
 def validate_generated_corpus(recipe_path: Path, generated: Path) -> dict:
@@ -40,11 +41,7 @@ def validate_generated_corpus(recipe_path: Path, generated: Path) -> dict:
             if item.get("class") == class_name
         }
         class_root = generated / class_name
-        actual = {
-            path.resolve()
-            for path in class_root.iterdir()
-            if path.is_dir()
-        }
+        actual = {path.resolve() for path in class_root.iterdir() if path.is_dir()}
         if actual != set(expected):
             missing = sorted(str(path) for path in set(expected) - actual)
             extra = sorted(str(path) for path in actual - set(expected))
@@ -77,15 +74,28 @@ def selected_phrase_directories(
 
 
 @contextmanager
-def staged_clip_source(source_dirs: list[Path]) -> Iterator[Path]:
+def staged_clip_source(
+    source_dirs: list[Path], rejected: set[Path] | None = None
+) -> Iterator[Path]:
     """Expose selected phrase directories as one flat, temporary clip corpus."""
     with tempfile.TemporaryDirectory(prefix="mww-selected-clips-") as temporary:
         root = Path(temporary)
+        rejected = rejected or set()
         for source in source_dirs:
             for clip in source.glob("*.wav"):
+                if clip.resolve() in rejected:
+                    continue
                 destination = root / f"{source.name}--{clip.name}"
                 os.symlink(clip, destination)
         yield root
+
+
+def class_directories(manifest: dict, class_name: str) -> list[Path]:
+    return [
+        Path(item["output"])
+        for item in manifest.get("plan", [])
+        if item.get("class") == class_name
+    ]
 
 
 def generate_class_features(
@@ -103,7 +113,11 @@ def generate_class_features(
         split_count=0.1,
     )
     for split in ("training", "validation", "testing"):
-        split_name = {"training": "train", "validation": "validation", "testing": "test"}[split]
+        split_name = {
+            "training": "train",
+            "validation": "validation",
+            "testing": "test",
+        }[split]
         slide_frames = 1 if split == "testing" else 10
         repetition = 2 if split == "training" else 1
         spectrograms = SpectrogramGeneration(
@@ -132,6 +146,11 @@ def main() -> int:
     parser.add_argument("--background", type=Path, action="append", default=[])
     parser.add_argument("--impulses", type=Path, action="append", default=[])
     parser.add_argument(
+        "--quality-mask",
+        type=Path,
+        help="Exclude generated clips rejected by this provenance-bound mask",
+    )
+    parser.add_argument(
         "--class-name",
         choices=("both", "positive", "hard_negative"),
         default="both",
@@ -143,11 +162,31 @@ def main() -> int:
         default=[],
         help="Build positive features from only this exact recipe phrase; repeatable",
     )
+    parser.add_argument(
+        "--hard-negative-text",
+        action="append",
+        default=[],
+        help="Build hard-negative features from only this exact phrase; repeatable",
+    )
     args = parser.parse_args()
 
     if args.positive_text and args.class_name == "hard_negative":
         parser.error("--positive-text requires positive or both class generation")
+    if args.hard_negative_text and args.class_name == "positive":
+        parser.error(
+            "--hard-negative-text requires hard_negative or both class generation"
+        )
     manifest = validate_generated_corpus(args.recipe, args.generated)
+    rejected: set[Path] = set()
+    if args.quality_mask:
+        mask = load_quality_mask(
+            args.quality_mask,
+            args.recipe,
+            args.generated / "generation-manifest.json",
+        )
+        rejected = {
+            (args.generated / relative).resolve() for relative in mask["rejected"]
+        }
     recipe = yaml.safe_load(args.recipe.read_text())
     seed = int(recipe["random_seed"])
     random.seed(seed)
@@ -179,7 +218,14 @@ def main() -> int:
             selected = selected_phrase_directories(
                 manifest, "positive", args.positive_text
             )
-            with staged_clip_source(selected) as source:
+            with staged_clip_source(selected, rejected) as source:
+                generate_class_features(
+                    source, args.output / "positive", augmenter, seed
+                )
+        elif rejected:
+            with staged_clip_source(
+                class_directories(manifest, "positive"), rejected
+            ) as source:
                 generate_class_features(
                     source, args.output / "positive", augmenter, seed
                 )
@@ -191,12 +237,34 @@ def main() -> int:
                 seed,
             )
     if args.class_name in ("both", "hard_negative"):
-        generate_class_features(
-            args.generated / "hard_negative",
-            args.output / "hard_negative",
-            augmenter,
-            seed + 1,
-        )
+        if args.hard_negative_text:
+            selected = selected_phrase_directories(
+                manifest, "hard_negative", args.hard_negative_text
+            )
+            with staged_clip_source(selected, rejected) as source:
+                generate_class_features(
+                    source,
+                    args.output / "hard_negative",
+                    augmenter,
+                    seed + 1,
+                )
+        elif rejected:
+            with staged_clip_source(
+                class_directories(manifest, "hard_negative"), rejected
+            ) as source:
+                generate_class_features(
+                    source,
+                    args.output / "hard_negative",
+                    augmenter,
+                    seed + 1,
+                )
+        else:
+            generate_class_features(
+                args.generated / "hard_negative",
+                args.output / "hard_negative",
+                augmenter,
+                seed + 1,
+            )
     return 0
 
 

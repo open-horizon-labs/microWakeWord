@@ -60,7 +60,10 @@ class KizzRecipeTest(unittest.TestCase):
         self.assertTrue(
             {
                 "hippy kids",
-                "high five kids",
+                "Hi-Fi Kids",
+                "High-Fi Kids",
+                "Hi Fi Kids",
+                "High Fi Kids",
                 "hee fee kids",
                 "high fee kids",
                 "hiffy kids",
@@ -82,13 +85,13 @@ class KizzRecipeTest(unittest.TestCase):
         self.assertTrue(
             {
                 "hippy kids",
-                "high five kids",
                 "hee fee kids",
                 "high fee kids",
                 "hiffy kids",
                 "High Five Kizz",
             }.isdisjoint(phrases)
         )
+        self.assertIn("high five kids", phrases)
 
     def test_pronunciation_probes_are_unseen_during_training(self):
         probes = yaml.safe_load((ROOT / "recipes/kizz/probes.yaml").read_text())
@@ -114,6 +117,64 @@ class KizzRecipeTest(unittest.TestCase):
         self.assertIn("--noise-scales", command)
         self.assertIn("--noise-scale-ws", command)
         self.assertIn("--slerp-weights", command)
+
+    def test_generator_can_reuse_matching_phrase_audio_across_label_changes(self):
+        source = Path("old/hard_negative/hi_fi_kids")
+        manifests = [
+            {
+                "generator_model_sha256": "model-hash",
+                "plan": [
+                    {
+                        "class": "hard_negative",
+                        "text": "Hi-Fi Kids",
+                        "samples": 0,
+                        "output": str(source),
+                        "command": [
+                            "/old/python",
+                            "-m",
+                            "piper_sample_generator",
+                            "Hi-Fi Kids",
+                            "--max-samples",
+                            "0",
+                            "--output-dir",
+                            str(source),
+                            "--length-scales",
+                            "1.0",
+                        ],
+                    }
+                ],
+            }
+        ]
+        self.assertEqual(
+            MODULE.reusable_phrase_source(
+                manifests,
+                "Hi-Fi Kids",
+                0,
+                "model-hash",
+                [
+                    "/new/python",
+                    "-m",
+                    "piper_sample_generator",
+                    "Hi-Fi Kids",
+                    "--max-samples",
+                    "0",
+                    "--output-dir",
+                    "new/positive/hi_fi_kids",
+                    "--length-scales",
+                    "1.0",
+                ],
+            ),
+            source,
+        )
+        self.assertIsNone(
+            MODULE.reusable_phrase_source(
+                manifests,
+                "Hi-Fi Kids",
+                0,
+                "different-model",
+                ["python", "-m", "piper_sample_generator"],
+            )
+        )
 
     def test_feature_build_rejects_stale_corpus_directories(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -142,9 +203,7 @@ class KizzRecipeTest(unittest.TestCase):
 
     def test_training_selects_for_all_validation_false_accepts_first(self):
         config = CONFIG_MODULE.training_config(Path("work"), Path("trained"))
-        self.assertEqual(
-            config["minimization_metric"], "validation_false_positives"
-        )
+        self.assertEqual(config["minimization_metric"], "validation_false_positives")
         hard_negatives = [
             item
             for item in config["features"]

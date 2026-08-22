@@ -26,12 +26,18 @@ positive_phrases:
     samples: 3000
   - text: Hiffy Kizz
     samples: 3000
-  # Speech recognizers and real microphones often render the intended phrase's
-  # final /z/ as the plural in "kids". These are acoustic pronunciations of the
-  # wake phrase, not safely separable collision phrases.
+  # Real intended attempts often realize the final /z/ as the plural in "kids".
+  # Spell the accepted Hi-Fi reading directly; do not substitute "high five",
+  # which produces a distinct consonant and is retained as a collision phrase.
   - text: hippy kids
     samples: 1800
-  - text: high five kids
+  - text: Hi-Fi Kids
+    samples: 1500
+  - text: High-Fi Kids
+    samples: 1500
+  - text: Hi Fi Kids
+    samples: 1000
+  - text: High Fi Kids
     samples: 1500
   - text: hee fee kids
     samples: 1000
@@ -71,6 +77,8 @@ hard_negative_phrases:
     samples: 300
   - text: hi kids
     samples: 800
+  - text: high five kids
+    samples: 1500
 
   # Conjunction-mining negatives: require both an accepted HiPhi prefix and the
   # Kizz suffix. These prevent the model from solving the diverse positive class
