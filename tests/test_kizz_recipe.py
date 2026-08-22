@@ -262,10 +262,31 @@ class KizzRecipeTest(unittest.TestCase):
                     )
             grouped = EVALUATOR_MODULE.clips_by_group(root, "test", 231)
             held_out = [path for paths in grouped.values() for path in paths]
+            repeated = EVALUATOR_MODULE.clips_by_group(root, "test", 231)
+            repeated_held_out = [
+                path for paths in repeated.values() for path in paths
+            ]
             self.assertEqual(len(held_out), 2)
+            self.assertEqual(held_out, repeated_held_out)
             self.assertTrue(
                 all(path.parent.name in {"hi_fi", "hee_fee"} for path in held_out)
             )
+
+    def test_evaluator_excludes_quality_mask_rejections(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            group = root / "hi_fi"
+            group.mkdir()
+            accepted = group / "accepted.wav"
+            rejected = group / "rejected.wav"
+            for path in (accepted, rejected):
+                wavfile.write(path, 16000, np.zeros(1600, dtype=np.int16))
+
+            grouped = EVALUATOR_MODULE.clips_by_group(
+                root, "all", 231, {rejected.resolve()}
+            )
+
+            self.assertEqual(grouped, {"hi_fi": [accepted]})
 
     def test_streaming_model_state_reloads_after_inference(self):
         from microwakeword.inference import Model

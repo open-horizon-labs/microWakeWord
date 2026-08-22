@@ -206,6 +206,8 @@ Freeze the cutoff from held-out validation before testing. `0.96` is illustrativ
 python tools/evaluate_recipe_model.py \
   --model work/kizz/trained/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite \
   --generated work/kizz/generated \
+  --recipe recipes/kizz/corpus.yaml \
+  --quality-mask work/kizz/generated/quality-mask.json \
   --split test \
   --cutoff 0.96 \
   --output work/kizz/pronunciation_metrics.json

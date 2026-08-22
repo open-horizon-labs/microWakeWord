@@ -15,6 +15,7 @@ from scipy.signal import resample_poly
 
 from microwakeword.audio.clips import Clips
 from microwakeword.inference import Model
+from microwakeword.synthetic_quality import load_quality_mask
 
 
 def reset_model(model: Model) -> None:
@@ -87,12 +88,22 @@ def evaluate_group(
     }
 
 
-def clips_by_group(root: Path, split: str, split_seed: int) -> dict[str, list[Path]]:
+def clips_by_group(
+    root: Path,
+    split: str,
+    split_seed: int,
+    rejected: set[Path] | None = None,
+) -> dict[str, list[Path]]:
     if not root.exists():
         return {}
+    rejected = rejected or set()
     if split == "all":
         return {
-            group.name: sorted(group.glob("*.wav"))
+            group.name: [
+                path
+                for path in sorted(group.glob("*.wav"))
+                if path.resolve() not in rejected
+            ]
             for group in sorted(root.iterdir())
             if group.is_dir()
         }
@@ -110,7 +121,8 @@ def clips_by_group(root: Path, split: str, split_seed: int) -> dict[str, list[Pa
     )
     for audio in held_out["audio"]:
         path = Path(audio["path"])
-        grouped[path.parent.name].append(path)
+        if path.resolve() not in rejected:
+            grouped[path.parent.name].append(path)
     return dict(grouped)
 
 
@@ -129,6 +141,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--generated", type=Path, required=True)
+    parser.add_argument("--recipe", type=Path)
+    parser.add_argument(
+        "--quality-mask",
+        type=Path,
+        help="Exclude synthetic clips rejected by this provenance-bound mask",
+    )
     parser.add_argument("--cutoff", type=float, required=True)
     parser.add_argument("--sliding-window", type=int, default=5)
     parser.add_argument("--ignore-initial", type=int, default=25)
@@ -148,6 +166,19 @@ def main() -> int:
     parser.add_argument("--split-seed", type=int, default=231)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.quality_mask and not args.recipe:
+        parser.error("--quality-mask requires --recipe")
+
+    rejected: set[Path] = set()
+    if args.quality_mask:
+        mask = load_quality_mask(
+            args.quality_mask,
+            args.recipe,
+            args.generated / "generation-manifest.json",
+        )
+        rejected = {
+            (args.generated / relative).resolve() for relative in mask["rejected"]
+        }
 
     result = {
         "model": str(args.model),
@@ -155,13 +186,16 @@ def main() -> int:
         "sliding_window": args.sliding_window,
         "split": args.split,
         "split_seed": args.split_seed,
+        "quality_mask": str(args.quality_mask) if args.quality_mask else None,
         "positive": {},
         "hard_negative": {},
     }
     labels = phrase_labels(args.generated)
     for truth in ("positive", "hard_negative"):
         seed = args.split_seed + (1 if truth == "hard_negative" else 0)
-        grouped = clips_by_group(args.generated / truth, args.split, seed)
+        grouped = clips_by_group(
+            args.generated / truth, args.split, seed, rejected
+        )
         for name, clips in sorted(grouped.items()):
             result[truth][labels.get(name, name)] = evaluate_group(
                 args.model,
