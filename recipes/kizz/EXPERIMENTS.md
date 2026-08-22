@@ -44,5 +44,5 @@ listening turn, and re-armed without a crash.
 
 The evidence still covers one adult speaker family. A 100-clip-per-phrase
 synthetic diagnostic at `.70` also showed weak aggregate positive recall despite
-only 3/2,248 hard-negative accepts. Add child and independent-adult recordings,
+only 4/2,233 hard-negative accepts. Add child and independent-adult recordings,
 then judge held-out speaker/session results before release.
