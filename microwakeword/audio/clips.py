@@ -78,7 +78,9 @@ class Clips:
 
         self.remove_silence_function = remove_silence_webrtc
 
-        paths_to_clips = [str(i) for i in Path(input_directory).glob(file_pattern)]
+        paths_to_clips = [
+            str(path) for path in sorted(Path(input_directory).glob(file_pattern))
+        ]
 
         if (self.min_clip_duration_s == 0) and (math.isinf(self.max_clip_duration_s)):
             # No durations specified, so do not filter by length
@@ -146,7 +148,9 @@ class Clips:
             train_testvalid = audio_dataset.train_test_split(
                 test_size=2 * split_count, seed=random_split_seed
             )
-            test_valid = train_testvalid["test"].train_test_split(test_size=0.5)
+            test_valid = train_testvalid["test"].train_test_split(
+                test_size=0.5, seed=random_split_seed
+            )
             split_dataset = datasets.DatasetDict(
                 {
                     "train": train_testvalid["train"],
