@@ -49,6 +49,8 @@ def build_report(
     generated: Path,
     corpus: Path,
     maximum_jitter_ms: int,
+    minimum_span_ratio: float = 0.75,
+    maximum_span_ratio: float = 1.25,
 ) -> dict:
     recipe = yaml.safe_load(recipe_path.read_text())
     generation_path = generated / "generation-manifest.json"
@@ -61,6 +63,8 @@ def build_report(
         recorded_spans,
         clip_duration_ms=int(recipe["clip_duration_ms"]),
         maximum_jitter_ms=maximum_jitter_ms,
+        minimum_span_ratio=minimum_span_ratio,
+        maximum_span_ratio=maximum_span_ratio,
     )
 
     rejected = {}
@@ -107,6 +111,13 @@ def build_report(
         "reference_corpus_id": device_manifest["corpus_id"],
         "reference_corpus_manifest_sha256": sha256(corpus / "device-corpus.json"),
         "reference_positive_spans_ms": summarize(recorded_spans),
+        "reference_span_policy": {
+            "minimum_quantile": 0.05,
+            "maximum_quantile": 0.95,
+            "minimum_span_ratio": minimum_span_ratio,
+            "maximum_span_ratio": maximum_span_ratio,
+            "maximum_jitter_ms": maximum_jitter_ms,
+        },
         "synthetic_by_truth": {
             truth: {
                 name: summarize(values) for name, values in sorted(measurements.items())
@@ -127,6 +138,8 @@ def main() -> int:
     parser.add_argument("--generated", type=Path, required=True)
     parser.add_argument("--reference-corpus", type=Path, required=True)
     parser.add_argument("--maximum-jitter-ms", type=int, default=300)
+    parser.add_argument("--minimum-span-ratio", type=float, default=0.75)
+    parser.add_argument("--maximum-span-ratio", type=float, default=1.25)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     report = build_report(
@@ -134,6 +147,8 @@ def main() -> int:
         args.generated,
         args.reference_corpus,
         args.maximum_jitter_ms,
+        args.minimum_span_ratio,
+        args.maximum_span_ratio,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

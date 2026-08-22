@@ -16,7 +16,7 @@ five-frame moving window, and reset state between clips.
 Synthetic speech renders `Kizz` too inconsistently to settle the class boundary.
 Collect device-microphone captures before another model search.
 
-## Quality-masked device candidate — 2026-08-22
+## Initial quality-masked device candidate — 2026-08-22
 
 **Decision:** flash for broader physical qualification; do not call it
 release-qualified yet.
@@ -38,11 +38,37 @@ recorded Kizz attempts produced:
 | Label-corrected control | 14/17 | 6/8 | 0/1 |
 | Quality-masked candidate `91e7052d…` | 17/17 | 0/8 | 0/1 |
 
-The selected candidate's weakest positive scored `.949`; its strongest hard
-negative scored `.639`. A physical acoustic replay crossed `.70`, completed the
-listening turn, and re-armed without a crash.
+The selected candidate's weakest direct-corpus positive scored `.949`; its
+strongest direct-corpus hard negative scored `.639`. That direct result did not
+transfer to room-scale playback: only 1/8 reviewed positive recordings crossed
+`.70` when replayed through a speaker into Kizz at the 4x microphone setting.
+None of eight replayed hard negatives woke it. Each detected turn re-armed.
 
 The evidence still covers one adult speaker family. A 100-clip-per-phrase
 synthetic diagnostic at `.70` also showed weak aggregate positive recall despite
-only 4/2,233 hard-negative accepts. Add child and independent-adult recordings,
-then judge held-out speaker/session results before release.
+only 4/2,233 hard-negative accepts. The direct-corpus score therefore
+overstated physical recall. Add child and independent-adult recordings, then
+judge held-out speaker/session and physical results before release.
+
+## Human-span mask revision — 2026-08-22
+
+**Decision:** retrain with a stricter human-anchored positive mask, then compare
+the candidate with the initial model on physical Kizz.
+
+The initial mask allowed positive voiced spans from 322 to 1,540 ms and rejected
+only 148/67,150 generated clips. The eight reviewed human phrases occupy a much
+tighter range: 560–880 ms, with a 840 ms median. Synthetic positives run from
+440 to 2,380 ms, with a 900 ms median and a 1,260 ms 95th percentile.
+
+The revised default takes the human 5th and 95th percentiles and adds a 25%
+margin. For this corpus, that admits positive spans from 483 to 1,100 ms. It
+rejects 6,229/67,150 generated clips: 6,189 have a positive span that is too
+long, 36 are too short, and 64 exceed the source length safe for augmentation;
+some clips have more than one reason. It retains 32,074/38,300 positives and
+28,847/28,850 hard negatives. The mask SHA-256 is
+`446105170131ba7da791ef4fe8325623d61cc514e70d1529fd1491937ce954d2`.
+
+Raw level is deliberately not a rejection boundary. The reviewed microphone
+phrases are quieter than generated speech, but gain augmentation and the device
+channel are expected to vary level. Matching raw RMS would discard useful voice
+diversity without showing that the resulting features better match Kizz.

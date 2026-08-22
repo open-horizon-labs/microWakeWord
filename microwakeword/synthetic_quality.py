@@ -30,14 +30,18 @@ def reference_bounds(
     spans_ms: list[float],
     clip_duration_ms: int,
     maximum_jitter_ms: int,
-    minimum_span_ratio: float = 0.5,
-    maximum_span_ratio: float = 1.75,
+    minimum_span_ratio: float = 0.75,
+    maximum_span_ratio: float = 1.25,
 ) -> QualityBounds:
-    """Derive permissive bounds from real phrases without allowing truncation."""
+    """Derive human-anchored bounds without allowing source truncation."""
     if len(spans_ms) < 3:
         raise ValueError("at least three recorded phrase spans are required")
     if any(span <= 0 for span in spans_ms):
         raise ValueError("recorded phrase spans must be positive")
+    if not 0 < minimum_span_ratio <= 1:
+        raise ValueError("minimum span ratio must be between zero and one")
+    if maximum_span_ratio < 1:
+        raise ValueError("maximum span ratio must be at least one")
     maximum_source_ms = clip_duration_ms - maximum_jitter_ms
     if maximum_source_ms <= 0:
         raise ValueError("maximum jitter must be shorter than the training clip")
