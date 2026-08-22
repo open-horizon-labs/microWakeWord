@@ -148,6 +148,7 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
                 "end_silence_ms": 3000,
                 "max_utterance_ms": 12000,
                 "diagnostics_enabled": True,
+                "audio_preprocessing": {"m5unified_magnification": 8},
             },
         )
         self.assertEqual(response.status, 202)
@@ -161,6 +162,7 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
                 "end_silence_ms": 3000,
                 "max_utterance_ms": 12000,
                 "diagnostics_enabled": True,
+                "audio_preprocessing": {"m5unified_magnification": 8},
             },
         )
         await self.device.send_json(
@@ -171,6 +173,7 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
                 "end_silence_ms": 3000,
                 "max_utterance_ms": 12000,
                 "diagnostics_enabled": True,
+                "audio_preprocessing": {"m5unified_magnification": 8},
             }
         )
         await asyncio.sleep(0)
@@ -184,6 +187,7 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
                 "end_silence_ms": 3000,
                 "max_utterance_ms": 12000,
                 "diagnostics_enabled": True,
+                "audio_preprocessing": {"m5unified_magnification": 8},
             },
         )
 

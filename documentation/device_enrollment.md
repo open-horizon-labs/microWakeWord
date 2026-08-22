@@ -77,6 +77,13 @@ statuses. Kizz is a reference path, not a framework limit.
 The server sends `training_capture`; the device returns `training_sample` and
 one binary PCM message. Attempts are 0.5–5 seconds and at most 160,000 bytes.
 
+`POST /v1/wake-config` can also carry an optional `audio_preprocessing` object.
+The service passes these scalar frontend settings to the addressed device
+without assigning hardware-specific meaning. A device must validate, persist,
+and report applied settings in its acknowledgement and subsequent `hello`.
+Changing preprocessing creates a different acoustic `device_profile`; never
+append captures made under the new settings to the old profile.
+
 ## Corpus guarantees
 
 `device-corpus.json` requires:
