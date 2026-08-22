@@ -86,6 +86,7 @@ def validate_wake_config_request(request: object) -> dict:
     end_silence_ms = request.get("end_silence_ms")
     max_utterance_ms = request.get("max_utterance_ms")
     diagnostics_enabled = request.get("diagnostics_enabled")
+    audio_preprocessing = request.get("audio_preprocessing", {})
     if not isinstance(cutoff, (int, float)) or not 0.10 <= cutoff <= 0.99:
         raise ValueError("probability_cutoff must be between 0.10 and 0.99")
     if not isinstance(window, int) or not 1 <= window <= 20:
@@ -96,6 +97,17 @@ def validate_wake_config_request(request: object) -> dict:
         raise ValueError("max_utterance_ms must be between 3000 and 20000")
     if not isinstance(diagnostics_enabled, bool):
         raise ValueError("diagnostics_enabled must be a boolean")
+    if (
+        not isinstance(audio_preprocessing, dict)
+        or len(audio_preprocessing) > 16
+        or any(
+            not valid_token(key)
+            or isinstance(value, (dict, list))
+            or not isinstance(value, (str, int, float, bool, type(None)))
+            for key, value in audio_preprocessing.items()
+        )
+    ):
+        raise ValueError("audio_preprocessing must contain scalar frontend settings")
     return request
 
 
@@ -174,16 +186,17 @@ class EnrollmentService:
                     {"error": "addressed device is not connected"}, status=503
                 )
             try:
-                await device.websocket.send_json(
-                    {
-                        "type": "wake_config",
-                        "probability_cutoff": request["probability_cutoff"],
-                        "sliding_window": request["sliding_window"],
-                        "end_silence_ms": request["end_silence_ms"],
-                        "max_utterance_ms": request["max_utterance_ms"],
-                        "diagnostics_enabled": request["diagnostics_enabled"],
-                    }
-                )
+                command = {
+                    "type": "wake_config",
+                    "probability_cutoff": request["probability_cutoff"],
+                    "sliding_window": request["sliding_window"],
+                    "end_silence_ms": request["end_silence_ms"],
+                    "max_utterance_ms": request["max_utterance_ms"],
+                    "diagnostics_enabled": request["diagnostics_enabled"],
+                }
+                if request.get("audio_preprocessing"):
+                    command["audio_preprocessing"] = request["audio_preprocessing"]
+                await device.websocket.send_json(command)
             except ConnectionError:
                 return web.json_response(
                     {"error": "addressed device disconnected"}, status=503
@@ -197,6 +210,7 @@ class EnrollmentService:
                 "end_silence_ms": request["end_silence_ms"],
                 "max_utterance_ms": request["max_utterance_ms"],
                 "diagnostics_enabled": request["diagnostics_enabled"],
+                "audio_preprocessing": request.get("audio_preprocessing", {}),
             },
             status=202,
         )
@@ -351,6 +365,7 @@ class EnrollmentService:
                 "end_silence_ms": event.get("end_silence_ms"),
                 "max_utterance_ms": event.get("max_utterance_ms"),
                 "diagnostics_enabled": event.get("diagnostics_enabled"),
+                "audio_preprocessing": event.get("audio_preprocessing", {}),
             }
         )
         async with self.lock:
@@ -362,6 +377,7 @@ class EnrollmentService:
                     "end_silence_ms": config["end_silence_ms"],
                     "max_utterance_ms": config["max_utterance_ms"],
                     "diagnostics_enabled": config["diagnostics_enabled"],
+                    "audio_preprocessing": config.get("audio_preprocessing", {}),
                 }
 
     async def _voice_telemetry(self, device_id: str | None, event: dict) -> None:
