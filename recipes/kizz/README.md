@@ -49,9 +49,11 @@ python tools/build_synthetic_quality_mask.py \
   --output work/kizz/generated/quality-mask.json
 ```
 
-This is a framework quality gate, not a Kizz tuning heuristic. It removes
-silence, clipping, implausible voiced spans, and clips that can be truncated by
-the configured training window. Inspect its per-phrase summary before training.
+This is a framework quality gate, not a Kizz tuning heuristic. Positive span
+limits follow the reviewed human distribution with a 25% margin by default. The
+mask removes silence, clipping, implausible positive spans, and clips that can be
+truncated by the configured training window; it does not apply positive timing
+limits to hard negatives. Inspect its per-phrase summary before training.
 
 Build the `micro_speech` features used on-device, adding actual room music,
 noise, and impulse-response directories whenever available:

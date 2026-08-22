@@ -121,7 +121,7 @@ class SyntheticQualityTest(unittest.TestCase):
             self.assertEqual(report["accepted_clips"], 1)
             self.assertEqual(report["rejected_clips"], 1)
 
-    def test_reference_bounds_are_broad_but_cannot_cross_truncation_limit(self):
+    def test_reference_bounds_keep_margin_without_crossing_truncation_limit(self):
         bounds = reference_bounds(
             [560, 720, 800, 800, 880, 880],
             clip_duration_ms=2000,
@@ -130,8 +130,16 @@ class SyntheticQualityTest(unittest.TestCase):
 
         self.assertLessEqual(bounds.minimum_speech_ms, 560)
         self.assertGreaterEqual(bounds.maximum_speech_ms, 880)
+        self.assertGreater(bounds.minimum_speech_ms, 400)
+        self.assertLess(bounds.maximum_speech_ms, 1200)
         self.assertEqual(bounds.maximum_source_ms, 1700)
         self.assertLessEqual(bounds.maximum_speech_ms, bounds.maximum_source_ms)
+
+    def test_reference_bound_ratios_are_validated(self):
+        with self.assertRaisesRegex(ValueError, "minimum span ratio"):
+            reference_bounds([600, 700, 800], 2000, 300, minimum_span_ratio=0)
+        with self.assertRaisesRegex(ValueError, "maximum span ratio"):
+            reference_bounds([600, 700, 800], 2000, 300, maximum_span_ratio=0.9)
 
     def test_positive_span_outlier_and_truncation_risk_are_rejected(self):
         bounds = QualityBounds(

@@ -115,12 +115,17 @@ python tools/build_synthetic_quality_mask.py \
   --output work/kizz/generated/quality-mask.json
 ```
 
-The report summarizes source duration, voiced span, and level by phrase. It
-rejects silence, clipping, implausible positive spans, and source clips that can
-lose audio when placed into the training window. Recipe, generation-manifest,
-and reference-corpus hashes make the decision auditable. Inspect the grouped
-report before using it; a mask that removes a large share of one phrase usually
-indicates a recipe or generator problem.
+The report compares source duration, voiced span, and level by phrase. For
+positive clips, the default span limits use the human 5th and 95th percentiles
+with a 25% margin. The mask also rejects silence, clipping, and source clips that
+can lose audio when placed into the training window. Hard-negative duration is
+not forced into the positive-phrase envelope.
+
+The recipe, generation manifest, reference corpus, and span policy are hashed or
+recorded in the report. Inspect its grouped results before using it: a phrase
+with an unusually high rejection rate usually needs a generator or recipe fix.
+The mask catches measurable defects; it does not prove that pronunciation or
+prosody sounds natural.
 
 Add representative room recordings and impulse responses when available. Both
 arguments are repeatable:
