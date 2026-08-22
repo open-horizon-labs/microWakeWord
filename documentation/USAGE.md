@@ -144,6 +144,19 @@ The builder verifies that the mask belongs to the recipe and generated corpus,
 excludes rejected WAVs, creates device-compatible `micro_speech` features, and
 preserves deterministic splits.
 
+Feature splits can be rebuilt independently after a verified partial run. Remove
+the incomplete split, then select its class and name:
+
+```sh
+python tools/build_recipe_features.py \
+  --recipe recipes/kizz/corpus.yaml \
+  --generated work/kizz/generated \
+  --quality-mask work/kizz/generated/quality-mask.json \
+  --output work/kizz/features \
+  --class-name positive \
+  --feature-split testing
+```
+
 ## 5. Supply general negative features
 
 The recipe config expects prepared negative feature archives under:

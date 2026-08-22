@@ -103,6 +103,7 @@ def generate_class_features(
     destination: Path,
     augmenter: Augmentation,
     split_seed: int,
+    feature_splits: tuple[str, ...] = ("training", "validation", "testing"),
 ) -> None:
     clips = Clips(
         input_directory=str(source),
@@ -112,7 +113,7 @@ def generate_class_features(
         random_split_seed=split_seed,
         split_count=0.1,
     )
-    for split in ("training", "validation", "testing"):
+    for split in feature_splits:
         split_name = {
             "training": "train",
             "validation": "validation",
@@ -157,6 +158,15 @@ def main() -> int:
         help="Rebuild one class when the other class corpus is unchanged",
     )
     parser.add_argument(
+        "--feature-split",
+        choices=("training", "validation", "testing"),
+        action="append",
+        help=(
+            "Build only this feature split; repeatable. By default all three "
+            "splits are built."
+        ),
+    )
+    parser.add_argument(
         "--positive-text",
         action="append",
         default=[],
@@ -188,6 +198,9 @@ def main() -> int:
             (args.generated / relative).resolve() for relative in mask["rejected"]
         }
     recipe = yaml.safe_load(args.recipe.read_text())
+    feature_splits = tuple(
+        args.feature_split or ("training", "validation", "testing")
+    )
     seed = int(recipe["random_seed"])
     random.seed(seed)
     np.random.seed(seed)
@@ -220,14 +233,22 @@ def main() -> int:
             )
             with staged_clip_source(selected, rejected) as source:
                 generate_class_features(
-                    source, args.output / "positive", augmenter, seed
+                    source,
+                    args.output / "positive",
+                    augmenter,
+                    seed,
+                    feature_splits,
                 )
         elif rejected:
             with staged_clip_source(
                 class_directories(manifest, "positive"), rejected
             ) as source:
                 generate_class_features(
-                    source, args.output / "positive", augmenter, seed
+                    source,
+                    args.output / "positive",
+                    augmenter,
+                    seed,
+                    feature_splits,
                 )
         else:
             generate_class_features(
@@ -235,6 +256,7 @@ def main() -> int:
                 args.output / "positive",
                 augmenter,
                 seed,
+                feature_splits,
             )
     if args.class_name in ("both", "hard_negative"):
         if args.hard_negative_text:
@@ -247,6 +269,7 @@ def main() -> int:
                     args.output / "hard_negative",
                     augmenter,
                     seed + 1,
+                    feature_splits,
                 )
         elif rejected:
             with staged_clip_source(
@@ -257,6 +280,7 @@ def main() -> int:
                     args.output / "hard_negative",
                     augmenter,
                     seed + 1,
+                    feature_splits,
                 )
         else:
             generate_class_features(
@@ -264,6 +288,7 @@ def main() -> int:
                 args.output / "hard_negative",
                 augmenter,
                 seed + 1,
+                feature_splits,
             )
     return 0
 

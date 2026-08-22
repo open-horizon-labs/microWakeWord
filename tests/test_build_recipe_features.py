@@ -1,8 +1,10 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from tools.build_recipe_features import (
+    generate_class_features,
     selected_phrase_directories,
     staged_clip_source,
 )
@@ -70,6 +72,36 @@ class SelectedPhraseFeaturesTest(unittest.TestCase):
                 names = [path.name for path in staged.glob("*.wav")]
 
             self.assertEqual(names, ["phrase--accepted.wav"])
+
+    def test_can_rebuild_only_one_feature_split(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            spectrograms = MagicMock()
+            spectrograms.spectrogram_generator.return_value = iter(())
+            with (
+                patch("tools.build_recipe_features.Clips"),
+                patch(
+                    "tools.build_recipe_features.SpectrogramGeneration",
+                    return_value=spectrograms,
+                ),
+                patch(
+                    "tools.build_recipe_features.RaggedMmap.from_generator"
+                ) as build_mmap,
+            ):
+                generate_class_features(
+                    Path(temporary) / "source",
+                    Path(temporary) / "features",
+                    MagicMock(),
+                    42,
+                    ("testing",),
+                )
+
+            spectrograms.spectrogram_generator.assert_called_once_with(
+                split="test", repeat=1
+            )
+            self.assertEqual(
+                build_mmap.call_args.kwargs["out_dir"],
+                str(Path(temporary) / "features/testing/wakeword_mmap"),
+            )
 
 
 if __name__ == "__main__":
