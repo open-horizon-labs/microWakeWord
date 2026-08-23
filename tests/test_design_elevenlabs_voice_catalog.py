@@ -1,14 +1,41 @@
 import base64
+import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+from urllib import error
 
 import yaml
 
-from tools.design_elevenlabs_voice_catalog import design_catalog
+from tools.design_elevenlabs_voice_catalog import (
+    design_catalog,
+    post_json,
+    resolve_api_key,
+)
 
 
 class ElevenLabsVoiceDesignTest(unittest.TestCase):
+    def test_accepts_both_common_api_key_environment_names(self):
+        with mock.patch.dict(os.environ, {"ELEVEN_LABS_API_KEY": "key"}, clear=True):
+            self.assertEqual(resolve_api_key(), "key")
+
+    def test_provider_error_includes_the_response_detail(self):
+        failure = error.HTTPError(
+            "https://example.invalid",
+            403,
+            "Forbidden",
+            {},
+            io.BytesIO(b'{"detail":"paid plan required"}'),
+        )
+        with mock.patch(
+            "tools.design_elevenlabs_voice_catalog.request.urlopen",
+            side_effect=failure,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "paid plan required"):
+                post_json("https://example.invalid", "key", {})
+
     def test_designs_and_resolves_catalog_with_saved_previews(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

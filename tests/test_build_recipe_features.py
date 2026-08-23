@@ -11,7 +11,9 @@ from scipy.io import wavfile
 from tools.build_recipe_features import (
     _plan_speakers,
     augmentation_for_split,
+    class_directories,
     generate_class_features,
+    phrase_slug,
     selected_phrase_directories,
     staged_clip_source,
     validate_generated_corpus,
@@ -19,6 +21,49 @@ from tools.build_recipe_features import (
 
 
 class SelectedPhraseFeaturesTest(unittest.TestCase):
+    def test_phrase_slug_distinguishes_readings(self):
+        self.assertNotEqual(phrase_slug("Hi-Fi Kizz"), phrase_slug("Hi Fi Kizz"))
+        self.assertTrue(phrase_slug("Hi-Fi Kizz").startswith("hi_fi_kizz-"))
+
+    def test_filters_labeled_features_by_provider_and_age(self):
+        manifest = {
+            "plan": [
+                {
+                    "class": "positive",
+                    "split": "train",
+                    "provider": "elevenlabs",
+                    "age_group": "child",
+                    "output": "/teen",
+                },
+                {
+                    "class": "positive",
+                    "split": "train",
+                    "provider": "elevenlabs",
+                    "age_group": "adult",
+                    "output": "/adult",
+                },
+                {
+                    "class": "positive",
+                    "split": "train",
+                    "output": "/piper",
+                },
+            ]
+        }
+        self.assertEqual(
+            class_directories(
+                manifest,
+                "positive",
+                "train",
+                {"elevenlabs"},
+                {"child"},
+            ),
+            [Path("/teen")],
+        )
+        self.assertEqual(
+            class_directories(manifest, "positive", "train", {"piper"}),
+            [Path("/piper")],
+        )
+
     def test_augmentation_is_training_only(self):
         augmenter = object()
         self.assertIs(augmentation_for_split(augmenter, "training"), augmenter)
@@ -92,6 +137,32 @@ class SelectedPhraseFeaturesTest(unittest.TestCase):
                 names = [path.name for path in staged.glob("*.wav")]
 
             self.assertEqual(names, ["phrase--accepted.wav"])
+
+    def test_caps_piper_examples_per_speaker_and_phrase(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "phrase"
+            source.mkdir()
+            records = []
+            for index in range(3):
+                filename = f"{index}.wav"
+                (source / filename).touch()
+                records.append(
+                    {
+                        "file": filename,
+                        "speaker_1": 1,
+                        "speaker_2": index + 10,
+                    }
+                )
+            (source / "synthesis-metadata.jsonl").write_text(
+                "".join(json.dumps(record) + "\n" for record in records)
+            )
+
+            with staged_clip_source(
+                [source], max_clips_per_speaker_phrase=1, selection_seed=23
+            ) as staged:
+                names = list(staged.glob("*.wav"))
+
+            self.assertEqual(len(names), 1)
 
     def test_can_rebuild_only_one_feature_split(self):
         with tempfile.TemporaryDirectory() as temporary:

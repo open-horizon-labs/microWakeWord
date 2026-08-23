@@ -17,6 +17,7 @@
 import os
 import platform
 import contextlib
+import json
 
 from absl import logging
 
@@ -41,6 +42,24 @@ def swap_attribute(obj, attr, temp_value):
 def constrain_faph_by_negative_false_accepts(ambient_faph, negative_false_positives):
     """Marks a cutoff unusable while any labeled negative is accepted."""
     return np.where(np.asarray(negative_false_positives) > 0, np.inf, ambient_faph)
+
+
+def configured_training_loss(config):
+    """Build the declared binary training loss; BCE remains the default."""
+    loss_config = config.get("training_loss", {})
+    name = loss_config.get("name", "binary_crossentropy")
+    if name == "binary_crossentropy":
+        return tf.keras.losses.BinaryCrossentropy(from_logits=False)
+    if name == "binary_focal_crossentropy":
+        return tf.keras.losses.BinaryFocalCrossentropy(
+            apply_class_balancing=bool(
+                loss_config.get("apply_class_balancing", False)
+            ),
+            alpha=float(loss_config.get("alpha", 0.25)),
+            gamma=float(loss_config.get("gamma", 2.0)),
+            from_logits=False,
+        )
+    raise ValueError(f"unsupported training loss: {name}")
 
 
 def configure_trainable_layers(model, config):
@@ -221,7 +240,7 @@ def train(model, config, data_processor):
     pad_list_with_last_entry(positive_class_weight_list, training_step_iterations)
     pad_list_with_last_entry(negative_class_weight_list, training_step_iterations)
 
-    loss = tf.keras.losses.BinaryCrossentropy(from_logits=False)
+    loss = configured_training_loss(config)
     optimizer = tf.keras.optimizers.Adam()
 
     cutoffs = np.linspace(0.0, 1.0, 101).tolist()
@@ -297,6 +316,10 @@ def train(model, config, data_processor):
             "freq_mask_max_size": freq_mask_max_size,
             "freq_mask_count": freq_mask_count,
         }
+
+        data_processor.set_training_class_weights(
+            positive_class_weight, negative_class_weight
+        )
 
         (
             train_fingerprints,
@@ -415,14 +438,6 @@ def train(model, config, data_processor):
 
             os.makedirs(os.path.join(config["train_dir"], "train"), exist_ok=True)
 
-            model.save_weights(
-                os.path.join(
-                    config["train_dir"],
-                    "train",
-                    f"{int(best_minimization_quantity * 10000)}_weights_{training_step}.weights.h5",
-                )
-            )
-
             current_minimization_quantity = 0.0
             if config["minimization_metric"] is not None:
                 current_minimization_quantity = nonstreaming_metrics[
@@ -432,6 +447,20 @@ def train(model, config, data_processor):
                 config["maximization_metric"]
             ]
             current_no_faph_cutoff = nonstreaming_metrics["cutoff_for_no_faph"]
+
+            model.save_weights(
+                os.path.join(
+                    config["train_dir"],
+                    "train",
+                    f"{int(current_minimization_quantity * 10000)}_weights_{training_step}.weights.h5",
+                )
+            )
+            with open(
+                os.path.join(config["train_dir"], "sampling-ledger.json"),
+                "w",
+            ) as ledger_file:
+                json.dump(data_processor.sampling_ledger(), ledger_file, indent=2)
+                ledger_file.write("\n")
 
             # Save model weights if this is a new best model
             if (

@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 from typing import Callable
-from urllib import request
+from urllib import error, request
 
 import yaml
 
@@ -21,6 +21,7 @@ except ModuleNotFoundError:  # Direct execution from the tools directory.
 
 DESIGN_ENDPOINT = "https://api.elevenlabs.io/v1/text-to-voice/design"
 CREATE_ENDPOINT = "https://api.elevenlabs.io/v1/text-to-voice"
+API_KEY_ENVIRONMENTS = ("ELEVENLABS_API_KEY", "ELEVEN_LABS_API_KEY")
 
 
 def post_json(endpoint: str, api_key: str, body: dict) -> dict:
@@ -34,8 +35,22 @@ def post_json(endpoint: str, api_key: str, body: dict) -> dict:
             "Accept": "application/json",
         },
     )
-    with request.urlopen(call, timeout=120) as response:
-        return json.loads(response.read())
+    try:
+        with request.urlopen(call, timeout=120) as response:
+            return json.loads(response.read())
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"ElevenLabs request failed with HTTP {exc.code}: {detail}"
+        ) from exc
+
+
+def resolve_api_key(preferred_environment: str | None = None) -> str | None:
+    """Return the first configured key without requiring one spelling."""
+    environments = (
+        (preferred_environment,) if preferred_environment else API_KEY_ENVIRONMENTS
+    )
+    return next((os.environ.get(name) for name in environments if os.environ.get(name)), None)
 
 
 def validate_designs(spec: dict) -> None:
@@ -142,11 +157,18 @@ def main() -> int:
     parser.add_argument("--spec", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--preview-dir", type=Path, required=True)
-    parser.add_argument("--api-key-env", default="ELEVENLABS_API_KEY")
+    parser.add_argument(
+        "--api-key-env",
+        help=(
+            "Read the key from this environment variable. By default the tool "
+            "accepts ELEVENLABS_API_KEY or ELEVEN_LABS_API_KEY."
+        ),
+    )
     args = parser.parse_args()
-    api_key = os.environ.get(args.api_key_env)
+    api_key = resolve_api_key(args.api_key_env)
     if not api_key:
-        parser.error(f"{args.api_key_env} is not set")
+        expected = args.api_key_env or " or ".join(API_KEY_ENVIRONMENTS)
+        parser.error(f"{expected} is not set")
     design_catalog(args.spec, args.output, args.preview_dir, api_key)
     return 0
 

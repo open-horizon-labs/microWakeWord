@@ -55,10 +55,25 @@ def load_catalog(path: Path) -> dict:
         prior = identities.setdefault(identity, voice["split"])
         if prior != voice["split"]:
             raise ValueError(f"voice identity crosses {prior} and {voice['split']}")
-        samples = int(voice.get("samples_per_phrase", 1))
-        if samples < 1:
-            raise ValueError("samples_per_phrase must be positive")
+        for field in (
+            "samples_per_phrase",
+            "positive_samples_per_phrase",
+            "hard_negative_samples_per_phrase",
+        ):
+            samples = int(voice.get(field, 1))
+            if samples < 1:
+                raise ValueError(f"{field} must be positive")
     return catalog
+
+
+def samples_for_class(voice: dict, class_name: str) -> int:
+    """Resolve a class-specific sample count with legacy catalog fallback."""
+    return int(
+        voice.get(
+            f"{class_name}_samples_per_phrase",
+            voice.get("samples_per_phrase", 1),
+        )
+    )
 
 
 def elevenlabs_pcm(
@@ -125,6 +140,7 @@ def add_samples(
     catalog_path: Path,
     api_key: str,
     synthesize: Callable[..., bytes] = elevenlabs_pcm,
+    allow_catalog_update: bool = False,
 ) -> dict:
     recipe = yaml.safe_load(recipe_path.read_text())
     manifest_path = generated / "generation-manifest.json"
@@ -136,7 +152,7 @@ def add_samples(
     catalog = load_catalog(catalog_path)
     catalog_hash = sha256(catalog_path)
     prior_catalog = manifest.get("labeled_voice_catalog_sha256")
-    if prior_catalog and prior_catalog != catalog_hash:
+    if prior_catalog and prior_catalog != catalog_hash and not allow_catalog_update:
         raise ValueError("generated corpus already uses a different voice catalog")
 
     base_plan = [item for item in manifest["plan"] if not item.get("speaker_id")]
@@ -150,7 +166,7 @@ def add_samples(
         for phrase_index, phrase in enumerate(recipe[key]):
             group = slug(phrase["text"])
             for voice_index, voice in enumerate(catalog["voices"]):
-                samples = int(voice.get("samples_per_phrase", 1))
+                samples = samples_for_class(voice, class_name)
                 output = (
                     generated
                     / class_name
@@ -242,6 +258,11 @@ def main() -> int:
     parser.add_argument("--generated", type=Path, required=True)
     parser.add_argument("--voice-catalog", type=Path, required=True)
     parser.add_argument("--api-key-env", default="ELEVENLABS_API_KEY")
+    parser.add_argument(
+        "--update-catalog",
+        action="store_true",
+        help="Allow a revised catalog to extend an existing generated corpus",
+    )
     args = parser.parse_args()
     api_key = os.environ.get(args.api_key_env)
     if not api_key:
@@ -251,6 +272,7 @@ def main() -> int:
         args.generated,
         args.voice_catalog,
         api_key,
+        allow_catalog_update=args.update_catalog,
     )
     return 0
 

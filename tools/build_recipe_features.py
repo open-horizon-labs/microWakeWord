@@ -38,6 +38,18 @@ def _plan_speakers(plan_item: dict) -> set[str]:
     }
 
 
+def _plan_provider(plan_item: dict) -> str:
+    """Return the synthesizer provider for filtering feature sources."""
+    return plan_item.get("provider", "piper")
+
+
+def phrase_slug(text: str) -> str:
+    readable = "_".join(
+        "".join(character.lower() if character.isalnum() else " " for character in text).split()
+    )
+    return f"{readable}-{hashlib.sha256(text.encode()).hexdigest()[:8]}"
+
+
 def _validate_labeled_voice_coverage(recipe: dict, manifest: dict) -> None:
     requirements = recipe.get("generation", {}).get("labeled_voice_requirements")
     if not requirements:
@@ -168,7 +180,12 @@ def validate_generated_corpus(recipe_path: Path, generated: Path) -> dict:
 
 
 def selected_phrase_directories(
-    manifest: dict, class_name: str, texts: list[str], split: str | None = None
+    manifest: dict,
+    class_name: str,
+    texts: list[str],
+    split: str | None = None,
+    providers: set[str] | None = None,
+    age_groups: set[str] | None = None,
 ) -> list[Path]:
     by_text: dict[str, list[Path]] = {text: [] for text in texts}
     available = {
@@ -184,6 +201,8 @@ def selected_phrase_directories(
             item.get("class") == class_name
             and item.get("text") in by_text
             and (split is None or item.get("split") == split)
+            and (not providers or _plan_provider(item) in providers)
+            and (not age_groups or item.get("age_group") in age_groups)
         ):
             by_text[item["text"]].append(Path(item["output"]))
     return [path for text in texts for path in by_text[text]]
@@ -191,7 +210,10 @@ def selected_phrase_directories(
 
 @contextmanager
 def staged_clip_source(
-    source_dirs: list[Path], rejected: set[Path] | None = None
+    source_dirs: list[Path],
+    rejected: set[Path] | None = None,
+    max_clips_per_speaker_phrase: int | None = None,
+    selection_seed: int = 0,
 ) -> Iterator[Path]:
     """Expose selected phrase directories as one flat, temporary clip corpus."""
     with tempfile.TemporaryDirectory(prefix="mww-selected-clips-") as temporary:
@@ -203,7 +225,45 @@ def staged_clip_source(
                 if source.name in {"train", "validation", "test"}
                 else source.name
             )
-            for clip in source.glob("*.wav"):
+            clips = sorted(source.glob("*.wav"))
+            if max_clips_per_speaker_phrase:
+                metadata_path = source / "synthesis-metadata.jsonl"
+                metadata = {
+                    record["file"]: record
+                    for record in (
+                        json.loads(line)
+                        for line in metadata_path.read_text().splitlines()
+                        if line.strip()
+                    )
+                }
+                clips.sort(
+                    key=lambda clip: hashlib.sha256(
+                        f"{selection_seed}:{source}:{clip.name}".encode()
+                    ).digest()
+                )
+                counts: dict[str, int] = {}
+                selected = []
+                for clip in clips:
+                    if clip.resolve() in rejected:
+                        continue
+                    record = metadata[clip.name]
+                    if speaker_id := record.get("speaker_id"):
+                        speakers = [f"{record.get('provider')}:{speaker_id}"]
+                    else:
+                        speakers = [
+                            f"piper:{record[field]}"
+                            for field in ("speaker_1", "speaker_2")
+                        ]
+                    if any(
+                        counts.get(speaker, 0) >= max_clips_per_speaker_phrase
+                        for speaker in speakers
+                    ):
+                        continue
+                    selected.append(clip)
+                    for speaker in speakers:
+                        counts[speaker] = counts.get(speaker, 0) + 1
+                clips = selected
+            for clip in clips:
                 if clip.resolve() in rejected:
                     continue
                 destination = root / f"{prefix}--{clip.name}"
@@ -212,13 +272,19 @@ def staged_clip_source(
 
 
 def class_directories(
-    manifest: dict, class_name: str, split: str | None = None
+    manifest: dict,
+    class_name: str,
+    split: str | None = None,
+    providers: set[str] | None = None,
+    age_groups: set[str] | None = None,
 ) -> list[Path]:
     return [
         Path(item["output"])
         for item in manifest.get("plan", [])
         if item.get("class") == class_name
         and (split is None or item.get("split") == split)
+        and (not providers or _plan_provider(item) in providers)
+        and (not age_groups or item.get("age_group") in age_groups)
     ]
 
 
@@ -233,8 +299,15 @@ def generate_class_features(
     augmenter: Augmentation,
     split: str,
     rejected: set[Path] | None = None,
+    max_clips_per_speaker_phrase: int | None = None,
+    selection_seed: int = 0,
 ) -> None:
-    with staged_clip_source(sources, rejected) as source:
+    with staged_clip_source(
+        sources,
+        rejected,
+        max_clips_per_speaker_phrase,
+        selection_seed,
+    ) as source:
         clips = Clips(
             input_directory=str(source),
             file_pattern="**/*.wav",
@@ -243,7 +316,7 @@ def generate_class_features(
             random_split_seed=None,
         )
         slide_frames = 1 if split == "testing" else 10
-        repetition = 2 if split == "training" else 1
+        repetition = 2 if split == "training" and augmenter is not None else 1
         spectrograms = SpectrogramGeneration(
             clips=clips,
             augmenter=augmenter,
@@ -292,13 +365,13 @@ def main() -> int:
     parser.add_argument(
         "--background-min-snr-db",
         type=int,
-        default=3,
-        help="Minimum speech-to-background ratio; positive keeps speech louder",
+        default=None,
+        help="Minimum speech-to-background ratio; negative allows louder noise",
     )
     parser.add_argument(
         "--background-max-snr-db",
         type=int,
-        default=20,
+        default=None,
         help="Maximum speech-to-background ratio",
     )
     parser.add_argument(
@@ -333,6 +406,34 @@ def main() -> int:
         default=[],
         help="Build hard-negative features from only this exact phrase; repeatable",
     )
+    parser.add_argument(
+        "--provider",
+        action="append",
+        default=[],
+        help="Build features from only this labeled provider; repeatable",
+    )
+    parser.add_argument(
+        "--age-group",
+        action="append",
+        default=[],
+        help="Build features from only this labeled age cohort; repeatable",
+    )
+    parser.add_argument(
+        "--max-clips-per-speaker-phrase",
+        type=int,
+        help="Deterministically cap each synthetic speaker within each phrase",
+    )
+    parser.add_argument(
+        "--separate-by-phrase",
+        action="store_true",
+        help="Write each phrase to an independent feature source for balanced sampling",
+    )
+    parser.add_argument(
+        "--augmentation-profile",
+        choices=("clean", "normal_room", "challenging"),
+        default="normal_room",
+        help="Build a separately labeled acoustic-condition bank",
+    )
     args = parser.parse_args()
 
     if args.positive_text and args.class_name == "hard_negative":
@@ -341,10 +442,28 @@ def main() -> int:
         parser.error(
             "--hard-negative-text requires hard_negative or both class generation"
         )
+    if (
+        args.max_clips_per_speaker_phrase is not None
+        and args.max_clips_per_speaker_phrase < 1
+    ):
+        parser.error("--max-clips-per-speaker-phrase must be positive")
     manifest = validate_generated_corpus(args.recipe, args.generated)
-    if args.background_min_snr_db < 0:
-        parser.error("--background-min-snr-db must keep background below speech")
-    if args.background_max_snr_db < args.background_min_snr_db:
+    default_snr = {
+        "clean": (None, None),
+        "normal_room": (3, 20),
+        "challenging": (-6, 6),
+    }[args.augmentation_profile]
+    minimum_snr = (
+        args.background_min_snr_db
+        if args.background_min_snr_db is not None
+        else default_snr[0]
+    )
+    maximum_snr = (
+        args.background_max_snr_db
+        if args.background_max_snr_db is not None
+        else default_snr[1]
+    )
+    if args.augmentation_profile != "clean" and maximum_snr < minimum_snr:
         parser.error("background maximum SNR must be at least its minimum")
     rejected: set[Path] = set()
     if args.quality_mask:
@@ -366,29 +485,34 @@ def main() -> int:
         *args.background_indoor,
         *args.background_outdoor,
     ]
-    augmenter = Augmentation(
-        augmentation_duration_s=recipe["clip_duration_ms"] / 1000,
-        augmentation_probabilities={
-            "SevenBandParametricEQ": 0.15,
-            "TanhDistortion": 0.1,
-            "PitchShift": 0.1,
-            "BandStopFilter": 0.1,
-            "AddColorNoise": 0.35,
-            "AddBackgroundNoise": 0.8 if backgrounds else 0.0,
-            "Gain": 1.0,
-            "GainTransition": 0.15,
-            "RIR": 0.6 if args.impulses else 0.0,
-        },
-        impulse_paths=[str(path) for path in args.impulses],
-        background_paths=[str(path) for path in backgrounds],
-        background_min_snr_db=args.background_min_snr_db,
-        background_max_snr_db=args.background_max_snr_db,
-        min_gain_db=-35,
-        max_gain_db=0,
-        min_jitter_s=0.15,
-        max_jitter_s=0.30,
-    )
+    probabilities = {
+        "SevenBandParametricEQ": 0.15,
+        "TanhDistortion": 0.1,
+        "PitchShift": 0.1,
+        "BandStopFilter": 0.1,
+        "AddColorNoise": 0.35,
+        "AddBackgroundNoise": 0.8 if backgrounds else 0.0,
+        "Gain": 1.0,
+        "GainTransition": 0.15,
+        "RIR": 0.6 if args.impulses else 0.0,
+    }
+    augmenter = None
+    if args.augmentation_profile != "clean":
+        augmenter = Augmentation(
+            augmentation_duration_s=recipe["clip_duration_ms"] / 1000,
+            augmentation_probabilities=probabilities,
+            impulse_paths=[str(path) for path in args.impulses],
+            background_paths=[str(path) for path in backgrounds],
+            background_min_snr_db=minimum_snr,
+            background_max_snr_db=maximum_snr,
+            min_gain_db=-35,
+            max_gain_db=0,
+            min_jitter_s=0.15,
+            max_jitter_s=0.30,
+        )
     split_names = {"training": "train", "validation": "validation", "testing": "test"}
+    providers = set(args.provider)
+    age_groups = set(args.age_group)
     selections = {
         "positive": args.positive_text,
         "hard_negative": args.hard_negative_text,
@@ -398,22 +522,70 @@ def main() -> int:
         if args.class_name == "both"
         else (args.class_name,)
     )
+    built_sources = []
     for class_name in requested_classes:
         for feature_split in feature_splits:
             manifest_split = split_names[feature_split]
             texts = selections[class_name]
-            sources = (
-                selected_phrase_directories(manifest, class_name, texts, manifest_split)
-                if texts
-                else class_directories(manifest, class_name, manifest_split)
-            )
-            generate_class_features(
-                sources,
-                args.output / class_name,
-                augmentation_for_split(augmenter, feature_split),
-                feature_split,
-                rejected,
-            )
+            if args.separate_by_phrase:
+                phrase_texts = texts or [
+                    phrase["text"] for phrase in recipe[f"{class_name}_phrases"]
+                ]
+                source_groups = [
+                    (
+                        text,
+                        selected_phrase_directories(
+                            manifest,
+                            class_name,
+                            [text],
+                            manifest_split,
+                            providers,
+                            age_groups,
+                        ),
+                    )
+                    for text in phrase_texts
+                ]
+            else:
+                sources = (
+                    selected_phrase_directories(
+                        manifest,
+                        class_name,
+                        texts,
+                        manifest_split,
+                        providers,
+                        age_groups,
+                    )
+                    if texts
+                    else class_directories(
+                        manifest,
+                        class_name,
+                        manifest_split,
+                        providers,
+                        age_groups,
+                    )
+                )
+                source_groups = [(None, sources)]
+            for text, sources in source_groups:
+                destination = args.output / class_name
+                if text is not None:
+                    destination /= phrase_slug(text)
+                generate_class_features(
+                    sources,
+                    destination,
+                    augmentation_for_split(augmenter, feature_split),
+                    feature_split,
+                    rejected,
+                    args.max_clips_per_speaker_phrase,
+                    seed,
+                )
+                built_sources.append(
+                    {
+                        "class": class_name,
+                        "text": text,
+                        "feature_split": feature_split,
+                        "features_dir": str(destination),
+                    }
+                )
 
     build_manifest = {
         "schema_version": 1,
@@ -422,16 +594,25 @@ def main() -> int:
             (args.generated / "generation-manifest.json").read_bytes()
         ).hexdigest(),
         "quality_mask": str(args.quality_mask) if args.quality_mask else None,
+        "selection": {
+            "providers": sorted(providers),
+            "age_groups": sorted(age_groups),
+            "max_clips_per_speaker_phrase": args.max_clips_per_speaker_phrase,
+            "seed": seed,
+            "separate_by_phrase": args.separate_by_phrase,
+        },
+        "feature_sources": built_sources,
         "training_augmentation": {
+            "profile": args.augmentation_profile,
             "background_sources": {
                 "unclassified": [str(path) for path in args.background],
                 "indoor": [str(path) for path in args.background_indoor],
                 "outdoor": [str(path) for path in args.background_outdoor],
             },
             "impulse_paths": [str(path) for path in args.impulses],
-            "background_min_snr_db": args.background_min_snr_db,
-            "background_max_snr_db": args.background_max_snr_db,
-            "probabilities": {
+            "background_min_snr_db": minimum_snr,
+            "background_max_snr_db": maximum_snr,
+            "probabilities": ({
                 "parametric_eq": 0.15,
                 "tanh_distortion": 0.1,
                 "pitch_shift": 0.1,
@@ -441,7 +622,7 @@ def main() -> int:
                 "gain": 1.0,
                 "gain_transition": 0.15,
                 "room_impulse_response": 0.6 if args.impulses else 0.0,
-            },
+            } if augmenter is not None else {}),
             "held_out_audio": "clean",
         },
     }

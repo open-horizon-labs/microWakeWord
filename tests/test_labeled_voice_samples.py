@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from tools.add_labeled_voice_samples import add_samples, load_catalog
+from tools.add_labeled_voice_samples import add_samples, load_catalog, samples_for_class
 from tools.build_recipe_features import validate_generated_corpus
 
 
@@ -25,6 +25,15 @@ def write_catalog(path: Path, voices: list[dict]) -> None:
 
 
 class LabeledVoiceSamplesTest(unittest.TestCase):
+    def test_class_specific_sample_counts_override_legacy_default(self):
+        voice = {
+            "samples_per_phrase": 2,
+            "positive_samples_per_phrase": 9,
+            "hard_negative_samples_per_phrase": 3,
+        }
+        self.assertEqual(samples_for_class(voice, "positive"), 9)
+        self.assertEqual(samples_for_class(voice, "hard_negative"), 3)
+
     def test_rejects_voice_identity_crossing_splits(self):
         with tempfile.TemporaryDirectory() as temporary:
             catalog = Path(temporary) / "voices.yaml"
