@@ -141,10 +141,25 @@ def add_samples(
     api_key: str,
     synthesize: Callable[..., bytes] = elevenlabs_pcm,
     allow_catalog_update: bool = False,
+    initialize_manifest: bool = False,
 ) -> dict:
     recipe = yaml.safe_load(recipe_path.read_text())
     manifest_path = generated / "generation-manifest.json"
-    manifest = json.loads(manifest_path.read_text())
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+    elif initialize_manifest:
+        generated.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "schema_version": 2,
+            "recipe": str(recipe_path),
+            "recipe_sha256": sha256(recipe_path),
+            "generator_model": None,
+            "generator_model_sha256": None,
+            "generator_source": "labeled-voices-only",
+            "plan": [],
+        }
+    else:
+        raise ValueError(f"missing generation manifest: {manifest_path}")
     if manifest.get("schema_version") != 2:
         raise ValueError("generated corpus requires schema_version 2")
     if manifest.get("recipe_sha256") != sha256(recipe_path):
@@ -263,6 +278,14 @@ def main() -> int:
         action="store_true",
         help="Allow a revised catalog to extend an existing generated corpus",
     )
+    parser.add_argument(
+        "--initialize",
+        action="store_true",
+        help=(
+            "Initialize a labeled-voices-only corpus when no generation "
+            "manifest exists"
+        ),
+    )
     args = parser.parse_args()
     api_key = os.environ.get(args.api_key_env)
     if not api_key:
@@ -273,6 +296,7 @@ def main() -> int:
         args.voice_catalog,
         api_key,
         allow_catalog_update=args.update_catalog,
+        initialize_manifest=args.initialize,
     )
     return 0
 

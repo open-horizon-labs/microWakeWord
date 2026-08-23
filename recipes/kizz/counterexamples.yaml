@@ -1,0 +1,159 @@
+recipe_version: 1
+name: hiphi_kizz_counterexamples
+sample_rate_hz: 16000
+clip_duration_ms: 2000
+random_seed: 23120
+
+# This supplemental recipe is mined from observed false wakes. It contains no
+# positives so that it can be trained as a bounded hard-negative source and
+# evaluated with speaker identities that never appear in training.
+positive_phrases: []
+
+hard_negative_phrases:
+  # Direct counterexamples from an unattended household-conversation wake.
+  - text: Do the kids go see Papa?
+    samples: 1
+  - text: The kids go see Papa.
+    samples: 1
+  - text: Do you need a little brownie?
+    samples: 1
+  - text: A little brownie.
+    samples: 1
+  - text: What?
+    samples: 1
+
+  # Natural sentence contexts around the phonetic neighborhoods that the
+  # detector must reject. Sentence context matters because runtime inference is
+  # continuous and the false wake occurred inside ordinary connected speech.
+  - text: The kids go see their grandparents after lunch.
+    samples: 1
+  - text: My five kids are waiting by the door.
+    samples: 1
+  - text: High five, kids, that was a great game.
+    samples: 1
+  - text: The Wi-Fi is working again in the kitchen.
+    samples: 1
+  - text: If he is ready, we can leave now.
+    samples: 1
+  - text: This quiz is for the kids in the next room.
+    samples: 1
+  - text: Give the kids a kiss before they go.
+    samples: 1
+  - text: Hey kids, come here for a minute.
+    samples: 1
+  - text: Happy kids play outside after school.
+    samples: 1
+  - text: Coffee is in the kitchen beside the mugs.
+    samples: 1
+  - text: The quiz starts at five, so do not be late.
+    samples: 1
+
+  # More connected-speech collisions from the same phonetic families.
+  - text: If he is coming, save him a seat.
+    samples: 1
+  - text: I wonder if he is still in the kitchen.
+    samples: 1
+  - text: See if his keys are on the table.
+    samples: 1
+  - text: If he is free at five, ask him to call.
+    samples: 1
+  - text: I think his keys fell behind the couch.
+    samples: 1
+  - text: His quiz score was eighty-five.
+    samples: 1
+  - text: This is the fifth quiz this week.
+    samples: 1
+  - text: The kids finished the quiz before dinner.
+    samples: 1
+  - text: The quiz for the kids is on Friday.
+    samples: 1
+  - text: Give his kids a quick kiss goodbye.
+    samples: 1
+  - text: Five kids picked six red apples.
+    samples: 1
+  - text: High five the kids when they finish.
+    samples: 1
+  - text: Do the kids need fifty-five tickets?
+    samples: 1
+  - text: Please kiss the kids goodnight.
+    samples: 1
+  - text: Hey kids, dinner is ready.
+    samples: 1
+  - text: Okay kids, shoes on please.
+    samples: 1
+  - text: Which kids are going on the field trip?
+    samples: 1
+  - text: These kids have five minutes left.
+    samples: 1
+  - text: My kids think this quiz is easy.
+    samples: 1
+  - text: The science quiz is in the fifth period.
+    samples: 1
+  - text: Happy kids giggled through the whole movie.
+    samples: 1
+  - text: The fizzy drink is in the fridge.
+    samples: 1
+  - text: Liz fixed the Wi-Fi in the guest room.
+    samples: 1
+  - text: The Wi-Fi keeps cutting out upstairs.
+    samples: 1
+  - text: Her coffee is next to his keys.
+    samples: 1
+  - text: This coffee tastes different today.
+    samples: 1
+  - text: Baby, is the coffee still hot?
+    samples: 1
+  - text: Put the coffee beside the fizzy water.
+    samples: 1
+  - text: The kitchen light is flickering again.
+    samples: 1
+
+  # Prefix-only hi-fi speech and downstream commands must not wake the device.
+  - text: The hi-fi system is in the den.
+    samples: 1
+  - text: High fidelity speakers can sound wonderful.
+    samples: 1
+  - text: Please turn the hi-fi volume down.
+    samples: 1
+  - text: This track sounds better on the hi-fi.
+    samples: 1
+  - text: Play Prince in the front family room.
+    samples: 1
+  - text: Turn the volume up in the kitchen.
+    samples: 1
+  - text: Skip this song and play the next one.
+    samples: 1
+  - text: Pause the music for a minute.
+    samples: 1
+  - text: What album is playing right now?
+    samples: 1
+
+  # Unrelated household speech measures broad rather than collision-only errors.
+  - text: We should leave before the traffic gets worse.
+    samples: 1
+  - text: Please bring the blue blanket from upstairs.
+    samples: 1
+  - text: Dinner will be ready in about twenty minutes.
+    samples: 1
+  - text: Did anyone feed the dog this morning?
+    samples: 1
+  - text: Put the groceries on the kitchen counter.
+    samples: 1
+  - text: I left my phone beside the front door.
+    samples: 1
+  - text: The weather should clear up after lunch.
+    samples: 1
+  - text: Can you close the window before you leave?
+    samples: 1
+  - text: We watched a funny movie last night.
+    samples: 1
+  - text: Someone is knocking at the back door.
+    samples: 1
+
+generation:
+  labeled_voice_requirements:
+    age_groups: [adult, child]
+    minimum_voices_per_split:
+      train: 2
+      validation: 1
+      test: 1

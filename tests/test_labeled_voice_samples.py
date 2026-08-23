@@ -99,8 +99,12 @@ class LabeledVoiceSamplesTest(unittest.TestCase):
             )
             requests = []
 
-            def fake_synthesize(*args):
-                requests.append(args)
+            def fake_synthesize(
+                api_key, voice_id, text, model_id, seed, voice_settings
+            ):
+                requests.append(
+                    (api_key, voice_id, text, model_id, seed, voice_settings)
+                )
                 return b"\x00\x00" * 160
 
             manifest = add_samples(
@@ -108,6 +112,7 @@ class LabeledVoiceSamplesTest(unittest.TestCase):
             )
 
             self.assertEqual(len(requests), 4)
+            self.assertTrue(all(len(request) == 6 for request in requests))
             self.assertEqual(len(manifest["plan"]), 2)
             for item in manifest["plan"]:
                 self.assertEqual(item["speaker_id"], "adult-1")
@@ -120,6 +125,48 @@ class LabeledVoiceSamplesTest(unittest.TestCase):
                 ]
                 self.assertEqual(len(metadata), 2)
                 self.assertEqual(len(list(Path(item["output"]).glob("*.wav"))), 2)
+
+    def test_initializes_labeled_only_corpus(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            recipe = root / "recipe.yaml"
+            recipe.write_text(
+                yaml.safe_dump(
+                    {
+                        "random_seed": 23,
+                        "positive_phrases": [],
+                        "hard_negative_phrases": [
+                            {"text": "ordinary conversation", "samples": 1}
+                        ],
+                    }
+                )
+            )
+            generated = root / "generated"
+            catalog = root / "voices.yaml"
+            write_catalog(
+                catalog,
+                [
+                    {
+                        "name": "adult train",
+                        "voice_id": "adult-1",
+                        "split": "train",
+                        "age_group": "adult",
+                    }
+                ],
+            )
+
+            manifest = add_samples(
+                recipe,
+                generated,
+                catalog,
+                "test-key",
+                lambda *_: b"\x00\x00" * 160,
+                initialize_manifest=True,
+            )
+
+            self.assertEqual(manifest["generator_source"], "labeled-voices-only")
+            self.assertEqual(len(manifest["plan"]), 1)
+            self.assertTrue((generated / "generation-manifest.json").exists())
 
     def test_feature_validation_requires_declared_age_cohorts(self):
         with tempfile.TemporaryDirectory() as temporary:

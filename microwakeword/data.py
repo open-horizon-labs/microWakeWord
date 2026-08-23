@@ -551,6 +551,17 @@ class FeatureHandler(object):
             sample_count += provider.get_mode_size(mode)
         return sample_count
 
+    def get_mode_label_counts(self, mode: str) -> dict[int, int]:
+        """Count enabled examples by class without loading their features."""
+        counts = {0: 0, 1: 0}
+        for provider, evaluation_enabled in zip(
+            self.feature_providers, self.evaluation_enabled
+        ):
+            if mode != "training" and not evaluation_enabled:
+                continue
+            counts[int(provider.label)] += provider.get_mode_size(mode)
+        return counts
+
     def get_data(
         self,
         mode: str,
@@ -693,7 +704,7 @@ class FeatureHandler(object):
 
         indices = np.arange(labels.shape[0])
 
-        if mode == "testing" or "validation":
+        if mode in ("testing", "validation"):
             # Randomize the order of the data, weights, and labels
             np.random.shuffle(indices)
 

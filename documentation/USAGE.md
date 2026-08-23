@@ -246,6 +246,24 @@ work/kizz/trained/tflite_stream_state_internal_quant/stream_state_internal_quant
 
 Resume with `--restore_checkpoint 1`; review the learning-rate schedule first.
 
+For controlled comparisons, use a stratified sampling plan instead of allowing
+source file counts to set the batch mixture. The plan assigns shares to named
+positive and negative groups, then expands them into a training config:
+
+```sh
+python tools/write_stratified_training_config.py \
+  --base-config work/kizz/training_parameters.yaml \
+  --sampling-plan work/kizz/sampling-plan.yaml \
+  --output work/kizz/stratified_training_parameters.yaml
+```
+
+The generated config records both the planned sample shares and the effective
+positive/negative pressure after source penalties and class weights. A plan can
+set `balance_guard.maximum_negative_sampling_share` and
+`balance_guard.maximum_negative_weighted_pressure_share` to reject an accidental
+imbalance before training. Keep each sampling group single-class; split positive
+and negative sources into separate groups even when they share a provider.
+
 ## 7. Evaluate every trained pronunciation
 
 Freeze the cutoff from held-out validation before testing. `0.96` is illustrative:

@@ -44,6 +44,24 @@ def constrain_faph_by_negative_false_accepts(ambient_faph, negative_false_positi
     return np.where(np.asarray(negative_false_positives) > 0, np.inf, ambient_faph)
 
 
+def labeled_validation_operating_point(true_positives, false_positives, false_negatives):
+    """Select the lowest cutoff with no labeled false accepts."""
+    true_positives = np.asarray(true_positives)
+    false_positives = np.asarray(false_positives)
+    false_negatives = np.asarray(false_negatives)
+    recall = np.divide(
+        true_positives,
+        true_positives + false_negatives,
+        out=np.zeros_like(true_positives, dtype=float),
+        where=(true_positives + false_negatives) != 0,
+    )
+    viable = np.flatnonzero(false_positives == 0)
+    if not viable.size:
+        return 1.0, 0.0
+    index = int(viable[0])
+    return index / (len(false_positives) - 1), float(recall[index])
+
+
 def configured_training_loss(config):
     """Build the declared binary training loss; BCE remains the default."""
     loss_config = config.get("training_loss", {})
@@ -81,6 +99,35 @@ def configure_trainable_layers(model, config):
                 layer.trainable = False
 
 
+def combined_sample_weights(
+    labels, penalty_weights, positive_class_weight, negative_class_weight
+):
+    """Combine per-example penalties and class weights without broadcasting."""
+    labels = np.asarray(labels).reshape(-1)
+    penalty_weights = np.asarray(penalty_weights).reshape(-1)
+    if labels.shape != penalty_weights.shape:
+        raise ValueError("labels and penalty weights must have the same length")
+    class_weights = np.where(
+        labels == 1, float(positive_class_weight), float(negative_class_weight)
+    )
+    return penalty_weights * class_weights
+
+
+def require_binary_validation(data_processor):
+    """Reject checkpoint selection that cannot measure both error directions."""
+    counts = data_processor.get_mode_label_counts("validation")
+    missing = [
+        name
+        for label, name in ((0, "negative"), (1, "positive"))
+        if not counts[label]
+    ]
+    if missing:
+        raise ValueError(
+            "validation data must include positive and negative examples; missing: "
+            + ", ".join(missing)
+        )
+
+
 def validate_nonstreaming(config, data_processor, model, test_set):
     testing_fingerprints, testing_ground_truth, _ = data_processor.get_data(
         test_set,
@@ -108,13 +155,21 @@ def validate_nonstreaming(config, data_processor, model, test_set):
     metrics["auc"] = result["auc"]
     metrics["loss"] = result["loss"]
     metrics["recall_at_no_faph"] = 0
-    metrics["cutoff_for_no_faph"] = 0
+    metrics["cutoff_for_no_faph"] = 1.0
     metrics["ambient_false_positives"] = 0
     metrics["ambient_false_positives_per_hour"] = 0
     metrics["validation_false_positives"] = 0
     metrics["average_viable_recall"] = 0
 
     test_set_fp = np.asarray(result["fp"])
+    test_set_tp = np.asarray(result["tp"])
+    test_set_fn = np.asarray(result["fn"])
+    (
+        metrics["cutoff_for_no_faph"],
+        metrics["recall_at_no_faph"],
+    ) = labeled_validation_operating_point(test_set_tp, test_set_fp, test_set_fn)
+    metrics["validation_false_positives"] = test_set_fp[50]
+    metrics["average_viable_recall"] = metrics["recall_at_no_faph"]
 
     if data_processor.get_mode_size("validation_ambient") > 0:
         (
@@ -201,6 +256,7 @@ def validate_nonstreaming(config, data_processor, model, test_set):
 
 
 def train(model, config, data_processor):
+    require_binary_validation(data_processor)
     # Assign default training settings if not set in the configuration yaml
     if not (training_steps_list := config.get("training_steps")):
         training_steps_list = [20000]
@@ -333,12 +389,13 @@ def train(model, config, data_processor):
             augmentation_policy=augmentation_policy,
         )
 
-        train_ground_truth = train_ground_truth.reshape(-1, 1)
-
-        class_weights = {0: negative_class_weight, 1: positive_class_weight}
-        combined_weights = train_sample_weights * np.vectorize(class_weights.get)(
-            train_ground_truth
+        combined_weights = combined_sample_weights(
+            train_ground_truth,
+            train_sample_weights,
+            positive_class_weight,
+            negative_class_weight,
         )
+        train_ground_truth = train_ground_truth.reshape(-1, 1)
 
         result = model.train_on_batch(
             train_fingerprints,
