@@ -47,13 +47,10 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
                 }
             )
         )
-        self.client = TestClient(
-            TestServer(
-                EnrollmentService(
-                    self.corpus, "http://trainer.test:8091"
-                ).application()
-            )
+        self.service = EnrollmentService(
+            self.corpus, "http://trainer.test:8091"
         )
+        self.client = TestClient(TestServer(self.service.application()))
         await self.client.start_server()
         self.device = await self.client.ws_connect("/v1/device")
         await self.device.send_json(
@@ -238,6 +235,56 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await uploaded.json())["state"], "stored")
         attempt = validate_device_corpus(self.corpus)["captures"][0]
         self.assertEqual(attempt["capture_id"], "segmented-missed-positive")
+        self.assertFalse(attempt["detected"])
+
+    async def test_segmented_upload_survives_device_socket_reconnect(self):
+        response = await self.client.post(
+            "/v1/captures",
+            json={
+                "capture_id": "disconnected-segmented-positive",
+                "device_id": "sim-kizz-1",
+                "device_profile": "m5stack_stackchan_k151_cores3_v1",
+                "phrase": "Hi-Fi Kizz",
+                "pronunciation": "hi_fi",
+                "truth": "positive",
+                "source": "simulated",
+                "speaker_id": "speaker-a",
+                "session_id": "session-disconnected-http",
+                "split": "train",
+                "duration_ms": 500,
+                "conditions": {"distance_cm": 100},
+            },
+        )
+        self.assertEqual(response.status, 202)
+        await self.device.receive_json()
+
+        pcm = bytes(range(256)) * 62 + bytes(range(128))
+        first = pcm[:2048]
+        common_headers = {
+            "Content-Type": "application/octet-stream",
+            "X-Device-ID": "sim-kizz-1",
+            "X-Detected": "false",
+            "X-Audio-Total": str(len(pcm)),
+        }
+        uploaded = await self.client.post(
+            "/v1/captures/disconnected-segmented-positive/audio",
+            data=first,
+            headers={**common_headers, "X-Audio-Offset": "0"},
+        )
+        self.assertEqual(uploaded.status, 200)
+
+        await self.device.close()
+        await asyncio.sleep(0.01)
+
+        uploaded = await self.client.post(
+            "/v1/captures/disconnected-segmented-positive/audio",
+            data=pcm[len(first) :],
+            headers={**common_headers, "X-Audio-Offset": str(len(first))},
+        )
+        self.assertEqual(uploaded.status, 200)
+        self.assertEqual((await uploaded.json())["state"], "stored")
+        attempt = validate_device_corpus(self.corpus)["captures"][0]
+        self.assertEqual(attempt["capture_id"], "disconnected-segmented-positive")
         self.assertFalse(attempt["detected"])
 
     async def test_endpoint_routes_to_explicit_device_profile(self):

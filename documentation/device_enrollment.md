@@ -120,6 +120,14 @@ older WebSocket upload messages remain accepted for existing clients; new
 embedded clients should keep the WebSocket for control and use HTTP for bulk
 audio.
 
+Devices that cannot buffer or upload the body in one request may add
+`X-Audio-Offset` and `X-Audio-Total` to send ordered segments. Repeating an
+acknowledged segment is safe when its bytes match. A pending segmented upload
+survives control-WebSocket reconnects and expires after five minutes without an
+audio segment. The server snapshots the device profile and firmware when it
+queues the capture, so the HTTP upload does not depend on the control socket
+remaining connected.
+
 `POST /v1/wake-config` can also carry an optional `audio_preprocessing` object.
 The service passes these scalar frontend settings to the addressed device
 without assigning hardware-specific meaning. A device must validate, persist,
