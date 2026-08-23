@@ -290,10 +290,23 @@ class EnrollmentService:
         capture_id = http_request.match_info.get("capture_id")
         device_id = http_request.headers.get("X-Device-ID")
         detected_header = http_request.headers.get("X-Detected")
+        offset_header = http_request.headers.get("X-Audio-Offset")
+        total_header = http_request.headers.get("X-Audio-Total")
         if not valid_token(capture_id) or not valid_token(device_id):
             return web.json_response({"error": "invalid capture identity"}, status=400)
         if detected_header not in {"true", "false"}:
             return web.json_response({"error": "X-Detected must be true or false"}, status=400)
+        if (offset_header is None) != (total_header is None):
+            return web.json_response(
+                {"error": "X-Audio-Offset and X-Audio-Total must be sent together"},
+                status=400,
+            )
+        segmented = offset_header is not None
+        try:
+            offset = int(offset_header) if segmented else 0
+            total = int(total_header) if segmented else 0
+        except ValueError:
+            return web.json_response({"error": "audio range is invalid"}, status=400)
         pcm = await http_request.read()
         if not pcm or len(pcm) % 2:
             return web.json_response({"error": "PCM body is invalid"}, status=400)
@@ -306,6 +319,53 @@ class EnrollmentService:
             if device is None:
                 return web.json_response({"error": "device is not connected"}, status=503)
             expected_bytes = pending.request["duration_ms"] * 16000 * 2 // 1000
+            if segmented:
+                if total != expected_bytes or offset < 0 or offset % 2:
+                    return web.json_response(
+                        {"error": "audio range does not match capture"}, status=409
+                    )
+                detected = detected_header == "true"
+                if pending.detected is not None and pending.detected != detected:
+                    return web.json_response(
+                        {"error": "X-Detected changed during upload"}, status=409
+                    )
+                pending.detected = detected
+                pending.byte_count = expected_bytes
+                received = len(pending.audio)
+                end = offset + len(pcm)
+                if offset > received or end > expected_bytes:
+                    return web.json_response(
+                        {
+                            "error": "audio segment is out of sequence",
+                            "received_bytes": received,
+                        },
+                        status=409,
+                    )
+                if offset < received:
+                    if end > received or bytes(pending.audio[offset:end]) != pcm:
+                        return web.json_response(
+                            {"error": "audio retry differs from retained segment"},
+                            status=409,
+                        )
+                else:
+                    pending.audio.extend(pcm)
+                    received = len(pending.audio)
+                if received == expected_bytes:
+                    self._persist(
+                        capture_id, pending, device, bytes(pending.audio)
+                    )
+                    self.pending.pop(capture_id, None)
+                    state = "stored"
+                else:
+                    state = "receiving"
+                return web.json_response(
+                    {
+                        "capture_id": capture_id,
+                        "state": state,
+                        "received_bytes": received,
+                        "expected_bytes": expected_bytes,
+                    }
+                )
             if len(pcm) != expected_bytes:
                 return web.json_response(
                     {

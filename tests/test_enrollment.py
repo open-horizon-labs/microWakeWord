@@ -181,6 +181,65 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempt["capture_id"], "http-missed-positive")
         self.assertFalse(attempt["detected"])
 
+    async def test_segmented_http_upload_is_resumable_and_retains_miss(self):
+        response = await self.client.post(
+            "/v1/captures",
+            json={
+                "capture_id": "segmented-missed-positive",
+                "device_id": "sim-kizz-1",
+                "device_profile": "m5stack_stackchan_k151_cores3_v1",
+                "phrase": "Hi-Fi Kizz",
+                "pronunciation": "hi_fi",
+                "truth": "positive",
+                "source": "simulated",
+                "speaker_id": "speaker-a",
+                "session_id": "session-segmented-http",
+                "split": "train",
+                "duration_ms": 500,
+                "conditions": {"distance_cm": 100},
+            },
+        )
+        self.assertEqual(response.status, 202)
+        await self.device.receive_json()
+
+        pcm = bytes(range(256)) * 62 + bytes(range(128))
+        self.assertEqual(len(pcm), 16000)
+        common_headers = {
+            "Content-Type": "application/octet-stream",
+            "X-Device-ID": "sim-kizz-1",
+            "X-Detected": "false",
+            "X-Audio-Total": str(len(pcm)),
+        }
+        first = pcm[:2048]
+        uploaded = await self.client.post(
+            "/v1/captures/segmented-missed-positive/audio",
+            data=first,
+            headers={**common_headers, "X-Audio-Offset": "0"},
+        )
+        self.assertEqual(uploaded.status, 200)
+        self.assertEqual((await uploaded.json())["state"], "receiving")
+
+        retried = await self.client.post(
+            "/v1/captures/segmented-missed-positive/audio",
+            data=first,
+            headers={**common_headers, "X-Audio-Offset": "0"},
+        )
+        self.assertEqual(retried.status, 200)
+        self.assertEqual((await retried.json())["received_bytes"], len(first))
+
+        for offset in range(len(first), len(pcm), 2048):
+            segment = pcm[offset : offset + 2048]
+            uploaded = await self.client.post(
+                "/v1/captures/segmented-missed-positive/audio",
+                data=segment,
+                headers={**common_headers, "X-Audio-Offset": str(offset)},
+            )
+            self.assertEqual(uploaded.status, 200)
+        self.assertEqual((await uploaded.json())["state"], "stored")
+        attempt = validate_device_corpus(self.corpus)["captures"][0]
+        self.assertEqual(attempt["capture_id"], "segmented-missed-positive")
+        self.assertFalse(attempt["detected"])
+
     async def test_endpoint_routes_to_explicit_device_profile(self):
         response = await self.client.post(
             "/v1/captures",
