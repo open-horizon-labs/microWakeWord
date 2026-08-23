@@ -72,9 +72,7 @@ def evaluate_group(
     if limit:
         clips = clips[:limit]
     peaks = [
-        peak_probability(
-            model, clip, sliding_window, ignore_initial, clip_duration_ms
-        )
+        peak_probability(model, clip, sliding_window, ignore_initial, clip_duration_ms)
         for clip in clips
     ]
     accepted = sum(peak > cutoff for peak in peaks)
@@ -93,10 +91,25 @@ def clips_by_group(
     split: str,
     split_seed: int,
     rejected: set[Path] | None = None,
+    generation_manifest: dict | None = None,
+    class_name: str | None = None,
 ) -> dict[str, list[Path]]:
     if not root.exists():
         return {}
     rejected = rejected or set()
+    if generation_manifest and generation_manifest.get("schema_version") == 2:
+        grouped: dict[str, list[Path]] = defaultdict(list)
+        for item in generation_manifest.get("plan", []):
+            if item.get("class") != class_name:
+                continue
+            if split != "all" and item.get("split") != split:
+                continue
+            grouped[item["group"]].extend(
+                path
+                for path in sorted(Path(item["output"]).glob("*.wav"))
+                if path.resolve() not in rejected
+            )
+        return dict(grouped)
     if split == "all":
         return {
             group.name: [
@@ -132,9 +145,30 @@ def phrase_labels(generated: Path) -> dict[str, str]:
         return {}
     manifest = json.loads(manifest_path.read_text())
     return {
-        Path(item["output"]).name: item["text"]
+        item.get("group", Path(item["output"]).name): item["text"]
         for item in manifest.get("plan", [])
     }
+
+
+def clips_by_age_group(
+    manifest: dict,
+    class_name: str,
+    split: str,
+    rejected: set[Path],
+) -> dict[str, list[Path]]:
+    grouped: dict[str, list[Path]] = defaultdict(list)
+    for item in manifest.get("plan", []):
+        if item.get("class") != class_name:
+            continue
+        if split != "all" and item.get("split") != split:
+            continue
+        age_group = item.get("age_group", "unknown")
+        grouped[age_group].extend(
+            path
+            for path in sorted(Path(item["output"]).glob("*.wav"))
+            if path.resolve() not in rejected
+        )
+    return dict(grouped)
 
 
 def main() -> int:
@@ -180,6 +214,12 @@ def main() -> int:
             (args.generated / relative).resolve() for relative in mask["rejected"]
         }
 
+    generation_manifest_path = args.generated / "generation-manifest.json"
+    generation_manifest = (
+        json.loads(generation_manifest_path.read_text())
+        if generation_manifest_path.exists()
+        else None
+    )
     result = {
         "model": str(args.model),
         "cutoff": args.cutoff,
@@ -189,12 +229,18 @@ def main() -> int:
         "quality_mask": str(args.quality_mask) if args.quality_mask else None,
         "positive": {},
         "hard_negative": {},
+        "age_cohorts": {"positive": {}, "hard_negative": {}},
     }
     labels = phrase_labels(args.generated)
     for truth in ("positive", "hard_negative"):
         seed = args.split_seed + (1 if truth == "hard_negative" else 0)
         grouped = clips_by_group(
-            args.generated / truth, args.split, seed, rejected
+            args.generated / truth,
+            args.split,
+            seed,
+            rejected,
+            generation_manifest,
+            truth,
         )
         for name, clips in sorted(grouped.items()):
             result[truth][labels.get(name, name)] = evaluate_group(
@@ -206,6 +252,24 @@ def main() -> int:
                 args.clip_duration_ms,
                 args.limit_per_phrase,
             )
+        if generation_manifest and generation_manifest.get("schema_version") == 2:
+            for age_group, clips in sorted(
+                clips_by_age_group(
+                    generation_manifest,
+                    truth,
+                    args.split,
+                    rejected,
+                ).items()
+            ):
+                result["age_cohorts"][truth][age_group] = evaluate_group(
+                    args.model,
+                    clips,
+                    args.cutoff,
+                    args.sliding_window,
+                    args.ignore_initial,
+                    args.clip_duration_ms,
+                    args.limit_per_phrase,
+                )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

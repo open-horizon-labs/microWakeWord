@@ -8,6 +8,40 @@ endpoint.
 
 Replace these illustrative IDs, profile, phrase, and workspace with your own.
 
+Initialize `device-corpus.json` before starting the service. Schema 2 registers
+each speaker once and assigns that identity to one split:
+
+```json
+{
+  "schema_version": 2,
+  "corpus_id": "my-device-corpus-v1",
+  "device_profiles": {
+    "my_microphone_profile_v1": {
+      "audio": {
+        "sample_rate": 16000,
+        "channels": 1,
+        "sample_format": "s16le",
+        "frontend": "my_frontend",
+        "gain_profile": "default",
+        "preprocessing": {}
+      }
+    }
+  },
+  "speakers": {
+    "speaker-a": {
+      "kind": "human",
+      "age_group": "adult",
+      "split": "train",
+      "identity_verified": true
+    }
+  },
+  "captures": []
+}
+```
+
+Do not create a second ID for the same person to move a recording into another
+split. The enrollment service rejects unregistered speakers and split changes.
+
 ```sh
 python tools/run_enrollment_service.py --corpus work/device-corpus --port 8091
 
@@ -94,6 +128,7 @@ append captures made under the new settings to the old profile.
 - explicit truth and train/validation/test assignment;
 - explicit capture source (`human`, `synthetic_playback`, `ambient`, or
   `simulated`);
+- registered speaker provenance, age cohort, and immutable split assignment;
 - no speaker or session crossing splits;
 - both provisional detector hits and misses.
 
@@ -146,3 +181,8 @@ profile, speaker, session, and provisional detector outcome. Random temporal
 sampling keeps wake phrases that are not aligned to a recording edge in the
 training pass. Prefer measured phrase spans for long captures; edge truncation
 should be used only when the capture protocol itself guarantees alignment.
+
+For a release gate, add `--qualification` to
+`tools/evaluate_device_corpus_model.py`. It accepts only a complete test split
+with positive, hard-negative, ambient-negative, and registered human evidence.
+`--split all` cannot qualify a model.

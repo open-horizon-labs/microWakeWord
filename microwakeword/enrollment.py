@@ -352,9 +352,7 @@ class EnrollmentService:
             self.devices[device_id] = Device(websocket, profile, audio, firmware_sha)
         return device_id
 
-    async def _wake_config_applied(
-        self, device_id: str | None, event: dict
-    ) -> None:
+    async def _wake_config_applied(self, device_id: str | None, event: dict) -> None:
         if device_id is None:
             raise ValueError("device must send hello before wake config status")
         config = validate_wake_config_request(
@@ -384,16 +382,27 @@ class EnrollmentService:
         if device_id is None:
             raise ValueError("device must send hello before voice telemetry")
         if event.get("event") != "endpoint" or event.get("reason") not in {
-            "deepgram_flux", "vad_silence", "max_duration", "no_command"
+            "deepgram_flux",
+            "vad_silence",
+            "max_duration",
+            "no_command",
         }:
             raise ValueError("voice telemetry event is invalid")
         integer_fields = (
-            "turn_id", "wake_to_commit_ms", "command_ms", "trailing_silence_ms",
-            "audio_bytes", "speech_frames", "silence_frames", "end_silence_ms",
+            "turn_id",
+            "wake_to_commit_ms",
+            "command_ms",
+            "trailing_silence_ms",
+            "audio_bytes",
+            "speech_frames",
+            "silence_frames",
+            "end_silence_ms",
             "max_utterance_ms",
         )
-        if any(not isinstance(event.get(key), int) or event[key] < 0
-               for key in integer_fields):
+        if any(
+            not isinstance(event.get(key), int) or event[key] < 0
+            for key in integer_fields
+        ):
             raise ValueError("voice telemetry metrics are invalid")
         sample = {key: event[key] for key in ("event", "reason", *integer_fields)}
         sample["received_at"] = time.time()
@@ -430,9 +439,7 @@ class EnrollmentService:
                 raise ValueError("training_error does not match a pending capture")
             self.pending.pop(capture_id, None)
 
-    async def _sample_audio(
-        self, device_id: str | None, pcm: bytes
-    ) -> tuple[str, int]:
+    async def _sample_audio(self, device_id: str | None, pcm: bytes) -> tuple[str, int]:
         async with self.lock:
             matches = [
                 (capture_id, pending)
@@ -488,8 +495,22 @@ class EnrollmentService:
     def _validate_split_assignment(self, request: dict) -> None:
         manifest_path = self.corpus / MANIFEST_NAME
         if not manifest_path.exists():
-            return
+            raise ValueError(
+                "initialize the corpus and register speakers before capture"
+            )
         manifest = json.loads(manifest_path.read_text())
+        speaker = manifest.get("speakers", {}).get(request["speaker_id"])
+        if speaker is None:
+            raise ValueError("speaker is not registered in the corpus")
+        if speaker.get("split") != request["split"]:
+            raise ValueError("capture split differs from registered speaker split")
+        expected_kind = {
+            "human": "human",
+            "synthetic_playback": "synthetic",
+            "ambient": "ambient",
+        }.get(request["source"])
+        if expected_kind and speaker.get("kind") != expected_kind:
+            raise ValueError("capture source differs from registered speaker kind")
         for capture in manifest.get("captures", []):
             if (
                 capture["speaker_id"] == request["speaker_id"]
@@ -527,9 +548,10 @@ class EnrollmentService:
             manifest = json.loads(manifest_path.read_text())
         else:
             manifest = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "corpus_id": "hiphi-device-v1",
                 "device_profiles": {},
+                "speakers": {},
                 "captures": [],
             }
         profile = {"audio": device.audio}

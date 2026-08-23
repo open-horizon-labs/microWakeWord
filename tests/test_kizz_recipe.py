@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import yaml
@@ -104,6 +105,29 @@ class KizzRecipeTest(unittest.TestCase):
         self.assertIn("high phi kizz", probe_phrases)
         self.assertTrue(training.isdisjoint(probe_phrases))
 
+    def test_age_cohorts_can_be_reported_separately(self):
+        manifest = {
+            "plan": [
+                {
+                    "class": "positive",
+                    "split": "test",
+                    "age_group": "child",
+                    "output": "/tmp/child",
+                },
+                {
+                    "class": "positive",
+                    "split": "test",
+                    "age_group": "adult",
+                    "output": "/tmp/adult",
+                },
+            ]
+        }
+        with mock.patch.object(Path, "glob", return_value=[]):
+            cohorts = EVALUATOR_MODULE.clips_by_age_group(
+                manifest, "positive", "test", set()
+            )
+        self.assertEqual(set(cohorts), {"adult", "child"})
+
     def test_generator_command_preserves_variation_grid(self):
         phrase = self.recipe["positive_phrases"][0]
         command = MODULE.generator_command(
@@ -112,11 +136,43 @@ class KizzRecipeTest(unittest.TestCase):
             Path("model.pt"),
             Path("out"),
             8,
+            self.recipe["generation"]["speaker_cohorts"]["train"],
+            100,
+            231,
         )
         self.assertIn("--length-scales", command)
         self.assertIn("--noise-scales", command)
         self.assertIn("--noise-scale-ws", command)
         self.assertIn("--slerp-weights", command)
+        self.assertIn("--speaker-range", command)
+        self.assertIn("--metadata-file", command)
+
+    def test_recipe_holds_synthetic_speakers_out_by_identity(self):
+        cohorts = MODULE.speaker_cohorts(self.recipe["generation"])
+        speakers = {
+            split: set(range(item["speaker_start"], item["speaker_end"]))
+            for split, item in cohorts.items()
+        }
+
+        self.assertTrue(speakers["train"].isdisjoint(speakers["validation"]))
+        self.assertTrue(speakers["train"].isdisjoint(speakers["test"]))
+        self.assertTrue(speakers["validation"].isdisjoint(speakers["test"]))
+        self.assertEqual({item["age_group"] for item in cohorts.values()}, {"unknown"})
+
+    def test_recipe_requires_independent_adult_and_child_voice_evidence(self):
+        requirements = self.recipe["generation"]["labeled_voice_requirements"]
+        self.assertEqual(set(requirements["age_groups"]), {"adult", "child"})
+        self.assertEqual(
+            requirements["minimum_voices_per_split"],
+            {"train": 2, "validation": 1, "test": 1},
+        )
+
+    def test_recipe_split_counts_preserve_phrase_total(self):
+        cohorts = MODULE.speaker_cohorts(self.recipe["generation"])
+        for phrase in self.recipe["positive_phrases"]:
+            counts = MODULE.split_sample_counts(phrase["samples"], cohorts)
+            self.assertEqual(sum(counts.values()), phrase["samples"])
+            self.assertTrue(all(count > 0 for count in counts.values()))
 
     def test_generator_can_reuse_matching_phrase_audio_across_label_changes(self):
         source = Path("old/hard_negative/hi_fi_kids")
@@ -185,10 +241,15 @@ class KizzRecipeTest(unittest.TestCase):
             expected.mkdir(parents=True)
             (root / "generated" / "hard_negative").mkdir()
             manifest = {
+                "schema_version": 2,
                 "recipe_sha256": hashlib.sha256(recipe.read_bytes()).hexdigest(),
                 "plan": [
                     {
                         "class": "positive",
+                        "text": "test",
+                        "split": "train",
+                        "speaker_start": 0,
+                        "speaker_end": 1,
                         "output": str(expected),
                         "samples": 0,
                     }
@@ -197,7 +258,9 @@ class KizzRecipeTest(unittest.TestCase):
             (root / "generated" / "generation-manifest.json").write_text(
                 json.dumps(manifest)
             )
-            (root / "generated" / "positive" / "stale").mkdir()
+            stale = root / "generated" / "positive" / "stale"
+            stale.mkdir()
+            (stale / "0.wav").touch()
             with self.assertRaisesRegex(ValueError, "extra="):
                 FEATURE_MODULE.validate_generated_corpus(recipe, root / "generated")
 
@@ -263,14 +326,43 @@ class KizzRecipeTest(unittest.TestCase):
             grouped = EVALUATOR_MODULE.clips_by_group(root, "test", 231)
             held_out = [path for paths in grouped.values() for path in paths]
             repeated = EVALUATOR_MODULE.clips_by_group(root, "test", 231)
-            repeated_held_out = [
-                path for paths in repeated.values() for path in paths
-            ]
+            repeated_held_out = [path for paths in repeated.values() for path in paths]
             self.assertEqual(len(held_out), 2)
             self.assertEqual(held_out, repeated_held_out)
             self.assertTrue(
                 all(path.parent.name in {"hi_fi", "hee_fee"} for path in held_out)
             )
+
+    def test_evaluator_uses_explicit_speaker_cohort_split(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = []
+            for split in ("train", "test"):
+                output = root / "positive" / "wake" / split
+                output.mkdir(parents=True)
+                wavfile.write(
+                    output / f"{split}.wav",
+                    16000,
+                    np.zeros(1600, dtype=np.int16),
+                )
+                plan.append(
+                    {
+                        "class": "positive",
+                        "group": "wake",
+                        "split": split,
+                        "output": str(output),
+                    }
+                )
+
+            grouped = EVALUATOR_MODULE.clips_by_group(
+                root / "positive",
+                "test",
+                231,
+                generation_manifest={"schema_version": 2, "plan": plan},
+                class_name="positive",
+            )
+
+            self.assertEqual([path.name for path in grouped["wake"]], ["test.wav"])
 
     def test_evaluator_excludes_quality_mask_rejections(self):
         with tempfile.TemporaryDirectory() as directory:

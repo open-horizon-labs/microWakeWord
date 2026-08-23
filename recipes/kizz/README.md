@@ -22,8 +22,8 @@ enrollment support, and collected corpus are separate statuses.
 ## Generate the phrase corpus
 
 Use Python 3.10 or newer and install this repository plus
-`piper-sample-generator`. Download the LibriTTS-R generator linked by that
-project, then run:
+the [Open Horizon Labs `piper-sample-generator` fork](https://github.com/open-horizon-labs/piper-sample-generator).
+Download the LibriTTS-R model linked by that project, then run:
 
 ```sh
 python tools/generate_recipe_samples.py \
@@ -34,9 +34,24 @@ python tools/generate_recipe_samples.py \
   --batch-size 16
 ```
 
-The command resumes per phrase and writes recipe/model hashes. `--dry-run`
-prints the plan without generating audio. Repeat `--reuse-generated` to reuse
-unchanged phrase audio from a compatible prior manifest.
+The command reserves different LibriTTS speakers for train, validation, and
+test, writes per-WAV speaker/synthesis provenance, and resumes by phrase cohort.
+`--dry-run` prints the plan. LibriTTS speaker IDs have no reliable age label;
+this corpus alone does not claim child coverage. The recipe therefore requires
+age-labeled adult and child voices held out by voice ID. Design and render the
+supplement before feature building:
+
+```sh
+python tools/design_elevenlabs_voice_catalog.py \
+  --spec recipes/kizz/elevenlabs-voice-designs.yaml \
+  --output work/kizz/elevenlabs-voices.yaml \
+  --preview-dir work/kizz/voice-previews
+
+python tools/add_labeled_voice_samples.py \
+  --recipe recipes/kizz/corpus.yaml \
+  --generated work/kizz/generated \
+  --voice-catalog work/kizz/elevenlabs-voices.yaml
+```
 
 Before production feature generation, compare the synthetic corpus with reviewed
 human phrase spans:
@@ -55,16 +70,23 @@ mask removes silence, clipping, implausible positive spans, and clips that can b
 truncated by the configured training window; it does not apply positive timing
 limits to hard negatives. Inspect its per-phrase summary before training.
 
-Build the `micro_speech` features used on-device, adding actual room music,
-noise, and impulse-response directories whenever available:
+Build the `micro_speech` features used on-device, adding actual indoor/outdoor
+noise and room responses. Training speech remains louder than the background;
+clean holdouts are not augmented:
 
 ```sh
+python tools/prepare_background_corpus.py \
+  --output work/backgrounds \
+  --esc50 ../ESC-50 \
+  --device-corpus work/device-corpus
+
 python tools/build_recipe_features.py \
   --recipe recipes/kizz/corpus.yaml \
   --generated work/kizz/generated \
   --quality-mask work/kizz/generated/quality-mask.json \
   --output work/kizz/features \
-  --background room-backgrounds \
+  --background-indoor work/backgrounds/indoor/train \
+  --background-outdoor work/backgrounds/outdoor/train \
   --impulses room-impulses
 
 python tools/write_recipe_training_config.py \
@@ -101,3 +123,6 @@ and score them after export to test generalization.
 Minimize ambient false accepts before recall. A release bundle includes the
 quantized `.tflite`, ESPHome v2 JSON, recipe, config, metrics, provenance, and
 SHA-256 hashes. Synthetic validation cannot release a model.
+Kizz qualification requires held-out adult and child human speakers; pass both
+`--required-age-group adult` and `--required-age-group child` to the device
+evaluator.

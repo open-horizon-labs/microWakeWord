@@ -2,8 +2,10 @@
 
 **Decision:** stop synthetic-only search; collect StackChan microphone audio.
 
-All results use held-out synthetic audio, the quantized streaming model, a
-five-frame moving window, and reset state between clips.
+Historical synthetic results used random clip holdouts, the quantized streaming
+model, a five-frame moving window, and reset state between clips. Those clip
+splits could reuse speaker identities across train and test; treat them as model
+search diagnostics, not speaker-generalization evidence.
 
 | Model and training change | Cutoff | Intended phrase acceptance | Incorrect or unseen acceptance | Result |
 | --- | ---: | ---: | --- | --- |
@@ -18,8 +20,8 @@ Collect device-microphone captures before another model search.
 
 ## Initial quality-masked device candidate — 2026-08-22
 
-**Decision:** flash for broader physical qualification; do not call it
-release-qualified yet.
+**Decision:** reject this comparison as qualification evidence. It scored the
+device training corpus and was useful only for choosing a physical experiment.
 
 Eight reviewed human positives span 560–880 ms (840 ms median). Comparing those
 spans with all 67,150 generated clips rejected 148: 143 had an overly long
@@ -29,8 +31,8 @@ some clips failed both checks. The mask SHA-256 is
 
 The recipe now spells accepted kids-like realizations as `Hi-Fi Kids` variants
 and keeps the distinct `high five kids` reading as a hard negative. At the
-physical operating point (`0.70`, one-frame window), direct inference over all
-recorded Kizz attempts produced:
+physical operating point (`0.70`, one-frame window), direct inference over the
+device training corpus produced:
 
 | Candidate | Positive accepts | Hard-negative accepts | Ambient accepts |
 | --- | ---: | ---: | ---: |
@@ -38,17 +40,21 @@ recorded Kizz attempts produced:
 | Label-corrected control | 14/17 | 6/8 | 0/1 |
 | Quality-masked candidate `91e7052d…` | 17/17 | 0/8 | 0/1 |
 
-The selected candidate's weakest direct-corpus positive scored `.949`; its
+Sixteen of seventeen positives were explicit training inputs. The remaining
+recording was also Muness but had been assigned a different speaker ID and test
+split. That invalid split is now removed. The selected candidate's weakest
+training-corpus positive scored `.949`; its
 strongest direct-corpus hard negative scored `.639`. That direct result did not
 transfer to room-scale playback: only 1/8 reviewed positive recordings crossed
 `.70` when replayed through a speaker into Kizz at the 4x microphone setting.
 None of eight replayed hard negatives woke it. Each detected turn re-armed.
 
-The evidence still covers one adult speaker family. A 100-clip-per-phrase
-synthetic diagnostic at `.70` also showed weak aggregate positive recall despite
-only 4/2,233 hard-negative accepts. The direct-corpus score therefore
-overstated physical recall. Add child and independent-adult recordings, then
-judge held-out speaker/session and physical results before release.
+The synthetic corpus uses hundreds of LibriTTS-R speaker embeddings, but they
+are not age-labeled and its former random clip split reused voices across train
+and test. The generator now reserves disjoint speaker IDs before synthesis. A
+100-clip-per-phrase diagnostic at `.70` also showed weak aggregate positive
+recall despite only 4/2,233 hard-negative accepts. Judge a new candidate on the
+speaker-independent synthetic test, then on registered physical test speakers.
 
 ## Human-span mask revision — 2026-08-22
 

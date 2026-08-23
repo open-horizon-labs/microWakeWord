@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -21,8 +23,61 @@ def slug(text: str) -> str:
     return f"{readable}-{hashlib.sha256(text.encode()).hexdigest()[:8]}"
 
 
+def speaker_cohorts(generation: dict) -> dict[str, dict]:
+    cohorts = generation.get("speaker_cohorts")
+    if not isinstance(cohorts, dict) or set(cohorts) != {
+        "train",
+        "validation",
+        "test",
+    }:
+        raise ValueError("generation requires train/validation/test speaker_cohorts")
+    occupied: set[int] = set()
+    fraction = 0.0
+    for split, cohort in cohorts.items():
+        start = cohort.get("speaker_start")
+        end = cohort.get("speaker_end")
+        weight = cohort.get("sample_fraction")
+        if not isinstance(start, int) or not isinstance(end, int) or end <= start:
+            raise ValueError(f"{split} speaker cohort requires a valid half-open range")
+        if end > int(generation["max_speakers"]):
+            raise ValueError(f"{split} speaker cohort exceeds max_speakers")
+        speakers = set(range(start, end))
+        if occupied & speakers:
+            raise ValueError("synthetic speaker cohorts overlap")
+        occupied.update(speakers)
+        if not isinstance(weight, (int, float)) or weight <= 0:
+            raise ValueError(f"{split} speaker cohort requires sample_fraction > 0")
+        fraction += float(weight)
+    if not math.isclose(fraction, 1.0):
+        raise ValueError("synthetic speaker cohort fractions must sum to 1")
+    return cohorts
+
+
+def split_sample_counts(total: int, cohorts: dict[str, dict]) -> dict[str, int]:
+    """Allocate an exact total with deterministic largest-remainder rounding."""
+    raw = {
+        split: total * float(cohort["sample_fraction"])
+        for split, cohort in cohorts.items()
+    }
+    counts = {split: math.floor(value) for split, value in raw.items()}
+    remaining = total - sum(counts.values())
+    ranked = sorted(
+        raw, key=lambda split: (raw[split] - counts[split], split), reverse=True
+    )
+    for split in ranked[:remaining]:
+        counts[split] += 1
+    return counts
+
+
 def generator_command(
-    phrase: dict, generation: dict, model: Path, output_dir: Path, batch_size: int
+    phrase: dict,
+    generation: dict,
+    model: Path,
+    output_dir: Path,
+    batch_size: int,
+    cohort: dict,
+    samples: int,
+    random_seed: int,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -32,7 +87,7 @@ def generator_command(
         "--model",
         str(model),
         "--max-samples",
-        str(phrase["samples"]),
+        str(samples),
         "--batch-size",
         str(batch_size),
         "--output-dir",
@@ -46,6 +101,17 @@ def generator_command(
     ):
         command.extend([option, *(str(value) for value in generation[key])])
     command.extend(["--max-speakers", str(generation["max_speakers"])])
+    command.extend(
+        [
+            "--speaker-range",
+            str(cohort["speaker_start"]),
+            str(cohort["speaker_end"]),
+            "--random-seed",
+            str(random_seed),
+            "--metadata-file",
+            str(output_dir / "synthesis-metadata.jsonl"),
+        ]
+    )
     return command
 
 
@@ -87,6 +153,9 @@ def hardlink_phrase_corpus(source: Path, destination: Path) -> None:
         target = destination / wav.name
         if not target.exists():
             os.link(wav, target)
+    metadata = source / "synthesis-metadata.jsonl"
+    if metadata.exists():
+        shutil.copy2(metadata, destination / metadata.name)
 
 
 def main() -> int:
@@ -112,6 +181,7 @@ def main() -> int:
 
     recipe_bytes = args.recipe.read_bytes()
     recipe = yaml.safe_load(recipe_bytes)
+    cohorts = speaker_cohorts(recipe["generation"])
     model_sha256 = (
         hashlib.sha256(args.model.read_bytes()).hexdigest()
         if args.model.exists()
@@ -129,53 +199,76 @@ def main() -> int:
         ("hard_negative", "hard_negative_phrases"),
     ):
         for phrase in recipe[key]:
-            phrase_dir = args.output / class_name / slug(phrase["text"])
-            command = generator_command(
-                phrase, recipe["generation"], args.model, phrase_dir, args.batch_size
-            )
-            plan.append(
-                {
-                    "class": class_name,
-                    "text": phrase["text"],
-                    "samples": phrase["samples"],
-                    "output": str(phrase_dir),
-                    "command": command,
-                }
-            )
-            if args.dry_run:
-                continue
-            reusable = reusable_phrase_source(
-                reuse_manifests,
-                phrase["text"],
-                phrase["samples"],
-                model_sha256,
-                command,
-            )
-            if reusable is not None and not phrase_dir.exists():
-                hardlink_phrase_corpus(reusable, phrase_dir)
-                plan[-1]["reused_from"] = str(reusable)
-            if phrase_dir.exists():
-                existing = len(list(phrase_dir.glob("*.wav")))
-                if existing == phrase["samples"]:
+            phrase_slug = slug(phrase["text"])
+            counts = split_sample_counts(phrase["samples"], cohorts)
+            for split, cohort in cohorts.items():
+                phrase_dir = args.output / class_name / phrase_slug / split
+                seed = int(recipe["random_seed"]) + len(plan)
+                command = generator_command(
+                    phrase,
+                    recipe["generation"],
+                    args.model,
+                    phrase_dir,
+                    args.batch_size,
+                    cohort,
+                    counts[split],
+                    seed,
+                )
+                plan.append(
+                    {
+                        "class": class_name,
+                        "text": phrase["text"],
+                        "group": phrase_slug,
+                        "split": split,
+                        "samples": counts[split],
+                        "speaker_start": cohort["speaker_start"],
+                        "speaker_end": cohort["speaker_end"],
+                        "age_group": cohort["age_group"],
+                        "output": str(phrase_dir),
+                        "command": command,
+                    }
+                )
+                if args.dry_run:
                     continue
-                if existing > phrase["samples"]:
-                    raise ValueError(
-                        f"{phrase_dir} has {existing} WAVs but recipe requests "
-                        f"{phrase['samples']}; move it aside before shrinking"
+                reusable = reusable_phrase_source(
+                    reuse_manifests,
+                    phrase["text"],
+                    counts[split],
+                    model_sha256,
+                    command,
+                )
+                if reusable is not None and not phrase_dir.exists():
+                    hardlink_phrase_corpus(reusable, phrase_dir)
+                    plan[-1]["reused_from"] = str(reusable)
+                metadata_path = phrase_dir / "synthesis-metadata.jsonl"
+                if phrase_dir.exists():
+                    existing = len(list(phrase_dir.glob("*.wav")))
+                    metadata_lines = (
+                        len(metadata_path.read_text().splitlines())
+                        if metadata_path.exists()
+                        else 0
                     )
-            phrase_dir.mkdir(parents=True, exist_ok=True)
-            environment = os.environ.copy()
-            if args.generator_source:
-                prior = environment.get("PYTHONPATH")
-                environment["PYTHONPATH"] = str(args.generator_source)
-                if prior:
-                    environment["PYTHONPATH"] += os.pathsep + prior
-            completed = subprocess.run(command, check=False, env=environment)
-            generated = len(list(phrase_dir.glob("*.wav")))
-            if completed.returncode != 0 and generated != phrase["samples"]:
-                completed.check_returncode()
+                    if existing == counts[split] and metadata_lines == counts[split]:
+                        continue
+                    if existing > counts[split]:
+                        raise ValueError(
+                            f"{phrase_dir} has {existing} WAVs but recipe requests "
+                            f"{counts[split]}; move it aside before shrinking"
+                        )
+                phrase_dir.mkdir(parents=True, exist_ok=True)
+                environment = os.environ.copy()
+                if args.generator_source:
+                    prior = environment.get("PYTHONPATH")
+                    environment["PYTHONPATH"] = str(args.generator_source)
+                    if prior:
+                        environment["PYTHONPATH"] += os.pathsep + prior
+                completed = subprocess.run(command, check=False, env=environment)
+                generated = len(list(phrase_dir.glob("*.wav")))
+                if completed.returncode != 0 and generated != counts[split]:
+                    completed.check_returncode()
 
     manifest = {
+        "schema_version": 2,
         "recipe": str(args.recipe),
         "recipe_sha256": hashlib.sha256(recipe_bytes).hexdigest(),
         "generator_model": str(args.model),

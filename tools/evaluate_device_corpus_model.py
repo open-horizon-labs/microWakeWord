@@ -76,6 +76,50 @@ def evaluate(
     return dict(result)
 
 
+def qualification_scope(
+    manifest: dict, split: str, required_age_groups: tuple[str, ...] = ()
+) -> dict:
+    selected = (
+        manifest["captures"]
+        if split == "all"
+        else [item for item in manifest["captures"] if item["split"] == split]
+    )
+    counts = {
+        truth: sum(item["truth"] == truth for item in selected)
+        for truth in ("positive", "hard_negative", "ambient_negative")
+    }
+    speaker_ids = sorted(
+        {
+            item["speaker_id"]
+            for item in selected
+            if manifest["speakers"][item["speaker_id"]]["kind"] == "human"
+        }
+    )
+    age_groups = sorted(
+        {manifest["speakers"][speaker_id]["age_group"] for speaker_id in speaker_ids}
+    )
+    issues = []
+    if split != "test":
+        issues.append("qualification requires the test split")
+    for truth, count in counts.items():
+        if count == 0:
+            issues.append(f"test split has no {truth} captures")
+    if not speaker_ids:
+        issues.append("test split has no registered human speakers")
+    for age_group in required_age_groups:
+        if age_group not in age_groups:
+            issues.append(f"test split has no registered {age_group} human speaker")
+    return {
+        "includes_training_data": split in {"all", "train"},
+        "qualification_eligible": not issues,
+        "issues": issues,
+        "capture_counts": counts,
+        "human_speaker_ids": speaker_ids,
+        "human_age_groups": age_groups,
+        "session_ids": sorted({item["session_id"] for item in selected}),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", type=Path, required=True)
@@ -93,13 +137,29 @@ def main() -> int:
         help="Optionally crop clips to this duration; 0 evaluates the full recording",
     )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--qualification",
+        action="store_true",
+        help="Fail unless this is a complete, held-out physical test corpus",
+    )
+    parser.add_argument(
+        "--required-age-group",
+        choices=("adult", "child"),
+        action="append",
+        default=[],
+        help="Require this human age cohort for qualification; repeatable",
+    )
     args = parser.parse_args()
     manifest = validate_device_corpus(args.corpus)
+    scope = qualification_scope(manifest, args.split, tuple(args.required_age_group))
+    if args.qualification and not scope["qualification_eligible"]:
+        parser.error("; ".join(scope["issues"]))
     report = {
         "corpus_id": manifest["corpus_id"],
         "model": str(args.model),
         "split": args.split,
         "cutoff": args.cutoff,
+        "scope": scope,
         "metrics": evaluate(
             args.corpus,
             manifest,

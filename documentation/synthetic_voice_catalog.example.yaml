@@ -1,0 +1,43 @@
+schema_version: 1
+provider: elevenlabs
+model_id: eleven_multilingual_v2
+
+# A voice ID belongs to one split. Use distinct designed or licensed voices for
+# every entry; changing the name does not create a new speaker identity.
+voices:
+  - name: adult-train-a
+    voice_id: replace-with-voice-id
+    split: train
+    age_group: adult
+    samples_per_phrase: 3
+  - name: adult-train-b
+    voice_id: replace-with-another-voice-id
+    split: train
+    age_group: adult
+    samples_per_phrase: 3
+  - name: child-train-a
+    voice_id: replace-with-child-voice-id
+    split: train
+    age_group: child
+    samples_per_phrase: 3
+  - name: child-train-b
+    voice_id: replace-with-another-child-voice-id
+    split: train
+    age_group: child
+    samples_per_phrase: 3
+  - name: adult-validation
+    voice_id: replace-with-held-out-adult-voice-id
+    split: validation
+    age_group: adult
+  - name: child-validation
+    voice_id: replace-with-held-out-child-voice-id
+    split: validation
+    age_group: child
+  - name: adult-test
+    voice_id: replace-with-second-held-out-adult-voice-id
+    split: test
+    age_group: adult
+  - name: child-test
+    voice_id: replace-with-second-held-out-child-voice-id
+    split: test
+    age_group: child

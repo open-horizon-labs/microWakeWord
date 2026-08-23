@@ -1,16 +1,36 @@
+import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import numpy as np
+from scipy.io import wavfile
+
 from tools.build_recipe_features import (
+    _plan_speakers,
+    augmentation_for_split,
     generate_class_features,
     selected_phrase_directories,
     staged_clip_source,
+    validate_generated_corpus,
 )
 
 
 class SelectedPhraseFeaturesTest(unittest.TestCase):
+    def test_augmentation_is_training_only(self):
+        augmenter = object()
+        self.assertIs(augmentation_for_split(augmenter, "training"), augmenter)
+        self.assertIsNone(augmentation_for_split(augmenter, "validation"))
+        self.assertIsNone(augmentation_for_split(augmenter, "testing"))
+
+    def test_labeled_tts_speaker_has_provider_scoped_identity(self):
+        self.assertEqual(
+            _plan_speakers({"provider": "elevenlabs", "speaker_id": "voice-1"}),
+            {"elevenlabs:voice-1"},
+        )
+
     def test_selects_exact_recipe_phrases_in_requested_order(self):
         manifest = {
             "plan": [
@@ -88,20 +108,60 @@ class SelectedPhraseFeaturesTest(unittest.TestCase):
                 ) as build_mmap,
             ):
                 generate_class_features(
-                    Path(temporary) / "source",
+                    [Path(temporary) / "source"],
                     Path(temporary) / "features",
                     MagicMock(),
-                    42,
-                    ("testing",),
+                    "testing",
                 )
 
             spectrograms.spectrogram_generator.assert_called_once_with(
-                split="test", repeat=1
+                split=None, repeat=1
             )
             self.assertEqual(
                 build_mmap.call_args.kwargs["out_dir"],
                 str(Path(temporary) / "features/testing/wakeword_mmap"),
             )
+
+    def test_rejects_synthetic_speaker_leakage_across_splits(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            recipe = root / "recipe.yaml"
+            recipe.write_text("name: test\n")
+            generated = root / "generated"
+            plan = []
+            for split in ("train", "test"):
+                output = generated / "positive" / "wake" / split
+                output.mkdir(parents=True)
+                wavfile.write(output / "0.wav", 16000, np.zeros(1600, dtype=np.int16))
+                (output / "synthesis-metadata.jsonl").write_text(
+                    json.dumps({"file": "0.wav", "speaker_1": 0, "speaker_2": 0}) + "\n"
+                )
+                plan.append(
+                    {
+                        "class": "positive",
+                        "text": "Wake",
+                        "group": "wake",
+                        "split": split,
+                        "samples": 1,
+                        "speaker_start": 0,
+                        "speaker_end": 1,
+                        "output": str(output),
+                    }
+                )
+            (generated / "generation-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "recipe_sha256": hashlib.sha256(
+                            recipe.read_bytes()
+                        ).hexdigest(),
+                        "plan": plan,
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(ValueError, "synthetic speakers cross"):
+                validate_generated_corpus(recipe, generated)
 
 
 if __name__ == "__main__":

@@ -18,11 +18,11 @@ word across real devices.
 
 | Upstream provides | This fork adds |
 | --- | --- |
-| Piper sample generation and notebook-driven training | Versioned recipes, resumable generation, source hashes, and manifest validation |
+| Piper sample generation and notebook-driven training | Versioned recipes, source hashes, per-WAV synthesis provenance, speaker-independent splits, and age-labeled supplemental voice cohorts |
 | Weighted training sources and ambient false-accept metrics | Named pronunciation and confusable-speech cohorts used in training, checkpoint selection, and evaluation |
 | Streaming TensorFlow Lite export | Per-phrase and unseen-pronunciation evaluation with isolated streaming state |
-| Model training and test datasets | A device-corpus contract that retains every commanded attempt, including detector misses, and aligns phrases inside long captures |
-| A model artifact | Device-profile comparisons, leak-safe held-out splits, and a physical qualification checklist |
+| Model training and test datasets | A device-corpus contract that retains every commanded attempt, including detector misses, aligns phrases inside long captures, and keeps indoor/outdoor training backgrounds separate from stress evidence |
+| A model artifact | Registered physical speakers, device-profile comparisons, a qualification scope gate, and a physical checklist |
 
 Use upstream when you need the trainer and exporter. Use this fork when you also
 need reproducible experiments and evidence that a candidate works on its target
@@ -74,7 +74,9 @@ hardware-qualified.
 ## What a run produces
 
 - recipe, generation manifest, and source hashes;
-- deterministic train, validation, and test features;
+- speaker-independent train, validation, and test features, including declared
+  age cohorts when the recipe requires them;
+- provenance-bound indoor/outdoor background and stress cohorts;
 - quantized streaming TensorFlow Lite candidate and cohort reports;
 - versioned device corpus with leak-safe splits;
 - evidence for a flash or release decision.
@@ -95,8 +97,8 @@ limit.
 
 The detector first converts mono 16 kHz audio into 40 features every 10 ms with
 the TensorFlow Lite Micro
-[`micro_speech` frontend](https://github.com/tensorflow/tflite-micro/tree/main/tensorflow/lite/micro/examples/micro_speech).
-frontend: 30 ms window, 20 ms overlap, noise reduction, and gain normalization.
+[`micro_speech` frontend](https://github.com/tensorflow/tflite-micro/tree/main/tensorflow/lite/micro/examples/micro_speech):
+a 30 ms window with 20 ms overlap, noise reduction, and gain normalization.
 
 Then a streaming neural network consumes each new feature slice and emits a
 wake probability. It uses
