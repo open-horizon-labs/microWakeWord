@@ -203,3 +203,16 @@ For a release gate, add `--qualification` to
 `tools/evaluate_device_corpus_model.py`. It accepts only a complete test split
 with positive, hard-negative, ambient-negative, and registered human evidence.
 `--split all` cannot qualify a model.
+
+To reduce manual review while investigating wake false positives, correlate
+quarantined observations with UHC's retained STT telemetry:
+
+```sh
+uv run --python 3.12 python tools/analyze_wake_observations.py \
+  --corpus work/device-corpus \
+  --output work/wake-observation-triage.json
+```
+
+The report records provider transcripts, timing, and a weak label. It never
+promotes audio into `device-corpus.json`; human review is still required before
+promotion into a hard negative.
