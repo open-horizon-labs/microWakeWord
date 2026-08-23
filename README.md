@@ -57,10 +57,13 @@ The [Kizz recipe](recipes/kizz/README.md) treats natural readings of **HiPhi
 Kizz** as one wake class. It tests `Kizz`, `kids`, `kiss`, `quiz`, valid prefixes
 with the wrong final word, and wrong prefixes followed by `Kizz`.
 
-Its synthetic candidates are rejected: per-phrase results exposed confusable
-acceptance and weak unseen-pronunciation recall. See the
-[experiment ledger](recipes/kizz/EXPERIMENTS.md); no Kizz model is
-hardware-qualified.
+Its current v19 physical control remains experimental: later candidates exposed
+confusable acceptance, weak fresh-speaker recall, and gaps between offline and
+room results. See the
+[full Kizz training reference](recipes/kizz/TRAINING_REFERENCE.md) for the
+generated voices, physical corpus, augmentation, v19 recipe, tooling, and
+salvaged lessons. The [experiment ledger](recipes/kizz/EXPERIMENTS.md) records
+rejected approaches; no Kizz model is hardware-qualified.
 
 ## Start here
 

@@ -3,6 +3,10 @@
 This file records decisions that should constrain the next experiment. It is
 organized by failure mechanism rather than run order.
 
+For the corpus sources, generated voices, physical fixtures, augmentation,
+sampling ledger, training configuration, and salvage guardrails behind these
+results, see the [Kizz training reference](TRAINING_REFERENCE.md).
+
 ## Current baseline: v19 checkpoint 100
 
 V19 at cutoff `0.70` and sliding window `1` remains the physical baseline. In

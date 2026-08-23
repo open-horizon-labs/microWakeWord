@@ -9,7 +9,8 @@ The current physical baseline is **v19**, operated at a `0.70` probability
 cutoff with a one-frame sliding window. It is the model to beat in live use,
 not a qualified release. Later models improved some offline scores but either
 lost current-speaker recall or false-woke on physical Kizz. See
-[Experiments](EXPERIMENTS.md) for those failure boundaries.
+[Training reference](TRAINING_REFERENCE.md) for the complete corpus and tooling
+story, and [Experiments](EXPERIMENTS.md) for the failure boundaries.
 
 ## What made v19 work
 
@@ -56,6 +57,12 @@ negative. The checked-in corpus therefore defines the next candidate, not a
 byte-for-byte rebuild of v19.
 
 ## Tool map
+
+This is the runnable path. The [training reference](TRAINING_REFERENCE.md)
+also documents the eight designed ElevenLabs voices, 1,600 ElevenLabs renders,
+67,150 Piper renders, Kokoro and macOS voice pilots, human captures, physical
+speaker-to-Kizz re-recordings, Deepgram-assisted alignment, background sources,
+augmentation settings, and the v1–v31 experiment lineage.
 
 | Task | Tools |
 | --- | --- |
