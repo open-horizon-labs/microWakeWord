@@ -8,6 +8,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from microwakeword.device_corpus import validate_device_corpus
 from microwakeword.enrollment import EnrollmentService
+from microwakeword.false_wake import promote_false_wake
 
 
 class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
@@ -41,6 +42,11 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
                             "kind": "synthetic",
                             "age_group": "unknown",
                             "split": "test",
+                        },
+                        "ambient-room": {
+                            "kind": "ambient",
+                            "age_group": "not_applicable",
+                            "split": "train",
                         },
                     },
                     "captures": [],
@@ -136,6 +142,122 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
         attempt = manifest["captures"][0]
         self.assertFalse(attempt["detected"])
         self.assertEqual(attempt["device_profile"], "m5stack_stackchan_k151_cores3_v1")
+
+    async def test_empty_false_wake_is_quarantined_not_added_to_corpus(self):
+        pcm = b"\0\0" * 16000
+        await self.device.send_json(
+            {
+                "type": "false_wake_observation",
+                "observation_id": "false-wake-001",
+                "bytes": len(pcm),
+                "wake_probability": 0.74,
+                "wake_cutoff": 0.70,
+                "wake_to_timeout_ms": 6000,
+                "sliding_window": 1,
+                "command_speech_frames": 0,
+                "command_silence_frames": 120,
+            }
+        )
+        await self.device.send_bytes(pcm)
+        chunk = await self.device.receive_json()
+        self.assertEqual(chunk["type"], "false_wake_chunk")
+        self.assertEqual(chunk["observation_id"], "false-wake-001")
+        await self.device.send_json(
+            {"type": "false_wake_observation_end", "observation_id": "false-wake-001"}
+        )
+        stored = await self.device.receive_json()
+        self.assertEqual(stored["type"], "false_wake_stored")
+
+        self.assertEqual(validate_device_corpus(self.corpus)["captures"], [])
+        metadata = json.loads(
+            (self.corpus / "observations" / "false-wakes" / "false-wake-001.json").read_text()
+        )
+        self.assertEqual(metadata["kind"], "false_wake_no_command")
+        self.assertEqual(metadata["wake_cutoff"], 0.70)
+
+    async def test_false_wake_rejects_audio_that_exceeds_header(self):
+        await self.device.send_json(
+            {
+                "type": "false_wake_observation",
+                "observation_id": "false-wake-overflow",
+                "bytes": 320,
+                "wake_probability": 0.74,
+                "wake_cutoff": 0.70,
+                "wake_to_timeout_ms": 6000,
+            }
+        )
+        await self.device.send_bytes(b"\0\0" * 161)
+        error = await self.device.receive_json()
+        self.assertEqual(error["type"], "error")
+        self.assertIn("exceeds", error["message"])
+        self.assertFalse((self.corpus / "observations").exists())
+
+    async def test_command_wake_is_quarantined_separately_from_false_wakes(self):
+        pcm = b"\x01\x00" * 8000
+        await self.device.send_json(
+            {
+                "type": "wake_observation",
+                "observation_id": "wake-command-001",
+                "bytes": len(pcm),
+                "wake_probability": 0.91,
+                "wake_cutoff": 0.70,
+                "wake_to_timeout_ms": 420,
+                "outcome": "command_speech",
+                "verification_mode": "shadow_all",
+                "c_rms_dbfs": -42.5,
+                "c_pass": True,
+            }
+        )
+        await self.device.send_bytes(pcm)
+        chunk = await self.device.receive_json()
+        self.assertEqual(chunk["type"], "wake_observation_chunk")
+        await self.device.send_json(
+            {"type": "wake_observation_end", "observation_id": "wake-command-001"}
+        )
+        stored = await self.device.receive_json()
+        self.assertEqual(stored["type"], "wake_observation_stored")
+        metadata = json.loads(
+            (self.corpus / "observations" / "wakes" / "wake-command-001.json").read_text()
+        )
+        self.assertEqual(metadata["kind"], "wake_observation")
+        self.assertEqual(metadata["outcome"], "command_speech")
+        self.assertEqual(validate_device_corpus(self.corpus)["captures"], [])
+
+    async def test_false_wake_requires_explicit_review_for_promotion(self):
+        pcm = b"\0\0" * 16000
+        await self.device.send_json(
+            {
+                "type": "false_wake_observation",
+                "observation_id": "false-wake-promote",
+                "bytes": len(pcm),
+                "wake_probability": 0.74,
+                "wake_cutoff": 0.70,
+                "wake_to_timeout_ms": 6000,
+            }
+        )
+        await self.device.send_bytes(pcm)
+        await self.device.receive_json()
+        await self.device.send_json(
+            {"type": "false_wake_observation_end", "observation_id": "false-wake-promote"}
+        )
+        await self.device.receive_json()
+        self.assertEqual(validate_device_corpus(self.corpus)["captures"], [])
+
+        entry = promote_false_wake(
+            self.corpus,
+            "false-wake-promote",
+            reviewer="muness",
+            split="train",
+            speaker_id="ambient-room",
+            session_id="false-wake-review-session",
+            reason="listened: ambient room noise, no command speech",
+        )
+        self.assertEqual(entry["truth"], "hard_negative")
+        self.assertEqual(validate_device_corpus(self.corpus)["captures"][0]["capture_id"], entry["capture_id"])
+        metadata = json.loads(
+            (self.corpus / "observations" / "false-wakes" / "false-wake-promote.json").read_text()
+        )
+        self.assertEqual(metadata["promoted_capture_id"], entry["capture_id"])
 
     async def test_detector_miss_can_be_uploaded_over_http(self):
         response = await self.client.post(
