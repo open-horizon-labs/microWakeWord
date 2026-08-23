@@ -263,6 +263,9 @@ set `balance_guard.maximum_negative_sampling_share` and
 `balance_guard.maximum_negative_weighted_pressure_share` to reject an accidental
 imbalance before training. Keep each sampling group single-class; split positive
 and negative sources into separate groups even when they share a provider.
+Record architecture arguments under `config_overrides.model_parameters`; the
+trainer applies them before constructing the model and rejects unknown or
+non-model flags. This prevents a rerun from silently using command defaults.
 
 ## 7. Evaluate every trained pronunciation
 
