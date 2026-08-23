@@ -402,8 +402,7 @@ not a hardware-qualified release claim.
   source metrics. Fix the generator or phrase recipe instead of weakening the
   mask until the clips pass.
 - **Training cannot open a feature set:** populate every negative archive named
-  in the generated YAML, or deliberately edit the YAML and record the changed
-  experiment.
+  in the generated YAML, or edit the YAML and record the changed experiment.
 - **Aggregate recall looks good but a reading fails:** use the per-phrase report
   and unseen probes. Aggregate recall is not the acceptance gate.
 - **A real wake attempt is absent:** enrollment must record the bounded attempt
