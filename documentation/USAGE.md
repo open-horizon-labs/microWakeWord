@@ -4,6 +4,11 @@ This guide covers setup, corpus generation, feature building, training,
 evaluation, and device qualification. Kizz is the worked example, not a
 framework limit.
 
+For the complete case study—including Piper and ElevenLabs generation,
+alternate synthesis pilots, physical re-recording through Kizz, the v19 source
+ledger, and failed approaches—read the
+[Kizz training reference](../recipes/kizz/TRAINING_REFERENCE.md).
+
 ## Training workflow at a glance
 
 Synthetic audio defines the wake class and rejects weak models. Device audio
