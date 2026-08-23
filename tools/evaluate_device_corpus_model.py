@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from microwakeword.device_corpus import captures_for, validate_device_corpus
+from microwakeword.device_corpus import validate_device_corpus
 from microwakeword.inference import Model
 
 if __package__:
@@ -51,6 +51,43 @@ def capture_dimensions(item: dict, truth: str) -> list[tuple[str, str]]:
     return dimensions
 
 
+def score_sequence(
+    entries: list[tuple[dict, Path]],
+    scorer,
+    cutoff: float,
+    state_mode: str,
+) -> list[dict]:
+    """Score captures in manifest order with explicit streaming-state policy."""
+    reset_next = True
+    results = []
+    for item, path in entries:
+        reset_state = state_mode == "reset_per_capture" or reset_next
+        peak = scorer(path, reset_state)
+        accepted = peak > cutoff
+        results.append(
+            {
+                "capture_id": item["capture_id"],
+                "truth": item["truth"],
+                "detected": item["detected"],
+                "accepted": accepted,
+                "peak_probability": peak,
+                "reset_before_capture": reset_state,
+            }
+        )
+        reset_next = accepted
+    return results
+
+
+def selected_captures(
+    corpus: Path, manifest: dict, split: str | None
+) -> list[tuple[dict, Path]]:
+    return [
+        (item, corpus / item["path"])
+        for item in manifest["captures"]
+        if split is None or item["split"] == split
+    ]
+
+
 def evaluate(
     corpus: Path,
     manifest: dict,
@@ -60,20 +97,32 @@ def evaluate(
     sliding_window: int,
     ignore_initial: int,
     clip_duration_ms: int,
-) -> dict:
+    state_mode: str = "reset_per_capture",
+) -> tuple[dict, list[dict]]:
     model = Model(str(model_path), stride=3)
     groups: dict[tuple[str, str], list[float]] = defaultdict(list)
-    for truth in ("positive", "hard_negative", "ambient_negative"):
-        for item, path in captures_for(corpus, manifest, truth, split):
-            peak = peak_probability(
-                model, path, sliding_window, ignore_initial, clip_duration_ms
-            )
-            for dimension in capture_dimensions(item, truth):
-                groups[dimension].append(peak)
+    entries = selected_captures(corpus, manifest, split)
+
+    def scorer(path: Path, reset_state: bool) -> float:
+        return peak_probability(
+            model,
+            path,
+            sliding_window,
+            ignore_initial if reset_state else 0,
+            clip_duration_ms,
+            reset_state=reset_state,
+        )
+
+    capture_results = score_sequence(entries, scorer, cutoff, state_mode)
+    by_id = {item["capture_id"]: item for item, _ in entries}
+    for scored in capture_results:
+        item = by_id[scored["capture_id"]]
+        for dimension in capture_dimensions(item, item["truth"]):
+            groups[dimension].append(scored["peak_probability"])
     result: dict[str, dict] = defaultdict(dict)
     for (dimension, label), peaks in sorted(groups.items()):
         result[dimension][label] = summarize(peaks, cutoff)
-    return dict(result)
+    return dict(result), capture_results
 
 
 def qualification_scope(
@@ -138,6 +187,16 @@ def main() -> int:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
+        "--state-mode",
+        choices=("reset_per_capture", "carry_until_detection"),
+        default="reset_per_capture",
+        help=(
+            "Reset streaming state for every clip, or preserve it across misses "
+            "and reset only after a modeled detection. The latter better exposes "
+            "runtime state sensitivity but does not recreate unrecorded gaps."
+        ),
+    )
+    parser.add_argument(
         "--qualification",
         action="store_true",
         help="Fail unless this is a complete, held-out physical test corpus",
@@ -154,22 +213,36 @@ def main() -> int:
     scope = qualification_scope(manifest, args.split, tuple(args.required_age_group))
     if args.qualification and not scope["qualification_eligible"]:
         parser.error("; ".join(scope["issues"]))
+    metrics, capture_results = evaluate(
+        args.corpus,
+        manifest,
+        args.model,
+        None if args.split == "all" else args.split,
+        args.cutoff,
+        args.sliding_window,
+        args.ignore_initial,
+        args.clip_duration_ms,
+        args.state_mode,
+    )
+    provisional_matches = sum(
+        result["detected"] == result["accepted"] for result in capture_results
+    )
     report = {
         "corpus_id": manifest["corpus_id"],
         "model": str(args.model),
         "split": args.split,
         "cutoff": args.cutoff,
+        "state_mode": args.state_mode,
         "scope": scope,
-        "metrics": evaluate(
-            args.corpus,
-            manifest,
-            args.model,
-            None if args.split == "all" else args.split,
-            args.cutoff,
-            args.sliding_window,
-            args.ignore_initial,
-            args.clip_duration_ms,
-        ),
+        "provisional_detector_agreement": {
+            "matches": provisional_matches,
+            "attempts": len(capture_results),
+            "rate": provisional_matches / len(capture_results)
+            if capture_results
+            else 0.0,
+        },
+        "metrics": metrics,
+        "captures": capture_results,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

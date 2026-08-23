@@ -339,6 +339,24 @@ detector outcome. `--qualification` rejects train or incomplete test corpora.
 `--split all` is a diagnostic and is marked as containing training data.
 Start with one model across profiles; split only for held-out acoustic failure.
 
+Run a second report with runtime-like streaming state:
+
+```sh
+python tools/evaluate_device_corpus_model.py \
+  --corpus work/device-corpus \
+  --model work/kizz/trained-with-devices/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite \
+  --split test \
+  --cutoff 0.96 \
+  --state-mode carry_until_detection \
+  --output work/kizz/device_test_runtime_state.json
+```
+
+The default, `reset_per_capture`, measures each recording independently.
+`carry_until_detection` preserves model state across modeled misses and resets
+after an accept, matching the detector's rearm boundary. It exposes sensitivity
+to prior audio but cannot recreate ambient gaps that were not recorded. Treat
+both reports as diagnostics; qualification still requires the flashed artifact.
+
 ## 10. Qualification checklist
 
 - recipe, generator model, training config, and corpus hashes are recorded;
