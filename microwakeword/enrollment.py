@@ -131,8 +131,9 @@ class PendingCapture:
 
 
 class EnrollmentService:
-    def __init__(self, corpus: Path):
+    def __init__(self, corpus: Path, public_base_url: str | None = None):
         self.corpus = corpus
+        self.public_base_url = public_base_url.rstrip("/") if public_base_url else None
         self.devices: dict[str, Device] = {}
         self.pending: dict[str, PendingCapture] = {}
         self.recent_errors: list[dict] = []
@@ -142,6 +143,9 @@ class EnrollmentService:
         app = web.Application(client_max_size=200_000)
         app.router.add_get("/v1/device", self.device_socket)
         app.router.add_post("/v1/captures", self.enqueue_capture)
+        app.router.add_post(
+            "/v1/captures/{capture_id}/audio", self.upload_capture_audio
+        )
         app.router.add_get("/v1/devices", self.list_devices)
         app.router.add_get("/v1/status", self.status)
         app.router.add_post("/v1/wake-config", self.configure_wake)
@@ -258,11 +262,17 @@ class EnrollmentService:
                 request=dict(request), queued_at=now
             )
             try:
+                public_base_url = self.public_base_url or (
+                    f"{http_request.scheme}://{http_request.host}"
+                )
                 await device.websocket.send_json(
                     {
                         "type": "training_capture",
                         "capture_id": capture_id,
                         "duration_ms": request["duration_ms"],
+                        "upload_url": (
+                            f"{public_base_url}/v1/captures/{capture_id}/audio"
+                        ),
                     }
                 )
             except ConnectionError:
@@ -272,6 +282,46 @@ class EnrollmentService:
                 )
         return web.json_response(
             {"capture_id": capture_id, "state": "queued"}, status=202
+        )
+
+    async def upload_capture_audio(
+        self, http_request: web.Request
+    ) -> web.Response:
+        capture_id = http_request.match_info.get("capture_id")
+        device_id = http_request.headers.get("X-Device-ID")
+        detected_header = http_request.headers.get("X-Detected")
+        if not valid_token(capture_id) or not valid_token(device_id):
+            return web.json_response({"error": "invalid capture identity"}, status=400)
+        if detected_header not in {"true", "false"}:
+            return web.json_response({"error": "X-Detected must be true or false"}, status=400)
+        pcm = await http_request.read()
+        if not pcm or len(pcm) % 2:
+            return web.json_response({"error": "PCM body is invalid"}, status=400)
+
+        async with self.lock:
+            pending = self.pending.get(capture_id)
+            device = self.devices.get(device_id)
+            if pending is None or pending.request["device_id"] != device_id:
+                return web.json_response({"error": "capture is not pending"}, status=409)
+            if device is None:
+                return web.json_response({"error": "device is not connected"}, status=503)
+            expected_bytes = pending.request["duration_ms"] * 16000 * 2 // 1000
+            if len(pcm) != expected_bytes:
+                return web.json_response(
+                    {
+                        "error": "PCM length does not match capture duration",
+                        "expected_bytes": expected_bytes,
+                        "received_bytes": len(pcm),
+                    },
+                    status=409,
+                )
+            pending.detected = detected_header == "true"
+            pending.byte_count = len(pcm)
+            pending.audio = bytearray(pcm)
+            self._persist(capture_id, pending, device, pcm)
+            self.pending.pop(capture_id, None)
+        return web.json_response(
+            {"capture_id": capture_id, "state": "stored", "bytes": len(pcm)}
         )
 
     async def device_socket(self, request: web.Request) -> web.WebSocketResponse:

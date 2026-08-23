@@ -43,7 +43,10 @@ Do not create a second ID for the same person to move a recording into another
 split. The enrollment service rejects unregistered speakers and split changes.
 
 ```sh
-python tools/run_enrollment_service.py --corpus work/device-corpus --port 8091
+python tools/run_enrollment_service.py \
+  --corpus work/device-corpus \
+  --port 8091 \
+  --public-base-url http://trainer-host:8091
 
 python tools/simulate_enrollment_device.py \
   --endpoint ws://trainer-host:8091/v1/device \
@@ -74,9 +77,11 @@ curl -X POST http://trainer-host:8091/v1/captures \
 ```
 
 The service commands only the addressed device. The device records the window
-regardless of its provisional wake decision, then sends a `training_sample`
-header and signed-16 PCM. `detected` records the old model's outcome; it never
-filters a capture.
+regardless of its provisional wake decision, then posts signed-16 PCM to the
+command's `upload_url`. `detected` records the old model's outcome; it never
+filters a capture. Set `--public-base-url` to an address devices can reach. It
+is explicit because the operator may use a loopback control URL while the
+microphone is elsewhere on the LAN.
 
 ## Device protocol
 
@@ -108,8 +113,12 @@ Evaluate one model across microphone-equipped profiles before splitting by
 device. Catalog presence, enrollment support, and collected corpus are separate
 statuses. Kizz is a reference path, not a framework limit.
 
-The server sends `training_capture`; the device returns `training_sample` and
-one binary PCM message. Attempts are 0.5–5 seconds and at most 160,000 bytes.
+The server sends `training_capture` with an absolute `upload_url`. The device
+posts one `application/octet-stream` body there with `X-Device-ID` and a boolean
+`X-Detected` header. Attempts are 0.5–5 seconds and at most 160,000 bytes. The
+older WebSocket upload messages remain accepted for existing clients; new
+embedded clients should keep the WebSocket for control and use HTTP for bulk
+audio.
 
 `POST /v1/wake-config` can also carry an optional `audio_preprocessing` object.
 The service passes these scalar frontend settings to the addressed device
