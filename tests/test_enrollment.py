@@ -48,7 +48,11 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.client = TestClient(
-            TestServer(EnrollmentService(self.corpus).application())
+            TestServer(
+                EnrollmentService(
+                    self.corpus, "http://trainer.test:8091"
+                ).application()
+            )
         )
         await self.client.start_server()
         self.device = await self.client.ws_connect("/v1/device")
@@ -102,6 +106,10 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
                 "type": "training_capture",
                 "capture_id": "missed-positive",
                 "duration_ms": 2000,
+                "upload_url": (
+                    "http://trainer.test:8091/v1/captures/"
+                    "missed-positive/audio"
+                ),
             },
         )
         pcm = b"\0\0" * 32000
@@ -131,6 +139,47 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
         attempt = manifest["captures"][0]
         self.assertFalse(attempt["detected"])
         self.assertEqual(attempt["device_profile"], "m5stack_stackchan_k151_cores3_v1")
+
+    async def test_detector_miss_can_be_uploaded_over_http(self):
+        response = await self.client.post(
+            "/v1/captures",
+            json={
+                "capture_id": "http-missed-positive",
+                "device_id": "sim-kizz-1",
+                "device_profile": "m5stack_stackchan_k151_cores3_v1",
+                "phrase": "Hi-Fi Kizz",
+                "pronunciation": "hi_fi",
+                "truth": "positive",
+                "source": "simulated",
+                "speaker_id": "speaker-a",
+                "session_id": "session-http",
+                "split": "train",
+                "duration_ms": 2000,
+                "conditions": {"distance_cm": 100},
+            },
+        )
+        self.assertEqual(response.status, 202)
+        command = await self.device.receive_json()
+        self.assertEqual(
+            command["upload_url"],
+            "http://trainer.test:8091/v1/captures/http-missed-positive/audio",
+        )
+
+        pcm = b"\0\0" * 32000
+        uploaded = await self.client.post(
+            "/v1/captures/http-missed-positive/audio",
+            data=pcm,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-Device-ID": "sim-kizz-1",
+                "X-Detected": "false",
+            },
+        )
+        self.assertEqual(uploaded.status, 200)
+        self.assertEqual((await uploaded.json())["state"], "stored")
+        attempt = validate_device_corpus(self.corpus)["captures"][0]
+        self.assertEqual(attempt["capture_id"], "http-missed-positive")
+        self.assertFalse(attempt["detected"])
 
     async def test_endpoint_routes_to_explicit_device_profile(self):
         response = await self.client.post(

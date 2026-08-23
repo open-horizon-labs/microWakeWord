@@ -277,7 +277,8 @@ Start the service and a simulated microphone device in separate terminals:
 ```sh
 python tools/run_enrollment_service.py \
   --corpus work/device-corpus \
-  --port 8091
+  --port 8091 \
+  --public-base-url http://trainer-host:8091
 
 python tools/simulate_enrollment_device.py \
   --endpoint ws://trainer-host:8091/v1/device \
