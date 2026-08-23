@@ -20,7 +20,7 @@ word across real devices.
 | --- | --- |
 | Piper sample generation and notebook-driven training | Versioned recipes, source hashes, per-WAV synthesis provenance, speaker-independent splits, and age-labeled supplemental voice cohorts |
 | Weighted training sources and ambient false-accept metrics | Named pronunciation and confusable-speech cohorts used in training, checkpoint selection, and evaluation |
-| Streaming TensorFlow Lite export | Per-phrase and unseen-pronunciation evaluation with isolated streaming state |
+| Streaming TensorFlow Lite export | Per-phrase evaluation with isolated-state and carry-until-detection replay |
 | Model training and test datasets | A device-corpus contract that retains every commanded attempt, including detector misses, aligns phrases inside long captures, and keeps indoor/outdoor training backgrounds separate from stress evidence |
 | A model artifact | Registered physical speakers, device-profile comparisons, a qualification scope gate, and a physical checklist |
 

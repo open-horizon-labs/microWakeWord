@@ -1,9 +1,46 @@
 import unittest
 
-from tools.evaluate_device_corpus_model import capture_dimensions, qualification_scope
+from tools.evaluate_device_corpus_model import (
+    capture_dimensions,
+    qualification_scope,
+    score_sequence,
+)
 
 
 class DeviceCorpusEvaluationTest(unittest.TestCase):
+    def test_carry_mode_preserves_state_across_misses_and_rearms_after_accept(self):
+        entries = [
+            ({"capture_id": name, "truth": "positive", "detected": False}, name)
+            for name in ("first", "miss", "wake", "after-wake")
+        ]
+        peaks = iter((0.1, 0.2, 0.9, 0.3))
+        reset_flags = []
+
+        def scorer(_path, reset_state):
+            reset_flags.append(reset_state)
+            return next(peaks)
+
+        results = score_sequence(entries, scorer, 0.7, "carry_until_detection")
+
+        self.assertEqual(reset_flags, [True, False, False, True])
+        self.assertEqual([item["accepted"] for item in results], [False, False, True, False])
+
+    def test_reset_mode_resets_every_capture(self):
+        entries = [
+            ({"capture_id": name, "truth": "positive", "detected": False}, name)
+            for name in ("one", "two")
+        ]
+        reset_flags = []
+
+        score_sequence(
+            entries,
+            lambda _path, reset_state: reset_flags.append(reset_state) or 0.1,
+            0.7,
+            "reset_per_capture",
+        )
+
+        self.assertEqual(reset_flags, [True, True])
+
     def test_reports_speaker_and_session_by_truth(self):
         item = {
             "device_profile": "m5stack_stackchan_v1",

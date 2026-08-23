@@ -28,6 +28,7 @@ def peak_probability(
     sliding_window: int,
     ignore_initial: int,
     clip_duration_ms: int,
+    reset_state: bool = True,
 ) -> float:
     sample_rate, pcm = wavfile.read(wav_path)
     if pcm.dtype != np.int16:
@@ -47,7 +48,8 @@ def peak_probability(
             pcm = np.pad(pcm, (target_samples - pcm.shape[0], 0))
         elif pcm.shape[0] > target_samples:
             pcm = pcm[-target_samples:]
-    reset_model(model)
+    if reset_state:
+        reset_model(model)
     probabilities = np.asarray(model.predict_clip(pcm, step_ms=10), dtype=np.float32)
     probabilities = probabilities[ignore_initial:]
     if probabilities.size < sliding_window:
