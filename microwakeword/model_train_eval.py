@@ -42,6 +42,37 @@ import microwakeword.mixednet as mixednet
 from microwakeword.layers import modes
 
 
+_NON_MODEL_FLAGS = {
+    "model_name",
+    "restore_checkpoint",
+    "test_tf_nonstreaming",
+    "test_tflite_nonstreaming",
+    "test_tflite_nonstreaming_quantized",
+    "test_tflite_streaming",
+    "test_tflite_streaming_quantized",
+    "tflite_roc_split",
+    "train",
+    "training_config",
+    "use_weights",
+    "verbosity",
+}
+
+
+def apply_model_parameters(config, flags):
+    """Apply architecture parameters recorded in the training configuration."""
+    parameters = config.get("model_parameters", {})
+    if not isinstance(parameters, dict):
+        raise ValueError("model_parameters must be a mapping")
+    unknown = set(parameters) - set(vars(flags))
+    if unknown:
+        raise ValueError(f"unknown model parameters: {sorted(unknown)}")
+    forbidden = set(parameters) & _NON_MODEL_FLAGS
+    if forbidden:
+        raise ValueError(f"model_parameters contains non-model flags: {sorted(forbidden)}")
+    for name, value in parameters.items():
+        setattr(flags, name, value)
+
+
 def load_config(flags, model_module):
     """Loads the training configuration from the specified yaml file.
 
@@ -54,6 +85,7 @@ def load_config(flags, model_module):
     """
     config_filename = flags.training_config
     config = yaml.load(open(config_filename, "r").read(), yaml.Loader)
+    apply_model_parameters(config, flags)
 
     config["summaries_dir"] = os.path.join(config["train_dir"], "logs/")
 
