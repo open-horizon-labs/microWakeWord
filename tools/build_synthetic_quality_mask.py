@@ -36,11 +36,10 @@ def summarize(values: list[float]) -> dict:
 
 def recorded_positive_spans(corpus: Path, manifest: dict) -> list[float]:
     spans = []
-    for split in ("train", "validation", "test"):
-        for item, _ in captures_for(corpus, manifest, "positive", split):
-            span = item.get("phrase_span")
-            if span is not None and item.get("source") == "human":
-                spans.append(float(span["end_ms"] - span["start_ms"]))
+    for item, _ in captures_for(corpus, manifest, "positive", "train"):
+        span = item.get("phrase_span")
+        if span is not None and item.get("source") == "human":
+            spans.append(float(span["end_ms"] - span["start_ms"]))
     return spans
 
 
@@ -110,6 +109,7 @@ def build_report(
         "generation_manifest_sha256": sha256(generation_path),
         "reference_corpus_id": device_manifest["corpus_id"],
         "reference_corpus_manifest_sha256": sha256(corpus / "device-corpus.json"),
+        "reference_split": "train",
         "reference_positive_spans_ms": summarize(recorded_spans),
         "reference_span_policy": {
             "minimum_quantile": 0.05,

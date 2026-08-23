@@ -14,10 +14,26 @@ from microwakeword.synthetic_quality import (
     quality_reasons,
     reference_bounds,
 )
-from tools.build_synthetic_quality_mask import build_report
+from tools.build_synthetic_quality_mask import build_report, recorded_positive_spans
 
 
 class SyntheticQualityTest(unittest.TestCase):
+    def test_quality_bounds_use_training_spans_only(self):
+        with patch(
+            "tools.build_synthetic_quality_mask.captures_for",
+            return_value=[
+                (
+                    {
+                        "source": "human",
+                        "phrase_span": {"start_ms": 100, "end_ms": 800},
+                    },
+                    Path("train.wav"),
+                )
+            ],
+        ) as captures:
+            self.assertEqual(recorded_positive_spans(Path("corpus"), {}), [700])
+        captures.assert_called_once_with(Path("corpus"), {}, "positive", "train")
+
     def test_report_compares_recorded_and_synthetic_spans(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -74,7 +90,7 @@ class SyntheticQualityTest(unittest.TestCase):
             (corpus / "device-corpus.json").write_text(
                 json.dumps(
                     {
-                        "schema_version": 1,
+                        "schema_version": 2,
                         "corpus_id": "test-corpus",
                         "device_profiles": {
                             "test_mic_v1": {
@@ -86,6 +102,14 @@ class SyntheticQualityTest(unittest.TestCase):
                                     "gain_profile": "default",
                                     "preprocessing": {},
                                 }
+                            }
+                        },
+                        "speakers": {
+                            "speaker-a": {
+                                "kind": "human",
+                                "age_group": "adult",
+                                "split": "train",
+                                "identity_verified": True,
                             }
                         },
                         "captures": captures,
@@ -114,6 +138,7 @@ class SyntheticQualityTest(unittest.TestCase):
                 report = build_report(recipe, generated, corpus, 300)
 
             self.assertEqual(report["reference_positive_spans_ms"]["median"], 800)
+            self.assertEqual(report["reference_split"], "train")
             self.assertEqual(
                 report["synthetic_by_truth"]["positive"]["speech_span_ms"]["median"],
                 800,

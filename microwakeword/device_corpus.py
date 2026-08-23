@@ -11,6 +11,8 @@ MANIFEST_NAME = "device-corpus.json"
 TRUTHS = {"positive", "hard_negative", "ambient_negative"}
 SPLITS = {"train", "validation", "test"}
 CAPTURE_SOURCES = {"human", "synthetic_playback", "ambient", "simulated"}
+SPEAKER_KINDS = {"human", "synthetic", "ambient"}
+AGE_GROUPS = {"child", "adult", "unknown", "not_applicable"}
 REQUIRED_AUDIO = {
     "sample_rate": 16000,
     "channels": 1,
@@ -62,8 +64,8 @@ def validate_device_corpus(root: Path) -> dict:
     if not manifest_path.is_file():
         raise ValueError(f"missing device corpus manifest: {manifest_path}")
     manifest = json.loads(manifest_path.read_text())
-    if manifest.get("schema_version") != 1:
-        raise ValueError("device corpus schema_version must be 1")
+    if manifest.get("schema_version") != 2:
+        raise ValueError("device corpus schema_version must be 2")
     _required(manifest, "corpus_id", str)
     profiles = manifest.get("device_profiles")
     if not isinstance(profiles, dict) or not profiles:
@@ -89,6 +91,40 @@ def validate_device_corpus(root: Path) -> dict:
         if not isinstance(audio.get("preprocessing", {}), dict):
             raise ValueError(
                 f"device profile {profile_name} preprocessing must be an object"
+            )
+    speakers = manifest.get("speakers")
+    if not isinstance(speakers, dict) or not speakers:
+        raise ValueError("device corpus requires registered speakers")
+    for speaker_id, speaker in speakers.items():
+        if (
+            not isinstance(speaker_id, str)
+            or not speaker_id
+            or not isinstance(speaker, dict)
+        ):
+            raise ValueError(
+                "each registered speaker requires a non-empty ID and object"
+            )
+        kind = speaker.get("kind")
+        age_group = speaker.get("age_group")
+        split = speaker.get("split")
+        if kind not in SPEAKER_KINDS:
+            raise ValueError(f"registered speaker {speaker_id} has invalid kind")
+        if age_group not in AGE_GROUPS:
+            raise ValueError(f"registered speaker {speaker_id} has invalid age_group")
+        if split not in SPLITS:
+            raise ValueError(f"registered speaker {speaker_id} has invalid split")
+        if kind == "human":
+            if age_group not in {"child", "adult"}:
+                raise ValueError(
+                    f"human speaker {speaker_id} requires child or adult age_group"
+                )
+            if speaker.get("identity_verified") is not True:
+                raise ValueError(
+                    f"human speaker {speaker_id} requires identity_verified=true"
+                )
+        elif kind == "ambient" and age_group != "not_applicable":
+            raise ValueError(
+                f"ambient speaker {speaker_id} requires age_group=not_applicable"
             )
     captures = manifest.get("captures")
     if not isinstance(captures, list):
@@ -131,6 +167,22 @@ def validate_device_corpus(root: Path) -> dict:
             )
         if split not in SPLITS:
             raise ValueError(f"unsupported split for {capture_id}: {split}")
+        if speaker not in speakers:
+            raise ValueError(f"capture {capture_id} references unregistered speaker")
+        speaker_profile = speakers[speaker]
+        if speaker_profile["split"] != split:
+            raise ValueError(
+                f"capture {capture_id} split differs from registered speaker {speaker}"
+            )
+        expected_kind = {
+            "human": "human",
+            "synthetic_playback": "synthetic",
+            "ambient": "ambient",
+        }.get(source)
+        if expected_kind and speaker_profile["kind"] != expected_kind:
+            raise ValueError(
+                f"capture {capture_id} source does not match registered speaker kind"
+            )
         if not isinstance(item.get("detected"), bool):
             raise ValueError(f"capture {capture_id} requires boolean detected")
         if speaker in speaker_splits and speaker_splits[speaker] != split:

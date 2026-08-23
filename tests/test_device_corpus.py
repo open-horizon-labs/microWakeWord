@@ -34,16 +34,36 @@ def write_wav(
 
 class DeviceCorpusTest(unittest.TestCase):
     def make_corpus(self, root: Path, captures: list[dict]) -> None:
+        speakers = {}
         for item in captures:
             path = root / item["path"]
             path.parent.mkdir(parents=True, exist_ok=True)
             write_wav(path, impulse_sample=item.pop("_impulse_sample", None))
             item["samples"] = 32000
             item["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            kind = {
+                "human": "human",
+                "synthetic_playback": "synthetic",
+                "ambient": "ambient",
+                "simulated": "synthetic",
+            }[item["source"]]
+            speakers.setdefault(
+                item["speaker_id"],
+                {
+                    "kind": kind,
+                    "age_group": (
+                        "adult"
+                        if kind == "human"
+                        else "not_applicable" if kind == "ambient" else "unknown"
+                    ),
+                    "split": item["split"],
+                    **({"identity_verified": True} if kind == "human" else {}),
+                },
+            )
         (root / "device-corpus.json").write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "corpus_id": "hiphi-device-v1",
                     "device_profiles": {
                         "m5stack_stackchan_k151_cores3_v1": {
@@ -57,6 +77,7 @@ class DeviceCorpusTest(unittest.TestCase):
                             }
                         }
                     },
+                    "speakers": speakers,
                     "captures": captures,
                 }
             )
@@ -141,7 +162,7 @@ class DeviceCorpusTest(unittest.TestCase):
                     self.capture("test", session_id="session-b", split="test"),
                 ],
             )
-            with self.assertRaisesRegex(ValueError, "speaker speaker-a crosses"):
+            with self.assertRaisesRegex(ValueError, "registered speaker speaker-a"):
                 validate_device_corpus(root)
 
     def test_rejects_audio_mutated_after_manifest(self):
@@ -222,7 +243,10 @@ class DeviceCorpusTest(unittest.TestCase):
             manifest = validate_device_corpus(root)
             clips = FEATURE_MODULE.explicit_clips(root, manifest, "positive")
             self.assertEqual(
-                {split: len(clips.split_clips[split]) for split in FEATURE_MODULE.SPLITS},
+                {
+                    split: len(clips.split_clips[split])
+                    for split in FEATURE_MODULE.SPLITS
+                },
                 {"train": 1, "validation": 1, "test": 1},
             )
 

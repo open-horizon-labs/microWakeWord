@@ -1,4 +1,4 @@
-recipe_version: 4
+recipe_version: 5
 name: hiphi_kizz
 sample_rate_hz: 16000
 clip_duration_ms: 2000
@@ -118,3 +118,32 @@ generation:
   noise_scale_ws: [0.65, 0.8, 0.95]
   slerp_weights: [0.2, 0.4, 0.6, 0.8]
   max_speakers: 700
+  # The LibriTTS-R generator exposes speaker embeddings but no reliable age
+  # labels. Hold base speakers out by identity; do not describe these cohorts as
+  # adult or child evidence.
+  speaker_cohorts:
+    train:
+      speaker_start: 0
+      speaker_end: 560
+      sample_fraction: 0.8
+      age_group: unknown
+    validation:
+      speaker_start: 560
+      speaker_end: 630
+      sample_fraction: 0.1
+      age_group: unknown
+    test:
+      speaker_start: 630
+      speaker_end: 700
+      sample_fraction: 0.1
+      age_group: unknown
+  # Piper's LibriTTS-R embeddings do not carry reliable age labels. Add
+  # provider-labeled voices and hold each voice identity to one split before
+  # building features. Train gets broader coverage; validation and test each
+  # retain independent adult and child voices.
+  labeled_voice_requirements:
+    age_groups: [adult, child]
+    minimum_voices_per_split:
+      train: 2
+      validation: 1
+      test: 1

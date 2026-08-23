@@ -1,0 +1,74 @@
+schema_version: 1
+random_seed: 231
+design_model_id: eleven_ttv_v3
+tts_model_id: eleven_multilingual_v2
+guidance_scale: 5
+preview_text: >-
+  Hi-Fi Kizz. Hi Phi Kizz. Hee Fee Kizz. Hippy Kizz. High Fee Kizz.
+  These are short, natural wake phrases spoken to a small device across a room,
+  with ordinary timing and no announcer-style emphasis.
+
+# Voice identity, not a regenerated sample, defines the split. Train uses two
+# adult and two child voices. Validation and test use speakers absent from train
+# and from each other.
+voices:
+  - name: kizz-adult-train-a
+    split: train
+    age_group: adult
+    samples_per_phrase: 3
+    description: >-
+      A natural American English woman in her thirties, speaking casually to a
+      nearby household device. Warm but unperformed, clear consonants, ordinary
+      room volume, moderate pace, no radio or narration style.
+  - name: kizz-adult-train-b
+    split: train
+    age_group: adult
+    samples_per_phrase: 3
+    description: >-
+      A natural American English man in his forties, relaxed conversational
+      delivery to a device across a room, moderate pitch and pace, clear without
+      sounding rehearsed or theatrical.
+  - name: kizz-child-train-a
+    split: train
+    age_group: child
+    samples_per_phrase: 3
+    description: >-
+      A natural American English teenage boy around thirteen, casually calling
+      to a household device. Realistic conversational pitch and pace, clear but
+      not over-enunciated, playful without becoming a cartoon voice.
+  - name: kizz-child-train-b
+    split: train
+    age_group: child
+    samples_per_phrase: 3
+    description: >-
+      A natural American English teenage girl around thirteen, speaking to a
+      nearby device in an ordinary home. Conversational, relaxed and spontaneous,
+      with no character acting, singing, or announcer delivery.
+  - name: kizz-adult-validation
+    split: validation
+    age_group: adult
+    description: >-
+      A natural Canadian English woman in her fifties, speaking a brief command
+      across a quiet room. Unrehearsed conversational delivery, steady pace, and
+      clear speech without exaggerated diction.
+  - name: kizz-child-validation
+    split: validation
+    age_group: child
+    description: >-
+      A natural American English boy around eleven, speaking normally to a smart
+      device from several feet away. Youthful but realistic, casual, and free of
+      cartoonish pitch or theatrical emphasis.
+  - name: kizz-adult-test
+    split: test
+    age_group: adult
+    description: >-
+      A natural British English man in his late twenties, casually addressing a
+      device across a room. Relaxed everyday cadence with a light accent, no
+      performance voice, and no deliberate over-enunciation.
+  - name: kizz-child-test
+    split: test
+    age_group: child
+    description: >-
+      A natural American English teenage girl around fifteen, making a short
+      request to a household device. Spontaneous everyday delivery, youthful but
+      not cartoonish, with ordinary pace and emphasis.

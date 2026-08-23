@@ -34,7 +34,8 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e .
-python -m pip install piper-sample-generator
+git clone https://github.com/open-horizon-labs/piper-sample-generator.git ../piper-sample-generator
+git -C ../piper-sample-generator checkout 35d2f2d
 ```
 
 Run tests before long generation or training jobs:
@@ -47,8 +48,9 @@ GPU is recommended for generation and training; commands are unchanged on CPU.
 
 ## 2. Obtain the Piper generator model
 
-Kizz uses the LibriTTS-R multi-speaker generator from
-[`piper-sample-generator`](https://github.com/rhasspy/piper-sample-generator):
+Kizz uses the LibriTTS-R multi-speaker generator through the Open Horizon Labs
+[`piper-sample-generator` fork](https://github.com/open-horizon-labs/piper-sample-generator).
+The fork reserves disjoint speaker ranges and records per-WAV provenance:
 
 ```sh
 mkdir -p models
@@ -57,9 +59,7 @@ curl -L \
   -o models/en_US-libritts_r-medium.pt
 ```
 
-If the installed package lacks the generator module, clone it beside this repo
-and add
-`--generator-source ../piper-sample-generator` to generation commands.
+Pass `--generator-source ../piper-sample-generator` to generation commands.
 
 ## 3. Inspect and generate the Kizz corpus
 
@@ -71,6 +71,7 @@ python tools/generate_recipe_samples.py \
   --recipe recipes/kizz/corpus.yaml \
   --model models/en_US-libritts_r-medium.pt \
   --output work/kizz/generated \
+  --generator-source ../piper-sample-generator \
   --dry-run
 ```
 
@@ -81,15 +82,44 @@ python tools/generate_recipe_samples.py \
   --recipe recipes/kizz/corpus.yaml \
   --model models/en_US-libritts_r-medium.pt \
   --output work/kizz/generated \
+  --generator-source ../piper-sample-generator \
   --batch-size 16
 ```
 
-Generation skips completed phrase directories and rejects surplus, incomplete,
-or mismatched corpora. `generation-manifest.json` records recipe and model hashes.
+Generation assigns non-overlapping LibriTTS speaker IDs to train, validation,
+and test before rendering audio. It skips complete cohorts and rejects surplus,
+incomplete, or mismatched corpora. `generation-manifest.json` records recipe,
+model, speaker pairs, synthesis settings, and hashes. LibriTTS does not provide
+reliable age metadata; its cohorts are `unknown`, not evidence of child voices.
 To reuse unchanged phrase audio from an earlier run, repeat
 `--reuse-generated work/earlier/generated`. Reuse requires the same phrase,
 sample count, generator model, and synthesis command. The new manifest records
 the source.
+
+Add age-labeled voices before feature building. The Kizz recipe requires two
+adult and two child voices in train, plus distinct adult and child identities in
+validation and test. Design them with ElevenLabs, or supply an equivalent
+catalog from another licensed source:
+
+```sh
+export ELEVENLABS_API_KEY=...
+python tools/design_elevenlabs_voice_catalog.py \
+  --spec recipes/kizz/elevenlabs-voice-designs.yaml \
+  --output work/kizz/elevenlabs-voices.yaml \
+  --preview-dir work/kizz/voice-previews
+
+python tools/add_labeled_voice_samples.py \
+  --recipe recipes/kizz/corpus.yaml \
+  --generated work/kizz/generated \
+  --voice-catalog work/kizz/elevenlabs-voices.yaml
+```
+
+The first command saves the provider previews and resolves them to persistent
+voice IDs. The second renders every positive and confusable phrase, recording
+voice identity, declared age group, split, model, seed, and settings. A voice ID
+may appear in one split only. The API key stays outside the repository. Start
+from [`synthetic_voice_catalog.example.yaml`](synthetic_voice_catalog.example.yaml)
+when using existing voices instead of Voice Design.
 
 ## 4. Screen synthetic audio and build features
 
@@ -105,7 +135,8 @@ python tools/apply_phrase_spans.py \
 ```
 
 The spans file maps capture IDs to `start_ms` and `end_ms`. Build a quality mask
-that compares every generated WAV with the recorded span distribution:
+that compares every generated WAV with the human training-span distribution;
+validation and test speakers do not influence the mask:
 
 ```sh
 python tools/build_synthetic_quality_mask.py \
@@ -127,22 +158,39 @@ with an unusually high rejection rate usually needs a generator or recipe fix.
 The mask catches measurable defects; it does not prove that pronunciation or
 prosody sounds natural.
 
-Add representative room recordings and impulse responses when available. Both
-arguments are repeatable:
+Add representative indoor and outdoor recordings and room impulse responses.
+The builder screens the source clips first, then applies acoustic variation only
+while creating training features. Backgrounds are mixed 3–20 dB below speech by
+default; validation and test remain clean:
 
 ```sh
+python tools/prepare_background_corpus.py \
+  --output work/backgrounds \
+  --esc50 ../ESC-50 \
+  --device-corpus work/device-corpus
+
 python tools/build_recipe_features.py \
   --recipe recipes/kizz/corpus.yaml \
   --generated work/kizz/generated \
   --quality-mask work/kizz/generated/quality-mask.json \
   --output work/kizz/features \
-  --background room-backgrounds \
+  --background-indoor work/backgrounds/indoor/train \
+  --background-outdoor work/backgrounds/outdoor/train \
   --impulses room-impulses
 ```
 
+The preparation step assigns ESC-50 folds 1–4 to training augmentation and fold
+5 to `indoor/stress` or `outdoor/stress`; it also includes real training-only
+device room tone. `background-corpus.json` records the source revision, license,
+category, device profile where applicable, split, and file hash.
+
 The builder verifies that the mask belongs to the recipe and generated corpus,
-excludes rejected WAVs, creates device-compatible `micro_speech` features, and
-preserves deterministic splits.
+rejects speaker overlap or missing age cohorts, excludes masked WAVs, creates
+device-compatible `micro_speech` features, and preserves the declared speaker
+cohorts. The training transform includes gain, EQ, mild distortion, pitch and
+band filtering, colored noise, background mixing, and room response. Its source
+categories, SNR range, and probabilities are recorded in
+`feature-build-manifest.json`.
 
 Feature splits can be rebuilt independently after a verified partial run. Remove
 the incomplete split, then select its class and name:
@@ -278,18 +326,22 @@ python tools/evaluate_device_corpus_model.py \
   --corpus work/device-corpus \
   --model work/kizz/trained-with-devices/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite \
   --split test \
+  --qualification \
+  --required-age-group adult \
+  --required-age-group child \
   --cutoff 0.96 \
   --output work/kizz/device_test_metrics.json
 ```
 
 Review results by truth, phrase, pronunciation, profile, speaker, session, and
-detector outcome. `--split all` is useful for a corpus-wide diagnostic, but
-release claims must use held-out validation and test speakers.
+detector outcome. `--qualification` rejects train or incomplete test corpora.
+`--split all` is a diagnostic and is marked as containing training data.
 Start with one model across profiles; split only for held-out acoustic failure.
 
 ## 10. Qualification checklist
 
 - recipe, generator model, training config, and corpus hashes are recorded;
+- every human speaker is registered once, assigned one split, and identity-attested;
 - no speaker or recording session crosses train, validation, and test splits;
 - held-out positive pronunciations and confusable phrases meet explicit gates;
 - ambient false accepts are measured over representative duration;

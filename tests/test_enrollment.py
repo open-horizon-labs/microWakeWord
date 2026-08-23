@@ -14,6 +14,39 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.corpus = Path(self.temporary.name)
+        (self.corpus / "device-corpus.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "corpus_id": "test-device-v1",
+                    "device_profiles": {
+                        "m5stack_stackchan_k151_cores3_v1": {
+                            "audio": {
+                                "sample_rate": 16000,
+                                "channels": 1,
+                                "sample_format": "s16le",
+                                "frontend": "m5unified_mic",
+                                "gain_profile": "default",
+                                "preprocessing": {"dc_block": True},
+                            }
+                        }
+                    },
+                    "speakers": {
+                        "speaker-a": {
+                            "kind": "synthetic",
+                            "age_group": "unknown",
+                            "split": "train",
+                        },
+                        "speaker-b": {
+                            "kind": "synthetic",
+                            "age_group": "unknown",
+                            "split": "test",
+                        },
+                    },
+                    "captures": [],
+                }
+            )
+        )
         self.client = TestClient(
             TestServer(EnrollmentService(self.corpus).application())
         )
@@ -97,9 +130,7 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
         manifest = validate_device_corpus(self.corpus)
         attempt = manifest["captures"][0]
         self.assertFalse(attempt["detected"])
-        self.assertEqual(
-            attempt["device_profile"], "m5stack_stackchan_k151_cores3_v1"
-        )
+        self.assertEqual(attempt["device_profile"], "m5stack_stackchan_k151_cores3_v1")
 
     async def test_endpoint_routes_to_explicit_device_profile(self):
         response = await self.client.post(
