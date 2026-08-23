@@ -109,6 +109,13 @@ class Model:
         elif np.issubdtype(spectrogram.dtype, np.float64):
             spectrogram = spectrogram.astype(np.float32)
 
+        if len(spectrogram) < self.input_feature_slices:
+            spectrogram = np.pad(
+                spectrogram,
+                ((self.input_feature_slices - len(spectrogram), 0), (0, 0)),
+                constant_values=0,
+            )
+
         # Slice the input data into the required number of chunks
         chunks = []
         for last_index in range(

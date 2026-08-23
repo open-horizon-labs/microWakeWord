@@ -137,6 +137,7 @@ def evaluate_model(
     test_tflite_nonstreaming_quantized,
     test_tflite_streaming,
     test_tflite_streaming_quantized,
+    tflite_roc_split="testing",
 ):
     """Evaluates a model on test data.
 
@@ -263,15 +264,17 @@ def evaluate_model(
             tflite_config["log_string"],
         )
 
-        test.tflite_streaming_model_roc(
-            config,
-            tflite_config["output_folder"],
-            data_processor,
-            data_set=tflite_config["testing_dataset"],
-            ambient_set=tflite_config["testing_ambient_dataset"],
-            tflite_model_name=tflite_config["filename"],
-            accuracy_name="tflite_streaming_roc.txt",
-        )
+        if tflite_roc_split != "none":
+            split = tflite_roc_split
+            test.tflite_streaming_model_roc(
+                config,
+                tflite_config["output_folder"],
+                data_processor,
+                data_set=split,
+                ambient_set=f"{split}_ambient",
+                tflite_model_name=tflite_config["filename"],
+                accuracy_name=f"tflite_streaming_roc-{split}.txt",
+            )
 
 
 if __name__ == "__main__":
@@ -338,6 +341,12 @@ if __name__ == "__main__":
         help="Which set of weights to use when creating the model"
         "One of `best_weights`` or `last_weights`.",
     )
+    parser.add_argument(
+        "--tflite_roc_split",
+        choices=("testing", "validation", "none"),
+        default="testing",
+        help="Choose the split for TFLite ROC scoring, or convert without scoring",
+    )
 
     # Function used to parse --verbosity argument
     def verbosity_arg(value):
@@ -399,6 +408,11 @@ if __name__ == "__main__":
 
     config = load_config(flags, model_module)
 
+    if training_seed := config.get("training_seed"):
+        tf.keras.utils.set_random_seed(int(training_seed))
+        if config.get("deterministic_training", True):
+            tf.config.experimental.enable_op_determinism()
+
     data_processor = input_data.FeatureHandler(config)
 
     if flags.train:
@@ -436,4 +450,5 @@ if __name__ == "__main__":
             flags.test_tflite_nonstreaming_quantized,
             flags.test_tflite_streaming,
             flags.test_tflite_streaming_quantized,
+            flags.tflite_roc_split,
         )
