@@ -124,13 +124,19 @@ class Device:
 @dataclass
 class PendingCapture:
     request: dict
+    device_profile: str
+    audio_profile: dict
+    firmware_sha: str | None
     detected: bool | None = None
     byte_count: int | None = None
     audio: bytearray = field(default_factory=bytearray)
     queued_at: float = 0.0
+    last_activity_at: float = 0.0
 
 
 class EnrollmentService:
+    PENDING_CAPTURE_TIMEOUT_SECONDS = 300.0
+
     def __init__(self, corpus: Path, public_base_url: str | None = None):
         self.corpus = corpus
         self.public_base_url = public_base_url.rstrip("/") if public_base_url else None
@@ -229,7 +235,8 @@ class EnrollmentService:
             for capture_id in [
                 key
                 for key, pending in self.pending.items()
-                if now - pending.queued_at > 10.0
+                if now - pending.last_activity_at
+                > self.PENDING_CAPTURE_TIMEOUT_SECONDS
             ]:
                 self.pending.pop(capture_id, None)
             device = self.devices.get(request["device_id"])
@@ -259,7 +266,12 @@ class EnrollmentService:
             except ValueError as error:
                 return web.json_response({"error": str(error)}, status=409)
             self.pending[capture_id] = PendingCapture(
-                request=dict(request), queued_at=now
+                request=dict(request),
+                device_profile=device.profile,
+                audio_profile=dict(device.audio),
+                firmware_sha=device.firmware_sha,
+                queued_at=now,
+                last_activity_at=now,
             )
             try:
                 public_base_url = self.public_base_url or (
@@ -313,11 +325,8 @@ class EnrollmentService:
 
         async with self.lock:
             pending = self.pending.get(capture_id)
-            device = self.devices.get(device_id)
             if pending is None or pending.request["device_id"] != device_id:
                 return web.json_response({"error": "capture is not pending"}, status=409)
-            if device is None:
-                return web.json_response({"error": "device is not connected"}, status=503)
             expected_bytes = pending.request["duration_ms"] * 16000 * 2 // 1000
             if segmented:
                 if total != expected_bytes or offset < 0 or offset % 2:
@@ -350,10 +359,9 @@ class EnrollmentService:
                 else:
                     pending.audio.extend(pcm)
                     received = len(pending.audio)
+                pending.last_activity_at = time.monotonic()
                 if received == expected_bytes:
-                    self._persist(
-                        capture_id, pending, device, bytes(pending.audio)
-                    )
+                    self._persist(capture_id, pending, bytes(pending.audio))
                     self.pending.pop(capture_id, None)
                     state = "stored"
                 else:
@@ -378,7 +386,8 @@ class EnrollmentService:
             pending.detected = detected_header == "true"
             pending.byte_count = len(pcm)
             pending.audio = bytearray(pcm)
-            self._persist(capture_id, pending, device, pcm)
+            pending.last_activity_at = time.monotonic()
+            self._persist(capture_id, pending, pcm)
             self.pending.pop(capture_id, None)
         return web.json_response(
             {"capture_id": capture_id, "state": "stored", "bytes": len(pcm)}
@@ -441,12 +450,6 @@ class EnrollmentService:
                     current = self.devices.get(device_id)
                     if current is not None and current.websocket is websocket:
                         self.devices.pop(device_id, None)
-                    for capture_id in [
-                        key
-                        for key, value in self.pending.items()
-                        if value.request["device_id"] == device_id
-                    ]:
-                        self.pending.pop(capture_id, None)
         return websocket
 
     async def _register(self, websocket: web.WebSocketResponse, event: dict) -> str:
@@ -538,6 +541,7 @@ class EnrollmentService:
                 raise ValueError("training_sample does not match a pending capture")
             pending.detected = detected
             pending.byte_count = byte_count
+            pending.last_activity_at = time.monotonic()
 
     async def _training_error(self, device_id: str | None, event: dict) -> None:
         capture_id = event.get("capture_id")
@@ -567,6 +571,7 @@ class EnrollmentService:
             if len(pending.audio) + len(pcm) > pending.byte_count:
                 raise ValueError("binary audio exceeds its declared length")
             pending.audio.extend(pcm)
+            pending.last_activity_at = time.monotonic()
             return capture_id, len(pending.audio)
 
     async def _sample_end(self, device_id: str | None, event: dict) -> None:
@@ -586,7 +591,7 @@ class EnrollmentService:
             device = self.devices.get(device_id)
             if device is None:
                 raise ValueError("device disconnected before capture completed")
-            self._persist(capture_id, pending, device, bytes(pending.audio))
+            self._persist(capture_id, pending, bytes(pending.audio))
             self.pending.pop(capture_id, None)
             await device.websocket.send_json(
                 {"type": "stored", "capture_id": capture_id}
@@ -638,9 +643,7 @@ class EnrollmentService:
             ):
                 raise ValueError("device would cross device profiles")
 
-    def _persist(
-        self, capture_id: str, pending: PendingCapture, device: Device, pcm: bytes
-    ) -> None:
+    def _persist(self, capture_id: str, pending: PendingCapture, pcm: bytes) -> None:
         audio_dir = self.corpus / "audio"
         audio_dir.mkdir(parents=True, exist_ok=True)
         relative = Path("audio") / f"{capture_id}.wav"
@@ -664,14 +667,14 @@ class EnrollmentService:
                 "speakers": {},
                 "captures": [],
             }
-        profile = {"audio": device.audio}
-        existing = manifest["device_profiles"].get(device.profile)
+        profile = {"audio": pending.audio_profile}
+        existing = manifest["device_profiles"].get(pending.device_profile)
         if existing is not None and existing != profile:
             destination.unlink(missing_ok=True)
             raise ValueError(
-                f"device profile {device.profile} changed its audio contract"
+                f"device profile {pending.device_profile} changed its audio contract"
             )
-        manifest["device_profiles"][device.profile] = profile
+        manifest["device_profiles"][pending.device_profile] = profile
         request = pending.request
         manifest["captures"].append(
             {
@@ -689,7 +692,7 @@ class EnrollmentService:
                 "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
                 "device_id": request["device_id"],
                 "device_profile": request["device_profile"],
-                "firmware_sha": device.firmware_sha,
+                "firmware_sha": pending.firmware_sha,
                 "conditions": request.get("conditions", {}),
             }
         )
