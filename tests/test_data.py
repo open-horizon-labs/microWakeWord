@@ -4,7 +4,10 @@ from collections import Counter
 import numpy as np
 
 from microwakeword.data import FeatureHandler, MmapFeatureGenerator, largest_remainder_counts
-from microwakeword.train import constrain_faph_by_negative_false_accepts
+from microwakeword.train import (
+    constrain_faph_by_negative_false_accepts,
+    labeled_validation_operating_point,
+)
 
 
 class SplitFeatureGeneratorTest(unittest.TestCase):
@@ -111,6 +114,27 @@ class StratifiedSamplingTest(unittest.TestCase):
             ledger["realized_sources"]["kizz"]["weighted_pressure_share"], 0.4
         )
 
+    def test_mode_label_counts_respects_evaluation_enabled(self):
+        class Provider:
+            def __init__(self, label, count):
+                self.label = label
+                self.count = count
+
+            def get_mode_size(self, mode):
+                return self.count
+
+        handler = FeatureHandler.__new__(FeatureHandler)
+        handler.feature_providers = [
+            Provider(False, 7),
+            Provider(True, 5),
+            Provider(True, 11),
+        ]
+        handler.evaluation_enabled = [True, True, False]
+
+        self.assertEqual(
+            handler.get_mode_label_counts("validation"), {0: 7, 1: 5}
+        )
+
 
 class FalseAcceptConstraintTest(unittest.TestCase):
     def test_labeled_negative_accept_makes_cutoff_unusable(self):
@@ -120,6 +144,16 @@ class FalseAcceptConstraintTest(unittest.TestCase):
 
         self.assertTrue(np.isinf(constrained[0]))
         np.testing.assert_array_equal(constrained[1:], [1.0, 0.0])
+
+    def test_labeled_validation_selects_lowest_zero_false_accept_cutoff(self):
+        cutoff, recall = labeled_validation_operating_point(
+            true_positives=np.array([10, 9, 8, 7]),
+            false_positives=np.array([3, 1, 0, 0]),
+            false_negatives=np.array([0, 1, 2, 3]),
+        )
+
+        self.assertAlmostEqual(cutoff, 2 / 3)
+        self.assertAlmostEqual(recall, 0.8)
 
 
 if __name__ == "__main__":

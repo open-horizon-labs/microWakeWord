@@ -1,4 +1,4 @@
-recipe_version: 5
+recipe_version: 6
 name: hiphi_kizz
 sample_rate_hz: 16000
 clip_duration_ms: 2000
@@ -45,8 +45,6 @@ positive_phrases:
     samples: 1000
   - text: hiffy kids
     samples: 1000
-  - text: High Five Kizz
-    samples: 1000
 
 # These are not aliases. They are deliberately confusing speech that must not
 # wake Kizz, with extra weight on the short-word neighbors most likely to fire.
@@ -78,6 +76,11 @@ hard_negative_phrases:
   - text: hi kids
     samples: 800
   - text: high five kids
+    samples: 1500
+  # The /v/ in "five" is a real extra consonant, not a pronunciation variant
+  # of Hi-Fi. Keeping this collision negative prevents the model from learning
+  # an over-broad "high f... Kizz" shortcut.
+  - text: High Five Kizz
     samples: 1500
 
   # Conjunction-mining negatives: require both an accepted HiPhi prefix and the

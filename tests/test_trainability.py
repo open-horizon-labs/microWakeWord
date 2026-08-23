@@ -1,11 +1,36 @@
 import unittest
 
+import numpy as np
 import tensorflow as tf
 
-from microwakeword.train import configure_trainable_layers, configured_training_loss
+from microwakeword.train import (
+    combined_sample_weights,
+    configure_trainable_layers,
+    configured_training_loss,
+    require_binary_validation,
+)
 
 
 class TrainabilityPolicyTest(unittest.TestCase):
+    def test_combined_sample_weights_remain_one_dimensional(self):
+        weights = combined_sample_weights(
+            labels=np.array([1, 0, 0]),
+            penalty_weights=np.array([1.0, 2.0, 3.0]),
+            positive_class_weight=4,
+            negative_class_weight=5,
+        )
+
+        np.testing.assert_array_equal(weights, np.array([4.0, 10.0, 15.0]))
+        self.assertEqual(weights.shape, (3,))
+
+    def test_checkpoint_selection_requires_both_validation_classes(self):
+        class Processor:
+            def get_mode_label_counts(self, mode):
+                return {0: 12, 1: 0}
+
+        with self.assertRaisesRegex(ValueError, "missing: positive"):
+            require_binary_validation(Processor())
+
     def test_freeze_feature_extractor_leaves_only_classifier_trainable(self):
         model = tf.keras.Sequential(
             [

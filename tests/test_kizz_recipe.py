@@ -68,7 +68,6 @@ class KizzRecipeTest(unittest.TestCase):
                 "hee fee kids",
                 "high fee kids",
                 "hiffy kids",
-                "High Five Kizz",
             }.issubset(phrases)
         )
         counts = {
@@ -89,10 +88,20 @@ class KizzRecipeTest(unittest.TestCase):
                 "hee fee kids",
                 "high fee kids",
                 "hiffy kids",
-                "High Five Kizz",
             }.isdisjoint(phrases)
         )
-        self.assertIn("high five kids", phrases)
+        self.assertTrue({"high five kids", "High Five Kizz"}.issubset(phrases))
+
+    def test_high_five_kizz_is_not_a_positive_alias(self):
+        positives = {
+            entry["text"].casefold() for entry in self.recipe["positive_phrases"]
+        }
+        negatives = {
+            entry["text"].casefold()
+            for entry in self.recipe["hard_negative_phrases"]
+        }
+        self.assertNotIn("high five kizz", positives)
+        self.assertIn("high five kizz", negatives)
 
     def test_pronunciation_probes_are_unseen_during_training(self):
         probes = yaml.safe_load((ROOT / "recipes/kizz/probes.yaml").read_text())

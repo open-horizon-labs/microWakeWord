@@ -71,6 +71,22 @@ def compute_metrics(true_positives, true_negatives, false_positives, false_negat
     }
 
 
+def false_negative_rates_at_cutoffs(positive_probabilities, cutoffs, data_set):
+    """Return false-negative rates, rejecting an unusable evaluation split."""
+    if not positive_probabilities:
+        raise ValueError(
+            f"{data_set} must contain at least one positive sample to compute ROC"
+        )
+    return np.asarray(
+        [
+            1
+            - sum(probability > cutoff for probability in positive_probabilities)
+            / len(positive_probabilities)
+            for cutoff in cutoffs
+        ]
+    )
+
+
 def metrics_to_string(metrics):
     """Utility function to return a string that describes various metrics.
 
@@ -375,12 +391,9 @@ def tflite_streaming_model_roc(
             positive_sample_streaming_probabilities.append(np.max(moving_average))
 
     # Compute the false negative rates at each cutoff
-    false_negative_rate_at_cutoffs = []
-    for cutoff in cutoffs:
-        true_accepts = sum(i > cutoff for i in positive_sample_streaming_probabilities)
-        false_negative_rate_at_cutoffs.append(
-            1 - true_accepts / len(positive_sample_streaming_probabilities)
-        )
+    false_negative_rate_at_cutoffs = false_negative_rates_at_cutoffs(
+        positive_sample_streaming_probabilities, cutoffs, data_set
+    )
 
     x_coordinates, y_coordinates, cutoffs_at_points = generate_roc_curve(
         false_accepts_per_hour=faph,
