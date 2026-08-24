@@ -149,7 +149,10 @@ class WriteOrderedStateScoringManifestsTest(unittest.TestCase):
                 if item["label"] == "negative"
             )
             self.assertEqual(negative["exposure_seconds"], 360_000.0)
-            self.assertEqual(negative["expected_path_sha256"], sha256_path(base / "validation-negative"))
+            self.assertEqual(
+                negative["expected_path_sha256"],
+                sha256_path(base / "validation-negative"),
+            )
             self.assertEqual(negative["frozen_path_sha256"], "v" * 64)
             self.assertEqual(
                 validation_manifest["input_hashes"]["frozen_negative_manifest_sha256"],
