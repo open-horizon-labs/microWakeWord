@@ -30,36 +30,56 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def scores_for_paths(model, paths, *, batch_size, device, positive_background_paths=None):
+def scores_for_paths(
+    model, paths, *, batch_size, device, positive_background_paths=None
+):
     import torch
 
-    values = []
+    # Stream windows rather than expanding a group of long files into one
+    # tensor. A five-minute speech file can contain thousands of overlapping
+    # 2-second windows; batching those all at once can make MPS request tens of
+    # gigabytes even when batch_size is small.
+    values = np.full(len(paths), -np.inf, dtype=np.float64)
+    pending = []
+    owners = []
     rng = np.random.default_rng(24111)
-    for start in range(0, len(paths), batch_size):
-        waveforms = []
-        window_counts = []
-        for path in paths[start : start + batch_size]:
-            waveform = load_waveform(path, sample_rate=TARGET_SAMPLE_RATE)
-            if positive_background_paths is not None:
-                background_path = positive_background_paths[int(rng.integers(0, len(positive_background_paths)))]
-                background = load_waveform(background_path, sample_rate=TARGET_SAMPLE_RATE)
-                windows = [mix_positive_context(waveform, background, rng=rng)]
-            elif len(waveform) > CONTEXT_SAMPLES:
-                offsets = range(0, len(waveform) - CONTEXT_SAMPLES + 1, CONTEXT_SAMPLES // 2)
-                windows = [fit_context(waveform, start=int(offset)) for offset in offsets]
-            else:
-                windows = [fit_context(waveform)]
-            waveforms.extend(windows)
-            window_counts.append(len(windows))
-        with torch.no_grad():
-            scores, _ = model(torch.from_numpy(np.asarray(waveforms)).to(device))
+
+    def flush_pending() -> None:
+        if not pending:
+            return
+        inputs = torch.from_numpy(np.asarray(pending, dtype=np.float32)).to(device)
+        with torch.inference_mode():
+            scores, _ = model(inputs)
         scores = scores.detach().cpu().numpy().astype(np.float64)
-        # A path is accepted if any deployment-like sliding window is accepted.
-        cursor = 0
-        for count in window_counts:
-            values.append(float(np.max(scores[cursor : cursor + count])))
-            cursor += count
-    return np.asarray(values, dtype=np.float64)
+        for owner, score in zip(owners, scores):
+            values[owner] = max(values[owner], float(score))
+        pending.clear()
+        owners.clear()
+        if device.type == "mps" and hasattr(torch.mps, "empty_cache"):
+            torch.mps.empty_cache()
+
+    for index, path in enumerate(paths):
+        waveform = load_waveform(path, sample_rate=TARGET_SAMPLE_RATE)
+        if positive_background_paths is not None:
+            background_path = positive_background_paths[
+                int(rng.integers(0, len(positive_background_paths)))
+            ]
+            background = load_waveform(background_path, sample_rate=TARGET_SAMPLE_RATE)
+            windows = (mix_positive_context(waveform, background, rng=rng),)
+        elif len(waveform) > CONTEXT_SAMPLES:
+            offsets = range(
+                0, len(waveform) - CONTEXT_SAMPLES + 1, CONTEXT_SAMPLES // 2
+            )
+            windows = (fit_context(waveform, start=int(offset)) for offset in offsets)
+        else:
+            windows = (fit_context(waveform),)
+        for window in windows:
+            pending.append(window)
+            owners.append(index)
+            if len(pending) >= batch_size:
+                flush_pending()
+    flush_pending()
+    return values
 
 
 def operating_point(positive, negative, negative_seconds, min_recall, max_faph):
@@ -98,9 +118,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--training-report", type=Path, required=True)
-    parser.add_argument("--positive-dir", type=Path, required=True)
+    parser.add_argument("--positive-dir", type=Path)
     parser.add_argument("--positive-background-dir", type=Path, required=True)
-    parser.add_argument("--negative-dir", type=Path, action="append", required=True)
+    parser.add_argument("--negative-dir", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        help="Use exactly the manifest's test examples instead of walking raw directories.",
+    )
     parser.add_argument("--heldout-false-wake-dir", type=Path)
     parser.add_argument("--heldout-false-wake-manifest", type=Path)
     parser.add_argument("--output", type=Path, required=True)
@@ -112,32 +137,89 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     import torch
 
+    if args.manifest is None and (args.positive_dir is None or not args.negative_dir):
+        parser.error("provide --manifest or both --positive-dir and --negative-dir")
+    if args.manifest is not None and (
+        args.positive_dir is not None or args.negative_dir
+    ):
+        parser.error(
+            "--manifest cannot be combined with raw positive/negative directories"
+        )
+
     if bool(args.heldout_false_wake_dir) == bool(args.heldout_false_wake_manifest):
         parser.error("provide exactly one held-out false-wake source")
 
     report = json.loads(args.training_report.read_text())
-    device = torch.device(args.device or ("mps" if torch.backends.mps.is_available() else "cpu"))
-    model, _ = build_model(report["backbone"], unfreeze_last_n=report["unfreeze_last_n"])
+    device = torch.device(
+        args.device or ("mps" if torch.backends.mps.is_available() else "cpu")
+    )
+    model, _ = build_model(
+        report["backbone"], unfreeze_last_n=report["unfreeze_last_n"]
+    )
     model.load_state_dict(torch.load(args.model, map_location="cpu"))
     model.to(device).eval()
-    positive_paths = list_audio_files(args.positive_dir)
     positive_background_paths = list_audio_files(args.positive_background_dir)
-    negative_paths = [path for directory in args.negative_dir for path in list_audio_files(directory)]
+    if args.manifest is not None:
+        manifest_examples = json.loads(args.manifest.read_text()).get("examples", [])
+        test_examples = [
+            item for item in manifest_examples if item.get("split") == "test"
+        ]
+        positive_paths = [
+            Path(item["path"]) for item in test_examples if int(item["label"]) == 1
+        ]
+        negative_paths = [
+            Path(item["path"]) for item in test_examples if int(item["label"]) == 0
+        ]
+    else:
+        positive_paths = list_audio_files(args.positive_dir)
+        negative_paths = [
+            path
+            for directory in args.negative_dir
+            for path in list_audio_files(directory)
+        ]
     if args.heldout_false_wake_manifest:
         payload = json.loads(args.heldout_false_wake_manifest.read_text())
         heldout_paths = tuple(Path(item["path"]) for item in payload["examples"])
         if any(int(item["label"]) != 0 for item in payload["examples"]):
-            parser.error("held-out false-wake manifest must contain only negative examples")
+            parser.error(
+                "held-out false-wake manifest must contain only negative examples"
+            )
     else:
         heldout_paths = list_audio_files(args.heldout_false_wake_dir)
-    positive_scores = scores_for_paths(model, positive_paths, batch_size=args.batch_size, device=device, positive_background_paths=positive_background_paths)
-    negative_scores = scores_for_paths(model, negative_paths, batch_size=args.batch_size, device=device)
-    heldout_scores = scores_for_paths(model, heldout_paths, batch_size=args.batch_size, device=device)
-    negative_seconds = sum(len(load_waveform(path, sample_rate=TARGET_SAMPLE_RATE)) for path in negative_paths) / TARGET_SAMPLE_RATE
-    point = operating_point(positive_scores, negative_scores, negative_seconds, args.min_recall, args.max_faph)
+    positive_scores = scores_for_paths(
+        model,
+        positive_paths,
+        batch_size=args.batch_size,
+        device=device,
+        positive_background_paths=positive_background_paths,
+    )
+    negative_scores = scores_for_paths(
+        model, negative_paths, batch_size=args.batch_size, device=device
+    )
+    heldout_scores = scores_for_paths(
+        model, heldout_paths, batch_size=args.batch_size, device=device
+    )
+    negative_seconds = (
+        sum(
+            len(load_waveform(path, sample_rate=TARGET_SAMPLE_RATE))
+            for path in negative_paths
+        )
+        / TARGET_SAMPLE_RATE
+    )
+    point = operating_point(
+        positive_scores,
+        negative_scores,
+        negative_seconds,
+        args.min_recall,
+        args.max_faph,
+    )
     threshold = point["threshold"]
-    heldout_accepts = None if threshold is None else int(np.sum(heldout_scores >= threshold))
-    qualified = bool(point["qualified"] and heldout_accepts <= args.max_heldout_false_wake_accepts)
+    heldout_accepts = (
+        None if threshold is None else int(np.sum(heldout_scores >= threshold))
+    )
+    qualified = bool(
+        point["qualified"] and heldout_accepts <= args.max_heldout_false_wake_accepts
+    )
     result = {
         "schema_version": 1,
         "model": str(args.model.resolve()),
@@ -148,7 +230,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "negative_exposure_seconds": negative_seconds,
         "heldout_false_wake_count": len(heldout_scores),
         "heldout_false_wake_accepts": heldout_accepts,
-        "limits": {"min_recall": args.min_recall, "max_faph": args.max_faph, "max_heldout_false_wake_accepts": args.max_heldout_false_wake_accepts},
+        "limits": {
+            "min_recall": args.min_recall,
+            "max_faph": args.max_faph,
+            "max_heldout_false_wake_accepts": args.max_heldout_false_wake_accepts,
+        },
         "operating_point": point,
         "score_summary": {
             "positive": {

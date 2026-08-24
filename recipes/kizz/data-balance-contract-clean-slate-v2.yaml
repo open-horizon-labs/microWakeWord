@@ -1,0 +1,36 @@
+schema_version: 1
+training_split: train
+splits: [train, validation, test]
+require_each_split: [positive, negative]
+required_metadata: [speaker_id, session_id]
+
+# This contract describes the clean-slate-v2 corpus honestly: it has broad
+# provider-diverse synthesis and device-rendered anchors, but no natural human
+# positive cohort yet. Natural positives remain a qualification requirement.
+overall:
+  min_positive_fraction: 0.30
+  max_positive_fraction: 0.70
+
+classes:
+  positive:
+    min_source_groups: 5
+    required_source_groups: [assemblyai_synthetic, deepgram_synthetic, elevenlabs_synthetic, kokoro_synthetic, noisy_overlay]
+    max_source_fraction: 0.75
+    min_source_fractions:
+      assemblyai_synthetic: 0.03
+      deepgram_synthetic: 0.03
+      elevenlabs_synthetic: 0.03
+      kokoro_synthetic: 0.03
+      noisy_overlay: 0.20
+  negative:
+    min_source_groups: 3
+    required_source_groups: [public_speech, music, background_noise]
+    max_source_fraction: 0.70
+    min_source_fractions:
+      public_speech: 0.20
+      music: 0.20
+      background_noise: 0.20
+
+split_disjoint:
+  speaker_id: false
+  session_id: true

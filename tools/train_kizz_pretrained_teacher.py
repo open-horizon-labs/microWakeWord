@@ -22,15 +22,18 @@ from microwakeword.kizz_pretrained_teacher import (
 from microwakeword.kizz_data_contract import sha256_file as balance_sha256_file
 from microwakeword.kizz_data_contract import validate_balance_manifest
 
-
 sha256_file = balance_sha256_file
 
 
 def write_manifest(path: Path, examples: list[dict]) -> None:
-    path.write_text(json.dumps({"schema_version": 2, "examples": examples}, indent=2) + "\n")
+    path.write_text(
+        json.dumps({"schema_version": 2, "examples": examples}, indent=2) + "\n"
+    )
 
 
-def collect_examples(root: Path, label: int, source_id: str, limit: int | None) -> list[dict]:
+def collect_examples(
+    root: Path, label: int, source_id: str, limit: int | None
+) -> list[dict]:
     paths = list_audio_files(root)
     if limit is not None:
         paths = paths[:limit]
@@ -56,13 +59,17 @@ def load_manifest(path: Path) -> list[dict]:
 def batch_examples(examples, background_paths, *, batch_size, rng):
     import torch
 
-    selected = [examples[int(i)] for i in rng.integers(0, len(examples), size=batch_size)]
+    selected = [
+        examples[int(i)] for i in rng.integers(0, len(examples), size=batch_size)
+    ]
     values = []
     labels = []
     for item in selected:
         waveform = load_waveform(Path(item["path"]), sample_rate=TARGET_SAMPLE_RATE)
         if int(item["label"]):
-            background_path = background_paths[int(rng.integers(0, len(background_paths)))]
+            background_path = background_paths[
+                int(rng.integers(0, len(background_paths)))
+            ]
             background = load_waveform(background_path, sample_rate=TARGET_SAMPLE_RATE)
             waveform = mix_positive_context(waveform, background, rng=rng)
         else:
@@ -73,7 +80,9 @@ def batch_examples(examples, background_paths, *, batch_size, rng):
                 waveform = np.pad(waveform, (0, CONTEXT_SAMPLES - len(waveform)))
         values.append(waveform)
         labels.append(float(item["label"]))
-    return torch.from_numpy(np.asarray(values, dtype=np.float32)), torch.tensor(labels, dtype=torch.float32)
+    return torch.from_numpy(np.asarray(values, dtype=np.float32)), torch.tensor(
+        labels, dtype=torch.float32
+    )
 
 
 def train(args: argparse.Namespace) -> dict:
@@ -83,7 +92,9 @@ def train(args: argparse.Namespace) -> dict:
     random.seed(args.seed)
     rng = np.random.default_rng(args.seed)
     torch.manual_seed(args.seed)
-    device = torch.device(args.device or ("mps" if torch.backends.mps.is_available() else "cpu"))
+    device = torch.device(
+        args.device or ("mps" if torch.backends.mps.is_available() else "cpu")
+    )
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     balance_report = validate_balance_manifest(
@@ -96,13 +107,17 @@ def train(args: argparse.Namespace) -> dict:
     )
     if not balance_report["qualified"]:
         raise ValueError(
-            "source-balance contract rejected manifest; see "
-            f"{balance_report_path}"
+            "source-balance contract rejected manifest; see " f"{balance_report_path}"
         )
-    model, hidden_size = build_model(args.backbone, unfreeze_last_n=args.unfreeze_last_n)
+    model, hidden_size = build_model(
+        args.backbone, unfreeze_last_n=args.unfreeze_last_n
+    )
     model.to(device)
     model.train()
-    examples = load_manifest(args.manifest)
+    all_examples = load_manifest(args.manifest)
+    examples = [item for item in all_examples if item.get("split") == "train"]
+    if not examples:
+        raise ValueError("manifest has no train examples for teacher fitting")
     background_paths = list_audio_files(args.background_dir)
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=args.learning_rate, weight_decay=1e-4)
@@ -125,7 +140,10 @@ def train(args: argparse.Namespace) -> dict:
             best_loss = value
             torch.save(model.state_dict(), output / "best.pt")
         if step == 0 or (step + 1) % args.log_interval == 0:
-            print(json.dumps({"step": step + 1, "loss": value, "best_loss": best_loss}), flush=True)
+            print(
+                json.dumps({"step": step + 1, "loss": value, "best_loss": best_loss}),
+                flush=True,
+            )
     torch.save(model.state_dict(), output / "last.pt")
     report = {
         "schema_version": 1,
@@ -150,7 +168,9 @@ def train(args: argparse.Namespace) -> dict:
         "last_loss": losses[-1],
         "mean_last_100_loss": float(np.mean(losses[-100:])),
     }
-    (output / "teacher-training.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    (output / "teacher-training.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n"
+    )
     print(json.dumps(report, indent=2, sort_keys=True))
     return report
 
