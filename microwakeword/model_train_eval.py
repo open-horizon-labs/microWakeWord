@@ -38,9 +38,9 @@ import microwakeword.utils as utils
 
 import microwakeword.inception as inception
 import microwakeword.mixednet as mixednet
+import microwakeword.ordered_state_model as ordered_state_model
 
 from microwakeword.layers import modes
-
 
 _NON_MODEL_FLAGS = {
     "model_name",
@@ -68,7 +68,9 @@ def apply_model_parameters(config, flags):
         raise ValueError(f"unknown model parameters: {sorted(unknown)}")
     forbidden = set(parameters) & _NON_MODEL_FLAGS
     if forbidden:
-        raise ValueError(f"model_parameters contains non-model flags: {sorted(forbidden)}")
+        raise ValueError(
+            f"model_parameters contains non-model flags: {sorted(forbidden)}"
+        )
     for name, value in parameters.items():
         setattr(flags, name, value)
 
@@ -154,6 +156,11 @@ def train_model(config, model, data_processor, restore_checkpoint):
 
     with open(config_fname, "w") as outfile:
         yaml.dump(config, outfile, default_flow_style=False)
+
+    if contract := config.get("ordered_state_decoder_contract"):
+        ordered_state_model.write_decoder_contract(
+            os.path.join(config["train_dir"], "ordered-state-decoder.json"), contract
+        )
 
     utils.save_model_summary(model, config["train_dir"])
 
@@ -285,7 +292,9 @@ def evaluate_model(
         utils.convert_saved_model_to_tflite(
             config,
             audio_processor=data_processor,
-            path_to_model=os.path.join(config["train_dir"], tflite_config["source_folder"]),
+            path_to_model=os.path.join(
+                config["train_dir"], tflite_config["source_folder"]
+            ),
             folder=os.path.join(config["train_dir"], tflite_config["output_folder"]),
             fname=tflite_config["filename"],
             quantize=tflite_config["quantize"],
@@ -425,6 +434,10 @@ if __name__ == "__main__":
     parser_mixednet = subparsers.add_parser("mixednet")
     mixednet.model_parameters(parser_mixednet)
 
+    # Kizz ordered-state acoustic model settings
+    parser_ordered_state = subparsers.add_parser("ordered_state")
+    ordered_state_model.model_parameters(parser_ordered_state)
+
     flags, unparsed = parser.parse_known_args()
     if unparsed:
         raise ValueError("Unknown argument: {}".format(unparsed))
@@ -433,12 +446,20 @@ if __name__ == "__main__":
         model_module = inception
     elif flags.model_name == "mixednet":
         model_module = mixednet
+    elif flags.model_name == "ordered_state":
+        model_module = ordered_state_model
     else:
         raise ValueError("Unknown model type: {}".format(flags.model_name))
 
     logging.set_verbosity(flags.verbosity)
 
     config = load_config(flags, model_module)
+
+    if flags.model_name == "ordered_state":
+        config["ordered_state_decoder_contract"] = ordered_state_model.decoder_contract(
+            config.get("training_loss"),
+            config["stride"] * config["window_step_ms"] / 1000.0,
+        )
 
     if training_seed := config.get("training_seed"):
         tf.keras.utils.set_random_seed(int(training_seed))
@@ -451,6 +472,10 @@ if __name__ == "__main__":
         model = model_module.model(
             flags, config["training_input_shape"], config["batch_size"]
         )
+        if flags.model_name == "ordered_state":
+            model = ordered_state_model.training_model(
+                model, config.get("training_loss")
+            )
         logging.info(model.summary())
         train_model(config, model, data_processor, flags.restore_checkpoint)
     else:
@@ -467,11 +492,29 @@ if __name__ == "__main__":
             flags, shape=config["training_input_shape"], batch_size=1
         )
 
+        if flags.model_name == "ordered_state":
+            model = ordered_state_model.training_model(
+                model, config.get("training_loss")
+            )
+
         model.load_weights(
             os.path.join(config["train_dir"], flags.use_weights) + ".weights.h5"
         )
 
         logging.info(model.summary())
+
+        if flags.model_name == "ordered_state":
+            if flags.test_tf_nonstreaming:
+                raise ValueError(
+                    "ordered_state TensorFlow evaluation requires the ordered-state "
+                    "evaluator; disable --test_tf_nonstreaming"
+                )
+            if flags.tflite_roc_split != "none":
+                raise ValueError(
+                    "ordered_state artifacts require the ordered-state streaming "
+                    "evaluator; pass --tflite_roc_split none"
+                )
+            model = ordered_state_model.acoustic_model(model)
 
         evaluate_model(
             config,

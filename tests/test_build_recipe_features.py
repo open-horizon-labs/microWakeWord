@@ -15,6 +15,7 @@ from tools.build_recipe_features import (
     generate_class_features,
     phrase_slug,
     selected_phrase_directories,
+    selected_text_source_directories,
     staged_clip_source,
     validate_generated_corpus,
     validate_metadata_texts,
@@ -110,6 +111,46 @@ class SelectedPhraseFeaturesTest(unittest.TestCase):
             selected_phrase_directories(manifest, "hard_negative", ["high five kids"]),
             [Path("/negative")],
         )
+
+    def test_selects_connected_sentence_source_without_phrase_entries(self):
+        manifest = {
+            "plan": [
+                {
+                    "class": "hard_negative",
+                    "text": "high five kids",
+                    "output": "/phrase",
+                },
+                {
+                    "class": "hard_negative",
+                    "text": None,
+                    "text_source": "connected-household-speech",
+                    "split": "train",
+                    "output": "/connected-train",
+                },
+                {
+                    "class": "hard_negative",
+                    "text": None,
+                    "text_source": "connected-household-speech",
+                    "split": "test",
+                    "output": "/connected-test",
+                },
+            ]
+        }
+        self.assertEqual(
+            selected_text_source_directories(
+                manifest,
+                "hard_negative",
+                ["connected-household-speech"],
+                split="train",
+            ),
+            [Path("/connected-train")],
+        )
+
+    def test_rejects_unknown_connected_sentence_source(self):
+        with self.assertRaisesRegex(ValueError, "unknown hard_negative text source"):
+            selected_text_source_directories(
+                {"plan": []}, "hard_negative", ["missing-source"]
+            )
 
     def test_stages_selected_wavs_without_name_collisions(self):
         with tempfile.TemporaryDirectory() as temporary:

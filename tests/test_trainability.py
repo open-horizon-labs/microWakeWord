@@ -7,6 +7,7 @@ from microwakeword.train import (
     combined_sample_weights,
     configure_trainable_layers,
     configured_training_loss,
+    configured_training_metrics,
     require_binary_validation,
 )
 
@@ -68,6 +69,18 @@ class TrainabilityPolicyTest(unittest.TestCase):
         self.assertIsInstance(loss, tf.keras.losses.BinaryFocalCrossentropy)
         self.assertEqual(loss.gamma, 1.5)
         self.assertFalse(loss.apply_class_balancing)
+
+    def test_ordered_state_endpoint_uses_binary_loss_on_the_sequence_score(self):
+        loss = configured_training_loss(
+            {"training_loss": {"name": "ordered_state_sequence"}}
+        )
+        self.assertIsInstance(loss, tf.keras.losses.BinaryCrossentropy)
+        self.assertTrue(loss.from_logits)
+        metrics = configured_training_metrics(
+            {"training_loss": {"name": "ordered_state_sequence"}}
+        )
+        self.assertEqual(metrics[0].metric.threshold, 0.5)
+        self.assertEqual(metrics[-2].metric.name, "auc")
 
     def test_rejects_unknown_loss(self):
         with self.assertRaisesRegex(ValueError, "unsupported training loss"):
