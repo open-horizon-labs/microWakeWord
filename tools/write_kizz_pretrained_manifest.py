@@ -20,9 +20,51 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def directory_examples(root: Path, label: int, source_id: str) -> list[dict]:
+_METADATA_CACHE: dict[Path, dict[Path, dict]] = {}
+
+
+def metadata_for(path: Path) -> dict:
+    """Recover speaker/session provenance from the generator sidecar when present."""
+    for parent in (path.parent, *path.parents):
+        metadata_path = parent / "synthesis-metadata.jsonl"
+        if not metadata_path.is_file():
+            continue
+        rows = _METADATA_CACHE.get(metadata_path)
+        if rows is None:
+            rows = {}
+            for line in metadata_path.read_text().splitlines():
+                if line.strip():
+                    row = json.loads(line)
+                    rows[(metadata_path.parent / row["file"]).resolve()] = row
+            _METADATA_CACHE[metadata_path] = rows
+        row = rows.get(path.resolve(), {})
+        if row.get("speaker_id"):
+            speaker_id = f"{row.get('provider', 'tts')}:{row['speaker_id']}"
+        elif "speaker_1" in row or "speaker_2" in row:
+            speaker_id = f"piper:{row.get('speaker_1')}:{row.get('speaker_2')}"
+        else:
+            speaker_id = None
+        return {
+            "speaker_id": speaker_id,
+            "session_id": f"synthesis:{metadata_path.parent}",
+        }
+    return {}
+
+
+def directory_examples(
+    root: Path,
+    label: int,
+    source_group: str,
+    split: str = "train",
+) -> list[dict]:
     return [
-        {"path": str(path.resolve()), "label": int(label), "source_id": source_id}
+        {
+            "path": str(path.resolve()),
+            "label": int(label),
+            "source_group": source_group,
+            "split": split,
+            **metadata_for(path),
+        }
         for path in list_audio_files(root)
     ]
 
@@ -40,10 +82,19 @@ def false_wake_examples(manifest_path: Path, root: Path, split: str) -> list[dic
         if item["observation_id"] not in selected:
             continue
         path = (manifest_path.parent / item["path"]).resolve()
+        metadata_path = path.with_suffix(".json")
+        observation = json.loads(metadata_path.read_text()) if metadata_path.is_file() else {}
         examples.append(
-            {"path": str(path), "label": 0, "source_id": f"device_false_wake_{split}"}
+            {
+                "path": str(path),
+                "label": 0,
+                "source_group": "device_false_wake",
+                "split": "train",
+                "speaker_id": f"device:{observation.get('device_id', 'unknown')}",
+                "session_id": f"observation:{item['observation_id']}",
+            }
         )
-    if {item["source_id"] for item in examples} != {f"device_false_wake_{split}"}:
+    if not examples:
         raise ValueError(f"false-wake split is empty: {split}")
     return examples
 
@@ -57,17 +108,38 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
 
-    examples = directory_examples(args.positive_root, 1, "canonical_positive")
-    for directory in sorted(args.negative_root.iterdir()):
-        if not directory.is_dir():
-            continue
-        for split in ("train",):
-            split_dir = directory / split
-            if split_dir.is_dir():
-                examples.extend(directory_examples(split_dir, 0, f"hard_negative:{directory.name}"))
+    positive_examples = []
+    for path in list_audio_files(args.positive_root):
+        relative_parts = path.relative_to(args.positive_root).parts
+        source_group = (
+            "labeled_tts"
+            if any(part.startswith("labeled-kizz_") for part in relative_parts)
+            else "piper_synthetic"
+        )
+        positive_examples.append(
+            {
+                "path": str(path.resolve()),
+                "label": 1,
+                "source_group": source_group,
+                "split": next(
+                    (part for part in relative_parts if part in {"train", "validation", "test"}),
+                    "train",
+                ),
+                **metadata_for(path),
+            }
+        )
+    examples = positive_examples
+    negative_root = args.negative_root / "hard_negative"
+    if not negative_root.is_dir():
+        raise ValueError(f"negative root has no hard_negative directory: {negative_root}")
+    for split_dir in sorted(negative_root.rglob("*")):
+        if split_dir.is_dir() and split_dir.name in {"train", "validation", "test"}:
+            examples.extend(
+                directory_examples(split_dir, 0, "piper_hard_negative", split_dir.name)
+            )
     examples.extend(false_wake_examples(args.false_wake_manifest, args.false_wake_root, "training"))
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "sample_rate": 16_000,
         "context_samples": 32_000,
         "examples": examples,

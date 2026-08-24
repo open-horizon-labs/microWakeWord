@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import random
 from pathlib import Path
@@ -20,18 +19,15 @@ from microwakeword.kizz_pretrained_teacher import (
     load_waveform,
     mix_positive_context,
 )
+from microwakeword.kizz_data_contract import sha256_file as balance_sha256_file
+from microwakeword.kizz_data_contract import validate_balance_manifest
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+sha256_file = balance_sha256_file
 
 
 def write_manifest(path: Path, examples: list[dict]) -> None:
-    path.write_text(json.dumps({"schema_version": 1, "examples": examples}, indent=2) + "\n")
+    path.write_text(json.dumps({"schema_version": 2, "examples": examples}, indent=2) + "\n")
 
 
 def collect_examples(root: Path, label: int, source_id: str, limit: int | None) -> list[dict]:
@@ -39,7 +35,12 @@ def collect_examples(root: Path, label: int, source_id: str, limit: int | None) 
     if limit is not None:
         paths = paths[:limit]
     return [
-        {"path": str(path.resolve()), "label": int(label), "source_id": source_id}
+        {
+            "path": str(path.resolve()),
+            "label": int(label),
+            "source_group": source_id,
+            "split": "train",
+        }
         for path in paths
     ]
 
@@ -83,6 +84,21 @@ def train(args: argparse.Namespace) -> dict:
     rng = np.random.default_rng(args.seed)
     torch.manual_seed(args.seed)
     device = torch.device(args.device or ("mps" if torch.backends.mps.is_available() else "cpu"))
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    balance_report = validate_balance_manifest(
+        args.manifest,
+        args.balance_contract,
+    )
+    balance_report_path = output / "balance-report.json"
+    balance_report_path.write_text(
+        json.dumps(balance_report, indent=2, sort_keys=True) + "\n"
+    )
+    if not balance_report["qualified"]:
+        raise ValueError(
+            "source-balance contract rejected manifest; see "
+            f"{balance_report_path}"
+        )
     model, hidden_size = build_model(args.backbone, unfreeze_last_n=args.unfreeze_last_n)
     model.to(device)
     model.train()
@@ -90,8 +106,6 @@ def train(args: argparse.Namespace) -> dict:
     background_paths = list_audio_files(args.background_dir)
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=args.learning_rate, weight_decay=1e-4)
-    output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=True)
     best_loss = float("inf")
     losses = []
     for step in range(args.steps):
@@ -122,6 +136,9 @@ def train(args: argparse.Namespace) -> dict:
         "context_samples": CONTEXT_SAMPLES,
         "manifest": str(args.manifest.resolve()),
         "manifest_sha256": sha256_file(args.manifest),
+        "balance_contract": str(args.balance_contract.resolve()),
+        "balance_report": str(balance_report_path),
+        "balance_report_sha256": sha256_file(balance_report_path),
         "background_dir": str(args.background_dir.resolve()),
         "steps": args.steps,
         "batch_size": args.batch_size,
@@ -141,6 +158,7 @@ def train(args: argparse.Namespace) -> dict:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--balance-contract", type=Path, required=True)
     parser.add_argument("--background-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--backbone", default="microsoft/wavlm-base-plus")

@@ -9,7 +9,6 @@ bound checkpoint plus a JSON training report.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 from typing import Sequence
@@ -23,14 +22,11 @@ from microwakeword.kizz_teacher import (
     build_teacher,
     teacher_loss,
 )
+from microwakeword.kizz_data_contract import sha256_file as balance_sha256_file
+from microwakeword.kizz_data_contract import validate_balance_manifest
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+sha256_file = balance_sha256_file
 
 
 def parse_source(value: str) -> NegativeSource:
@@ -63,6 +59,19 @@ def parse_probability(value: str) -> tuple[str, float]:
 def train(args: argparse.Namespace) -> dict:
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    balance_report = validate_balance_manifest(
+        args.balance_manifest,
+        args.balance_contract,
+    )
+    balance_report_path = output / "balance-report.json"
+    balance_report_path.write_text(
+        json.dumps(balance_report, indent=2, sort_keys=True) + "\n"
+    )
+    if not balance_report["qualified"]:
+        raise ValueError(
+            "source-balance contract rejected manifest; see "
+            f"{balance_report_path}"
+        )
     tf.keras.utils.set_random_seed(args.seed)
 
     model = build_teacher(hidden_size=args.hidden_size, recurrent_layers=args.recurrent_layers)
@@ -144,6 +153,11 @@ def train(args: argparse.Namespace) -> dict:
         "positive_features_sha256": sha256_file(args.positive_features),
         "positive_targets": str(args.positive_targets.resolve()),
         "positive_targets_sha256": sha256_file(args.positive_targets),
+        "balance_manifest": str(args.balance_manifest.resolve()),
+        "balance_manifest_sha256": sha256_file(args.balance_manifest),
+        "balance_contract": str(args.balance_contract.resolve()),
+        "balance_report": str(balance_report_path),
+        "balance_report_sha256": sha256_file(balance_report_path),
         "negative_sources": [
             {"id": source.source_id, "path": str(source.path)}
             for source in args.negative_source
@@ -162,6 +176,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--positive-features", type=Path, required=True)
     parser.add_argument("--positive-targets", type=Path, required=True)
+    parser.add_argument("--balance-manifest", type=Path, required=True)
+    parser.add_argument("--balance-contract", type=Path, required=True)
     parser.add_argument("--negative-source", type=parse_source, action="append", required=True)
     parser.add_argument(
         "--negative-source-probability",
