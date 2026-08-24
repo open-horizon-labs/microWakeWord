@@ -195,6 +195,43 @@ prevents an omitted final stride from biasing false-accepts/hour. A conflicting
 decoder argument is rejected. Cooldown belongs either to the decoder or the
 evaluator, never both.
 
+## Salvage learnings (2026-08-24)
+
+This attempt is salvaged before another firmware pass. The following findings
+change the next experiment:
+
+- The converted candidate was not teacher-distilled. It was a scratch-trained
+  ordered-state student. Its failure is evidence against this exact scratch
+  recipe, not against teacher distillation or every sequential model.
+- Direct quantized streaming evaluation on the 500-item canonical validation
+  set found 357/500 recall at completion margin `0` and 383/500 (76.6%) at the
+  most permissive tested margin `-2`. The required floor is 90%, so threshold
+  tuning cannot rescue this artifact.
+- The CHiME6 validation slice alone produced one false activation in 34,813.68
+  seconds (0.1034 false accepts/hour), already above the 0.1 ceiling. The
+  larger FSD50K slice was not needed to reject the candidate after recall had
+  failed; the untouched test set remained closed.
+- The evaluator initially rejected regenerated manifests because the frozen
+  inventory's record hash was being reused as the scorer's live directory hash.
+  These are distinct provenance contracts. Manifests now preserve
+  `frozen_path_sha256` and independently compute `expected_path_sha256`.
+- The 630 ms minimum path and equal-third beginning/middle/end supervision are
+  still plausible recall bottlenecks. They must be changed or ablated in the
+  next experiment; simply extending this run is not justified.
+- A qualifying model is a prerequisite for firmware integration. With no
+  qualifying artifact and no enumerated StackChan serial port, build/flash
+  work would only create false confidence and must remain blocked.
+
+### Fresh-start recommendation
+
+Keep the deterministic manifests, source/session-disjoint splits, quarantine
+boundary, exact streaming scorer, and no-flash gate. Start a new experiment
+with an explicitly measured teacher (teacher logits or posterior state
+alignments), a student objective that preserves teacher sequence decisions,
+and ablations for path duration, temporal capacity, and frontend. Promote only
+after the quantized student clears both validation and untouched test gates,
+then integrate it behind an exact-device resource report before flashing.
+
 ## Research lineage
 
 This design follows the low-compute shape described in Apple's
