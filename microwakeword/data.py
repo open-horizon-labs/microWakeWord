@@ -28,6 +28,7 @@ from mmap_ninja.ragged import RaggedMmap
 from microwakeword.audio.clips import Clips
 from microwakeword.audio.augmentation import Augmentation
 from microwakeword.audio.spectrograms import SpectrogramGeneration
+from microwakeword.provenance import sha256_path
 
 
 def largest_remainder_counts(total: int, weights: dict[str, float]) -> dict[str, int]:
@@ -455,6 +456,15 @@ class FeatureHandler(object):
         logging.info("Loading and analyzing data sets.")
 
         for feature_set in config["features"]:
+            expected_path_sha256 = feature_set.get("expected_path_sha256")
+            if expected_path_sha256 is not None:
+                actual_path_sha256 = sha256_path(Path(feature_set["features_dir"]))
+                if actual_path_sha256 != expected_path_sha256:
+                    raise ValueError(
+                        "training feature content hash mismatch for "
+                        f"{feature_set['features_dir']}: expected "
+                        f"{expected_path_sha256}, got {actual_path_sha256}"
+                    )
             if feature_set["type"] == "mmap":
                 self.feature_providers.append(
                     MmapFeatureGenerator(
@@ -487,9 +497,7 @@ class FeatureHandler(object):
                         feature_set["truncation_strategy"],
                     )
                 )
-            self.evaluation_enabled.append(
-                feature_set.get("evaluation_enabled", True)
-            )
+            self.evaluation_enabled.append(feature_set.get("evaluation_enabled", True))
             self.sampling_groups.append(feature_set.get("sampling_group"))
             self.sampling_sources.append(
                 feature_set.get("sampling_source", feature_set["features_dir"])
@@ -608,9 +616,7 @@ class FeatureHandler(object):
         if mode == "training":
             active = [
                 (provider, group)
-                for provider, group in zip(
-                    self.feature_providers, self.sampling_groups
-                )
+                for provider, group in zip(self.feature_providers, self.sampling_groups)
                 if provider.get_mode_size("training") and provider.sampling_weight > 0
             ]
             if self.sampling_group_weights:
@@ -709,6 +715,53 @@ class FeatureHandler(object):
             np.random.shuffle(indices)
 
         return data[indices], labels[indices], weights[indices]
+
+    def get_data_batches(
+        self,
+        mode: str,
+        batch_size: int,
+        features_length: int,
+        truncation_strategy: str = "default",
+    ):
+        """Yield evaluation data in bounded batches.
+
+        Unlike :meth:`get_data`, this method never accumulates a complete mode in
+        memory.  It is intended for long ambient modes, where materializing every
+        split window before invoking the model can exceed available RAM.
+
+        The provider order and per-provider generator semantics are unchanged;
+        callers that need the historical validation/testing shuffle should keep
+        using ``get_data``.
+        """
+        if mode == "training":
+            raise ValueError("get_data_batches is only for evaluation modes")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+
+        data = []
+        labels = []
+        weights = []
+
+        for provider, evaluation_enabled in zip(
+            self.feature_providers, self.evaluation_enabled
+        ):
+            if not evaluation_enabled:
+                continue
+            generator = provider.get_feature_generator(
+                mode, features_length, truncation_strategy
+            )
+            for spectrogram in generator:
+                data.append(spectrogram)
+                labels.append(provider.label)
+                weights.append(provider.penalty_weight)
+                if len(data) == batch_size:
+                    yield np.asarray(data), np.asarray(labels), np.asarray(weights)
+                    data = []
+                    labels = []
+                    weights = []
+
+        if data:
+            yield np.asarray(data), np.asarray(labels), np.asarray(weights)
 
     def set_training_class_weights(self, positive: float, negative: float) -> None:
         self.current_class_weights = {0: float(negative), 1: float(positive)}

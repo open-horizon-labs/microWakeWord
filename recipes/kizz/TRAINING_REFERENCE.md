@@ -746,6 +746,9 @@ telemetry rather than folding it into model recall.
 | V20–v26 counterexample adaptation | Can mined room false wakes be patched into v19? | Invalid checkpoint selection and over-concentrated counterexamples can create flattering but unusable models. |
 | V27–v28 diversified separation | Can a broader rebuild reduce close-phrase accepts? | Device averages improved, but a fresh-speaker check rejected v28. |
 | V29–v31 controlled continuation | Can gentle extra emphasis on negatives repair v19? | Unfrozen BN collapsed recall; frozen BN restored positives but also false wakes; v31 still did not separate the two score groups. |
+| V32 canonical reboot | Can corrected labels, connected speech, and broad hard mining create a clean binary boundary? | Rejection improved sharply, but the best remine candidate retained only 13.1% validation recall and 6/17 raw-device positive recall. |
+| V33–v34 retention and verifier probes | Can v19's useful recall survive tiny updates, classifier-only retraining, or broader hard-negative pressure? | No: v33a emitted no usable point, v33b retained 6.4% validation recall, and v34 stayed below 40% at near-saturated cutoffs. |
+| Ordered-state v1 | Can one local phone-state encoder plus deterministic temporal ordering create the missing invariant? | The best fixed endpoint reached 50% recall at 0.24963 FAPH; later checkpoints regressed, so the run stopped without opening test or flashing. |
 
 Detailed measurements and rejection reasons are in [Experiments](EXPERIMENTS.md).
 

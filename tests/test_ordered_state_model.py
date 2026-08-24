@@ -9,6 +9,7 @@ import tensorflow as tf
 from microwakeword import ordered_state_model
 from microwakeword import utils
 from microwakeword.layers import modes
+from microwakeword.model_train_eval import load_config
 from microwakeword.ordered_state import OrderedStateDecoder
 from microwakeword.ordered_state_tflite import tflite_output_logits
 from microwakeword.train import configured_training_loss
@@ -29,6 +30,31 @@ class OrderedStateModelTest(unittest.TestCase):
         self.assertEqual(model.output_shape[2], 23)
         self.assertLess(model.count_params(), 60000)
         self.assertEqual(ordered_state_model.receptive_field_ms(flags), 670)
+
+    def test_training_length_preserves_the_declared_output_timeline(self):
+        flags = self.flags()
+        input_frames = ordered_state_model.training_spectrogram_length(flags, 66)
+        model = ordered_state_model.model(flags, (input_frames, 40), batch_size=1)
+
+        self.assertEqual(input_frames, 260)
+        self.assertEqual(model.output_shape, (1, 66, 23))
+
+    def test_config_loader_uses_ordered_state_output_geometry(self):
+        flags = self.flags()
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / "training.yaml"
+            config_path.write_text(
+                "train_dir: /tmp/ordered-state-test\n"
+                "clip_duration_ms: 2000\n"
+                "window_step_ms: 10\n",
+                encoding="utf-8",
+            )
+            flags.training_config = str(config_path)
+            config = load_config(flags, ordered_state_model)
+
+        self.assertEqual(config["spectrogram_length_final_layer"], 66)
+        self.assertEqual(config["spectrogram_length"], 260)
+        self.assertEqual(config["training_input_shape"], (260, 40))
 
     def test_streaming_conversion_emits_one_state_vector(self):
         flags = self.flags()

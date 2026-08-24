@@ -325,6 +325,170 @@ class OrderedStateDecoder:
         return events
 
 
+class OrderedStateMarginSweepDecoder:
+    """Evaluate several completion margins in one ordered-state recurrence.
+
+    This is an evaluation-only companion to :class:`OrderedStateDecoder`.
+    The acoustic frame is normalized once, then the Viterbi score and start
+    arrays are updated for every margin in parallel.  Each margin remains an
+    independent decoder: it has its own cooldown, path reset, and events.
+    """
+
+    def __init__(
+        self,
+        topology: OrderedStateTopology = KIZZ_TOPOLOGY,
+        *,
+        completion_margins: Sequence[float],
+        cooldown_frames: int = 0,
+        self_loop_probability: float = 0.6,
+        next_state_probability: float = 0.4,
+        state_evidence_floor: float | None = None,
+        from_logits: bool = True,
+    ) -> None:
+        try:
+            margins = tuple(completion_margins)
+        except TypeError as error:
+            raise ValueError(
+                "completion_margins must be a non-empty sequence"
+            ) from error
+        if not margins:
+            raise ValueError("completion_margins must be a non-empty sequence")
+        try:
+            margins_array = np.asarray(margins, dtype=np.float64)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "completion_margins must contain finite numbers"
+            ) from error
+        if margins_array.ndim != 1 or np.any(~np.isfinite(margins_array)):
+            raise ValueError("completion_margins must contain finite numbers")
+        if cooldown_frames < 0:
+            raise ValueError("cooldown_frames must be non-negative")
+        if not 0.0 < self_loop_probability <= 1.0:
+            raise ValueError("self_loop_probability must be in (0, 1]")
+        if not 0.0 < next_state_probability <= 1.0:
+            raise ValueError("next_state_probability must be in (0, 1]")
+        self.completion_margins = margins_array.copy()
+        self.topology = topology
+        self.cooldown_frames = int(cooldown_frames)
+        self._log_self = math.log(self_loop_probability)
+        self._log_next = math.log(next_state_probability)
+        self.state_evidence_floor = (
+            None if state_evidence_floor is None else float(state_evidence_floor)
+        )
+        self.from_logits = from_logits
+        self.reset()
+
+    def reset(self, frame_index: int = 0) -> None:
+        """Discard all partial paths and set the next frame coordinate."""
+        shape = (self.completion_margins.size, self.topology.ordered_state_count)
+        self._scores = np.full(shape, -np.inf)
+        self._starts = np.full(shape, -1, dtype=np.int64)
+        self._frame_index = int(frame_index)
+        self._cooldown_remaining = np.zeros(
+            self.completion_margins.size, dtype=np.int64
+        )
+
+    def rearm(self) -> None:
+        """Discard all partial paths while preserving the stream coordinate."""
+        frame_index = self._frame_index
+        self.reset(frame_index)
+
+    @property
+    def cooldown_remaining(self) -> np.ndarray:
+        return self._cooldown_remaining.copy()
+
+    @property
+    def scores(self) -> np.ndarray:
+        return self._scores.copy()
+
+    @property
+    def current_completion_scores(self) -> np.ndarray:
+        return self._scores[:, -1].copy()
+
+    def step(
+        self,
+        frame: Sequence[float],
+        frame_index: Optional[int] = None,
+    ) -> list[Optional[OrderedStateEvent]]:
+        """Consume one frame and return one event slot for each margin."""
+        if frame_index is not None:
+            if frame_index < self._frame_index:
+                raise ValueError("frame_index must not move backwards")
+            self._frame_index = int(frame_index)
+        current_frame = self._frame_index
+        log_probs = _log_probabilities(frame, self.from_logits)
+        if log_probs.size != self.topology.state_count:
+            raise ValueError(
+                f"expected {self.topology.state_count} state scores, got {log_probs.size}"
+            )
+        rejection_score = float(
+            np.logaddexp(
+                log_probs[self.topology.background_index],
+                log_probs[self.topology.silence_index],
+            )
+        )
+        events: list[Optional[OrderedStateEvent]] = [
+            None
+        ] * self.completion_margins.size
+
+        cooling = self._cooldown_remaining > 0
+        if np.any(cooling):
+            self._cooldown_remaining[cooling] -= 1
+            self._scores[cooling] = -np.inf
+            self._starts[cooling] = -1
+
+        active = ~cooling
+        if np.any(active):
+            emissions = np.asarray(
+                [
+                    log_probs[self.topology.ordered_state_index(state)]
+                    - rejection_score
+                    for state in range(self.topology.ordered_state_count)
+                ]
+            )
+            if self.state_evidence_floor is not None:
+                emissions[emissions <= self.state_evidence_floor] = -np.inf
+
+            previous = self._scores[active]
+            previous_starts = self._starts[active]
+            ordered = self.topology.ordered_state_count
+            restart = np.full_like(previous, -np.inf)
+            restart[:, 0] = emissions[0]
+            restart_starts = np.full_like(previous_starts, -1)
+            restart_starts[:, 0] = current_frame
+            loop = previous + self._log_self + emissions[None, :]
+            loop_starts = previous_starts
+            advance = np.full_like(previous, -np.inf)
+            advance[:, 1:] = previous[:, :-1] + self._log_next
+            advance += emissions[None, :]
+            advance_starts = np.full_like(previous_starts, -1)
+            advance_starts[:, 1:] = previous_starts[:, :-1]
+            candidates = np.stack([restart, loop, advance], axis=-1)
+            starts = np.stack([restart_starts, loop_starts, advance_starts], axis=-1)
+            best = np.argmax(candidates, axis=-1)
+            rows = np.arange(previous.shape[0])[:, None]
+            states = np.arange(ordered)[None, :]
+            next_scores = candidates[rows, states, best]
+            next_starts = starts[rows, states, best]
+            self._scores[active] = next_scores
+            self._starts[active] = next_starts
+
+            completed = active & (self._scores[:, -1] >= self.completion_margins)
+            for margin_index in np.flatnonzero(completed):
+                events[margin_index] = OrderedStateEvent(
+                    start_frame=int(self._starts[margin_index, -1]),
+                    end_frame=current_frame,
+                    score=float(self._scores[margin_index, -1]),
+                    rejection_score=rejection_score,
+                )
+            self._cooldown_remaining[completed] = self.cooldown_frames
+            self._scores[completed] = -np.inf
+            self._starts[completed] = -1
+
+        self._frame_index = current_frame + 1
+        return events
+
+
 def _require_tensorflow():
     if tf is None:  # pragma: no cover - depends on the environment.
         raise ImportError("TensorFlow is required for ordered-state training helpers")
@@ -391,27 +555,42 @@ def ordered_state_sequence_score(
             ),
             axis=1,
         )
-        columns = []
-        for state in range(ordered):
-            emission = (
-                log_probs[:, time, topology.ordered_state_index(state)] - rejection
+        emission = (
+            log_probs[
+                :,
+                time,
+                topology.first_ordered_state_index : topology.state_count,
+            ]
+            - rejection[:, None]
+        )
+        if state_evidence_floor is not None:
+            emission = tensorflow.where(
+                emission > state_evidence_floor,
+                emission,
+                tensorflow.constant(-np.inf, dtype=emission.dtype),
             )
-            if state_evidence_floor is not None:
-                emission = tensorflow.where(
-                    emission > state_evidence_floor,
-                    emission,
-                    tensorflow.constant(-np.inf, dtype=emission.dtype),
-                )
-            candidates = []
-            if state == 0:
-                candidates.append(emission)
-            candidates.append(alpha[:, state] + log_self + emission)
-            if state > 0:
-                candidates.append(alpha[:, state - 1] + log_next + emission)
-            columns.append(
-                tensorflow.reduce_max(tensorflow.stack(candidates, axis=-1), axis=-1)
-            )
-        alpha = tensorflow.stack(columns, axis=1)
+        negative_infinity = tensorflow.constant(-np.inf, dtype=emission.dtype)
+        advance = tensorflow.concat(
+            [
+                tensorflow.fill([tensorflow.shape(alpha)[0], 1], negative_infinity),
+                alpha[:, :-1] + log_next,
+            ],
+            axis=1,
+        )
+        restart = tensorflow.concat(
+            [
+                tensorflow.zeros([tensorflow.shape(alpha)[0], 1], emission.dtype),
+                tensorflow.fill(
+                    [tensorflow.shape(alpha)[0], ordered - 1], negative_infinity
+                ),
+            ],
+            axis=1,
+        )
+        predecessor = tensorflow.reduce_max(
+            tensorflow.stack([alpha + log_self, advance, restart], axis=-1),
+            axis=-1,
+        )
+        alpha = predecessor + emission
         completions.append(alpha[:, -1])
     if not completions:
         raise ValueError("state_scores must contain at least one time frame")
@@ -464,6 +643,7 @@ __all__ = [
     "KIZZ_PHONES",
     "KIZZ_TOPOLOGY",
     "OrderedStateDecoder",
+    "OrderedStateMarginSweepDecoder",
     "OrderedStateEvent",
     "OrderedStateTopology",
     "ordered_state_sequence_score_numpy",

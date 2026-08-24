@@ -60,6 +60,22 @@ def spectrogram_slices_dropped(flags):
     return dropped
 
 
+def training_spectrogram_length(flags, output_frames):
+    """Return the shortest input that emits ``output_frames`` state vectors.
+
+    The first temporal convolution consumes feature frames with ``flags.stride``.
+    The legacy scalar MixedNet length formula only adds the valid-convolution
+    context and therefore under-counts the input whenever stride is greater than
+    one.  Ordered-state training needs the declared output timeline itself: 66
+    frames for a two-second sequence at the fixed 30 ms cadence.
+    """
+    output_frames = int(output_frames)
+    if output_frames < 1:
+        raise ValueError("ordered-state training requires at least one output frame")
+    receptive_field_frames = spectrogram_slices_dropped(flags) + 1
+    return (output_frames - 1) * int(flags.stride) + receptive_field_frames
+
+
 @tf.keras.utils.register_keras_serializable(package="microwakeword")
 class SqueezeFrequency(tf.keras.layers.Layer):
     """Remove the singleton spatial-frequency axis without fixing time length."""

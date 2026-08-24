@@ -52,7 +52,12 @@ def observation_records(manifest_path: Path) -> tuple[dict, list[dict]]:
         raise ValueError("observation manifest requires schema_version 1")
     if manifest.get("training_eligible") is not False:
         raise ValueError("observation manifest must be explicitly training-ineligible")
-    root = Path(manifest.get("source_corpus", manifest_path.parent)).resolve()
+    root = Path(
+        manifest.get(
+            "snapshot_root",
+            manifest.get("source_corpus", manifest_path.parent),
+        )
+    ).resolve()
     if root != manifest_path.parent.resolve():
         raise ValueError("observation snapshot must be self-contained")
     records = []

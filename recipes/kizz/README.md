@@ -64,7 +64,8 @@ This is the runnable path. The [training reference](TRAINING_REFERENCE.md)
 also documents the eight designed ElevenLabs voices, 1,600 ElevenLabs renders,
 67,150 Piper renders, Kokoro and macOS voice pilots, human captures, physical
 speaker-to-Kizz re-recordings, Deepgram-assisted alignment, background sources,
-augmentation settings, and the v1–v31 experiment lineage.
+augmentation settings, and the v1–v34 experiment lineage. The experiment ledger
+also records the rejected ordered-state v1 run.
 
 | Task | Tools |
 | --- | --- |
