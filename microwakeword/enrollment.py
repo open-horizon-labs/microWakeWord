@@ -719,7 +719,18 @@ class EnrollmentService:
             device = self.devices.get(device_id)
             if device is None:
                 raise ValueError("device disconnected before observation")
-            if observation_id in self.pending_false_wakes or self._observation_exists(observation_id):
+            existing_pending = self.pending_false_wakes.get(observation_id)
+            if existing_pending is not None:
+                if (
+                    existing_pending.device_id != device_id
+                    or existing_pending.byte_count != byte_count
+                ):
+                    raise ValueError("false_wake_observation_id already exists")
+                # Firmware retries the same observation after a dropped socket.
+                # Discard any partial payload so the next audio stream starts
+                # from byte zero while preserving the idempotency boundary.
+                self.pending_false_wakes.pop(observation_id, None)
+            if self._observation_exists(observation_id):
                 raise ValueError("false_wake_observation_id already exists")
             if any(value.device_id == device_id for value in self.pending_false_wakes.values()):
                 raise ValueError("device already has a pending false wake observation")

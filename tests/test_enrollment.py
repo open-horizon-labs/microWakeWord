@@ -192,6 +192,37 @@ class SimulatedDeviceEnrollmentTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("exceeds", error["message"])
         self.assertFalse((self.corpus / "observations").exists())
 
+    async def test_false_wake_retry_restarts_partial_observation(self):
+        pcm = b"\x01\x00" * 160
+        header = {
+            "type": "false_wake_observation",
+            "observation_id": "false-wake-retry",
+            "bytes": len(pcm),
+            "wake_probability": 0.74,
+            "wake_cutoff": 0.70,
+            "wake_to_timeout_ms": 6000,
+        }
+        await self.device.send_json(header)
+        await self.device.send_bytes(pcm[:100])
+        first_chunk = await self.device.receive_json()
+        self.assertEqual(first_chunk["received_bytes"], 100)
+
+        await self.device.send_json(header)
+        await self.device.send_bytes(pcm)
+        second_chunk = await self.device.receive_json()
+        self.assertEqual(second_chunk["received_bytes"], len(pcm))
+        await self.device.send_json(
+            {
+                "type": "false_wake_observation_end",
+                "observation_id": "false-wake-retry",
+            }
+        )
+        stored = await self.device.receive_json()
+        self.assertEqual(stored["type"], "false_wake_stored")
+
+        wav_path = self.corpus / "observations" / "false-wakes" / "false-wake-retry.wav"
+        self.assertEqual(wav_path.stat().st_size, 44 + len(pcm))
+
     async def test_command_wake_is_quarantined_separately_from_false_wakes(self):
         pcm = b"\x01\x00" * 8000
         await self.device.send_json(
