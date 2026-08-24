@@ -17,6 +17,7 @@ from tools.build_recipe_features import (
     selected_phrase_directories,
     staged_clip_source,
     validate_generated_corpus,
+    validate_metadata_texts,
 )
 
 
@@ -121,7 +122,24 @@ class SelectedPhraseFeaturesTest(unittest.TestCase):
             (second / "000.wav").touch()
             with staged_clip_source([first, second]) as staged:
                 names = sorted(path.name for path in staged.glob("*.wav"))
-                self.assertEqual(names, ["first--000.wav", "second--000.wav"])
+                self.assertEqual(len(names), 2)
+                self.assertNotEqual(names[0], names[1])
+                self.assertTrue(names[0].endswith("--000.wav"))
+                self.assertTrue(names[1].endswith("--000.wav"))
+
+    def test_staging_distinguishes_same_named_voice_directories_by_full_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = root / "phrase-a" / "train" / "labeled-voice"
+            second = root / "phrase-b" / "train" / "labeled-voice"
+            first.mkdir(parents=True)
+            second.mkdir(parents=True)
+            (first / "000.wav").touch()
+            (second / "000.wav").touch()
+            with staged_clip_source([first, second]) as staged:
+                names = sorted(path.name for path in staged.glob("*.wav"))
+            self.assertEqual(len(names), 2)
+            self.assertEqual(len(set(names)), 2)
 
     def test_staging_excludes_rejected_paths(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -136,7 +154,8 @@ class SelectedPhraseFeaturesTest(unittest.TestCase):
             with staged_clip_source([phrase], {rejected.resolve()}) as staged:
                 names = [path.name for path in staged.glob("*.wav")]
 
-            self.assertEqual(names, ["phrase--accepted.wav"])
+            self.assertEqual(len(names), 1)
+            self.assertTrue(names[0].endswith("--accepted.wav"))
 
     def test_caps_piper_examples_per_speaker_and_phrase(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -205,7 +224,15 @@ class SelectedPhraseFeaturesTest(unittest.TestCase):
                 output.mkdir(parents=True)
                 wavfile.write(output / "0.wav", 16000, np.zeros(1600, dtype=np.int16))
                 (output / "synthesis-metadata.jsonl").write_text(
-                    json.dumps({"file": "0.wav", "speaker_1": 0, "speaker_2": 0}) + "\n"
+                    json.dumps(
+                        {
+                            "file": "0.wav",
+                            "speaker_1": 0,
+                            "speaker_2": 0,
+                            "text": "Wake",
+                        }
+                    )
+                    + "\n"
                 )
                 plan.append(
                     {
@@ -233,6 +260,24 @@ class SelectedPhraseFeaturesTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "synthetic speakers cross"):
                 validate_generated_corpus(recipe, generated)
+
+    def test_synthesis_metadata_is_bound_to_requested_text(self):
+        plan = {"text": "Hi-Fi Kizz"}
+        with self.assertRaisesRegex(ValueError, "text contract mismatch"):
+            validate_metadata_texts(
+                plan,
+                [{"file": "0.wav", "text": "Hi-Fi Kids"}],
+                Path("metadata.jsonl"),
+            )
+
+    def test_connected_metadata_must_realize_every_declared_sentence(self):
+        plan = {"text": None, "normalized_texts": ["First sentence.", "Second one."]}
+        with self.assertRaisesRegex(ValueError, "missing"):
+            validate_metadata_texts(
+                plan,
+                [{"file": "0.wav", "text": "First sentence."}],
+                Path("metadata.jsonl"),
+            )
 
 
 if __name__ == "__main__":

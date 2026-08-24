@@ -216,6 +216,18 @@ class SyntheticQualityTest(unittest.TestCase):
         )
         self.assertEqual(reasons, [])
 
+        long_sentence_reasons = quality_reasons(
+            {
+                "duration_ms": 4200,
+                "speech_span_ms": 3900,
+                "clipped_fraction": 0.0,
+                "rms_dbfs": -20.0,
+            },
+            "hard_negative",
+            bounds,
+        )
+        self.assertEqual(long_sentence_reasons, [])
+
     def test_mask_is_bound_to_recipe_and_generation_manifest(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

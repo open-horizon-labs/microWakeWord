@@ -113,7 +113,10 @@ def audio_metrics(path: Path, vad_mode: int = 0, frame_ms: int = 20) -> dict:
 def quality_reasons(metrics: dict, truth: str, bounds: QualityBounds) -> list[str]:
     """Explain why a generated clip must not enter the feature corpus."""
     reasons = []
-    if metrics["duration_ms"] > bounds.maximum_source_ms:
+    # A positive must fit intact so the wake phrase is never trained after an
+    # accidental crop. Long negatives are intentionally windowed: every crop
+    # remains negative evidence from ordinary connected speech.
+    if truth == "positive" and metrics["duration_ms"] > bounds.maximum_source_ms:
         reasons.append("source_would_be_truncated")
     if metrics["clipped_fraction"] > bounds.maximum_clipped_fraction:
         reasons.append("clipped_audio")

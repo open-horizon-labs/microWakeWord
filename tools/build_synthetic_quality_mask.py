@@ -78,7 +78,8 @@ def build_report(
     group_rejected = Counter()
     for item in generation.get("plan", []):
         truth = item["class"]
-        group = f'{truth}:{item["text"]}'
+        label = item.get("text") or item.get("text_source") or "unlabeled"
+        group = f"{truth}:{label}"
         for path in sorted(Path(item["output"]).glob("*.wav")):
             metrics = audio_metrics(path)
             reasons = quality_reasons(metrics, truth, bounds)

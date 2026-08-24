@@ -11,15 +11,16 @@ import math
 from pathlib import Path
 from statistics import median
 
+import numpy as np
 import yaml
 
 from microwakeword.inference import Model
 from microwakeword.synthetic_quality import load_quality_mask
 
 try:
-    from tools.evaluate_recipe_model import peak_probability
+    from tools.evaluate_recipe_model import clip_probabilities
 except ModuleNotFoundError:  # Direct execution from the tools directory.
-    from evaluate_recipe_model import peak_probability
+    from evaluate_recipe_model import clip_probabilities
 
 
 def cutoff_for_false_accept_rate(
@@ -107,7 +108,9 @@ def validation_records(
                 {
                     "path": wav_path,
                     "truth": item["class"],
-                    "phrase": item["text"],
+                    "phrase": item.get("text")
+                    or item.get("text_source")
+                    or "unlabeled",
                     "age_group": item.get("age_group", "unknown"),
                     "provider": provider,
                     "speaker": item.get("speaker_name")
@@ -123,24 +126,48 @@ def validation_records(
 def score_records(
     model_path: Path,
     records: list[dict],
-    sliding_window: int,
+    sliding_windows: list[int],
     ignore_initial: int,
     clip_duration_ms: int,
-) -> list[dict]:
+) -> dict[int, list[dict]]:
     model = Model(str(model_path), stride=3)
-    return [
-        {
-            **record,
-            "peak": peak_probability(
-                model,
-                record["path"],
-                sliding_window,
-                ignore_initial,
-                clip_duration_ms,
-            ),
-        }
-        for record in records
+    scored = {window: [] for window in sliding_windows}
+    for record in records:
+        probabilities = clip_probabilities(
+            model,
+            record["path"],
+            ignore_initial,
+            clip_duration_ms if record["truth"] == "positive" else 0,
+        )
+        for window in sliding_windows:
+            peak = 0.0
+            if probabilities.size >= window:
+                moving_average = np.convolve(
+                    probabilities,
+                    np.ones(window) / window,
+                    mode="valid",
+                )
+                peak = float(np.max(moving_average))
+            scored[window].append({**record, "peak": peak})
+    return scored
+
+
+def select_window(results: dict[int, dict]) -> int | None:
+    """Choose on validation recall, preferring more smoothing on an exact tie."""
+    eligible = [
+        window
+        for window, result in results.items()
+        if result.get("qualification_eligible") is True
     ]
+    if not eligible:
+        return None
+    return max(
+        eligible,
+        key=lambda window: (
+            results[window]["selected"]["positive"]["acceptance_rate"],
+            window,
+        ),
+    )
 
 
 def grouped_summary(records: list[dict], cutoff: float, dimension: str) -> dict:
@@ -160,7 +187,13 @@ def main() -> int:
     parser.add_argument("--generated", type=Path, required=True)
     parser.add_argument("--recipe", type=Path, required=True)
     parser.add_argument("--quality-mask", type=Path, required=True)
-    parser.add_argument("--sliding-window", type=int, default=5)
+    parser.add_argument(
+        "--sliding-window",
+        type=int,
+        action="append",
+        default=[],
+        help="Detector averaging window to compare; repeatable (default: 5)",
+    )
     parser.add_argument("--ignore-initial", type=int, default=25)
     parser.add_argument(
         "--clip-duration-ms",
@@ -180,8 +213,16 @@ def main() -> int:
         default=[],
         help="Additional validation false-accept budget to report; repeatable",
     )
+    parser.add_argument(
+        "--maximum-deployable-cutoff",
+        type=float,
+        default=0.99,
+        help="Reject a selected operating point above the firmware limit",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if not 0 < args.maximum_deployable_cutoff < 1:
+        parser.error("maximum deployable cutoff must be between zero and one")
 
     manifest_path = args.generated / "generation-manifest.json"
     generation_manifest = json.loads(manifest_path.read_text())
@@ -190,21 +231,18 @@ def main() -> int:
     if clip_duration_ms is None:
         clip_duration_ms = int(recipe["clip_duration_ms"])
     mask = load_quality_mask(args.quality_mask, args.recipe, manifest_path)
-    rejected = {
-        (args.generated / relative).resolve() for relative in mask["rejected"]
-    }
+    rejected = {(args.generated / relative).resolve() for relative in mask["rejected"]}
     records = validation_records(args.generated, generation_manifest, rejected)
-    scored = score_records(
+    sliding_windows = sorted(set(args.sliding_window or [5]))
+    if any(window < 1 for window in sliding_windows):
+        parser.error("sliding windows must be positive")
+    scored_by_window = score_records(
         args.model,
         records,
-        args.sliding_window,
+        sliding_windows,
         args.ignore_initial,
         clip_duration_ms,
     )
-    positive_peaks = [record["peak"] for record in scored if record["truth"] == "positive"]
-    negative_peaks = [
-        record["peak"] for record in scored if record["truth"] == "hard_negative"
-    ]
     rates = sorted(
         set(
             (
@@ -216,28 +254,29 @@ def main() -> int:
             )
         )
     )
-    frontier = []
-    for rate in rates:
-        cutoff = cutoff_for_false_accept_rate(negative_peaks, rate)
-        frontier.append(
-            {
-                "maximum_false_accept_rate": rate,
-                "cutoff": cutoff,
-                "positive": summarize(positive_peaks, cutoff),
-                "hard_negative": summarize(negative_peaks, cutoff),
-            }
+    window_results = {}
+    for window, scored in scored_by_window.items():
+        positive_peaks = [
+            record["peak"] for record in scored if record["truth"] == "positive"
+        ]
+        negative_peaks = [
+            record["peak"] for record in scored if record["truth"] == "hard_negative"
+        ]
+        frontier = []
+        for rate in rates:
+            cutoff = cutoff_for_false_accept_rate(negative_peaks, rate)
+            frontier.append(
+                {
+                    "maximum_false_accept_rate": rate,
+                    "cutoff": cutoff,
+                    "positive": summarize(positive_peaks, cutoff),
+                    "hard_negative": summarize(negative_peaks, cutoff),
+                }
+            )
+        selected_cutoff = cutoff_for_false_accept_rate(
+            negative_peaks, args.maximum_false_accept_rate
         )
-    selected_cutoff = cutoff_for_false_accept_rate(
-        negative_peaks, args.maximum_false_accept_rate
-    )
-    result = {
-        "model": str(args.model),
-        "model_sha256": sha256(args.model),
-        "selection_split": "validation",
-        "selected_cutoff": selected_cutoff,
-        "maximum_false_accept_rate": args.maximum_false_accept_rate,
-        "frontier": frontier,
-        "selected": {
+        selected_summary = {
             "positive": summarize(positive_peaks, selected_cutoff),
             "hard_negative": summarize(negative_peaks, selected_cutoff),
             "cohorts": {
@@ -265,8 +304,54 @@ def main() -> int:
                 }
                 for truth in ("positive", "hard_negative")
             },
+        }
+        issues = []
+        if selected_cutoff > args.maximum_deployable_cutoff:
+            issues.append(
+                f"derived cutoff {selected_cutoff:.6f} exceeds deployable maximum "
+                f"{args.maximum_deployable_cutoff:.6f}"
+            )
+        if selected_summary["positive"]["accepted"] == 0:
+            issues.append("selected operating point accepts no validation positives")
+        window_results[window] = {
+            "selected_cutoff": selected_cutoff,
+            "frontier": frontier,
+            "selected": selected_summary,
+            "qualification_eligible": not issues,
+            "qualification_issues": issues,
+        }
+    selected_window = select_window(window_results)
+    selected_result = (
+        window_results[selected_window] if selected_window is not None else None
+    )
+    qualification_issues = (
+        []
+        if selected_result is not None
+        else ["no window has a deployable, nonzero-recall validation operating point"]
+    )
+    result = {
+        "model": str(args.model),
+        "model_sha256": sha256(args.model),
+        "selection_split": "validation",
+        "selected_cutoff": (
+            selected_result["selected_cutoff"] if selected_result is not None else None
+        ),
+        "maximum_false_accept_rate": args.maximum_false_accept_rate,
+        "maximum_deployable_cutoff": args.maximum_deployable_cutoff,
+        "qualification_eligible": selected_result is not None,
+        "qualification_issues": qualification_issues,
+        "frontier": selected_result["frontier"] if selected_result is not None else [],
+        "selected": (
+            selected_result["selected"] if selected_result is not None else None
+        ),
+        "sliding_window": selected_window,
+        "window_selection_policy": (
+            "maximum validation positive acceptance at each window's independently "
+            "derived false-accept budget; prefer more smoothing on an exact tie"
+        ),
+        "window_comparison": {
+            str(window): value for window, value in sorted(window_results.items())
         },
-        "sliding_window": args.sliding_window,
         "ignore_initial": args.ignore_initial,
         "clip_duration_ms": clip_duration_ms,
         "quality_mask": str(args.quality_mask),
@@ -279,7 +364,7 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
+    return 0 if result["qualification_eligible"] else 2
 
 
 if __name__ == "__main__":

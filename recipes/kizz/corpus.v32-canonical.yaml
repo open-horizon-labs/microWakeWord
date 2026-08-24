@@ -1,0 +1,128 @@
+recipe_version: 7
+name: hiphi_kizz_v32_canonical
+sample_rate_hz: 16000
+clip_duration_ms: 2000
+random_seed: 231
+
+# v32 is a label-contract reboot. Train exactly the product phrase and measure
+# pronunciation breadth on held-out real speakers instead of manufacturing a
+# broad positive class from acoustically adjacent spellings.
+positive_phrases:
+  - text: Hi-Fi Kizz
+    samples: 24000
+
+# Short suffixes, the former Kids aliases, and conjunction collisions are all
+# explicitly outside the canonical wake contract.
+hard_negative_phrases:
+  - text: Kizz
+    samples: 3000
+  - text: kids
+    samples: 2400
+  - text: kiss
+    samples: 2500
+  - text: quiz
+    samples: 2000
+  - text: fizz
+    samples: 600
+  - text: Liz
+    samples: 300
+  - text: his
+    samples: 300
+  - text: this
+    samples: 600
+  - text: it is
+    samples: 500
+  - text: Kizzy
+    samples: 600
+  - text: Hi-Fi
+    samples: 600
+  - text: Hi Phi
+    samples: 600
+  - text: hi kids
+    samples: 1200
+  - text: hippy kids
+    samples: 1200
+  - text: Hi-Fi Kids
+    samples: 1200
+  - text: High-Fi Kids
+    samples: 1200
+  - text: Hi Fi Kids
+    samples: 1200
+  - text: High Fi Kids
+    samples: 1200
+  - text: hee fee kids
+    samples: 1200
+  - text: high fee kids
+    samples: 1200
+  - text: hiffy kids
+    samples: 1200
+  - text: high five kids
+    samples: 1500
+  - text: High Five Kizz
+    samples: 1500
+  - text: Hi-Fi Kiss
+    samples: 1000
+  - text: Hi Phi Kiss
+    samples: 1000
+  - text: Hee Fee Kiss
+    samples: 1000
+  - text: Hippy Kiss
+    samples: 1000
+  - text: High Fee Kiss
+    samples: 1000
+  - text: Hee Fye Kiss
+    samples: 1000
+  - text: Hiffy Kiss
+    samples: 1000
+  - text: Wi-Fi Kizz
+    samples: 1000
+  - text: Sci-Fi Kizz
+    samples: 1000
+  - text: Happy Kizz
+    samples: 1000
+  - text: Coffee Kizz
+    samples: 1000
+  - text: Baby Kizz
+    samples: 1000
+  - text: Okay Kizz
+    samples: 1000
+  - text: Hey Kizz
+    samples: 1000
+
+# These are ordinary connected utterances, not a repeated collision phrase.
+# Text identity and base-speaker identity are both disjoint across splits.
+connected_sentence_sources:
+  - name: connected-household-speech
+    train: connected-negative-sentences-train.txt
+    validation: connected-negative-sentences-validation.txt
+    test: connected-negative-sentences-test.txt
+    samples_per_text: 96
+
+generation:
+  length_scales: [0.72, 0.85, 1.0, 1.15, 1.32]
+  noise_scales: [0.55, 0.667, 0.8, 0.95, 1.15]
+  noise_scale_ws: [0.65, 0.8, 0.95]
+  slerp_weights: [0.2, 0.4, 0.6, 0.8]
+  max_speakers: 700
+  speaker_cohorts:
+    train:
+      speaker_start: 0
+      speaker_end: 500
+      sample_fraction: 0.8
+      age_group: unknown
+    validation:
+      speaker_start: 500
+      speaker_end: 600
+      sample_fraction: 0.1
+      age_group: unknown
+    test:
+      speaker_start: 600
+      speaker_end: 700
+      sample_fraction: 0.1
+      age_group: unknown
+  labeled_voice_requirements:
+    age_groups: [adult, child]
+    minimum_voices_per_split:
+      train: 2
+      validation: 1
+      test: 1

@@ -2,10 +2,15 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+
+import numpy as np
 
 from tools.select_recipe_cutoff import (
     cutoff_for_false_accept_rate,
     piper_speakers,
+    score_records,
+    select_window,
     summarize,
 )
 
@@ -51,6 +56,49 @@ class RecipeCutoffSelectionTest(unittest.TestCase):
                 piper_speakers(output),
                 {"0.wav": "piper:12+34", "1.wav": "piper:56"},
             )
+
+    def test_window_selection_uses_validation_recall_then_smoothing(self):
+        results = {
+            1: {
+                "qualification_eligible": True,
+                "selected": {"positive": {"acceptance_rate": 0.9}},
+            },
+            3: {
+                "qualification_eligible": True,
+                "selected": {"positive": {"acceptance_rate": 0.95}},
+            },
+            5: {
+                "qualification_eligible": True,
+                "selected": {"positive": {"acceptance_rate": 0.95}},
+            },
+        }
+        self.assertEqual(select_window(results), 5)
+
+    def test_window_selection_rejects_undeployable_results(self):
+        results = {
+            1: {
+                "qualification_eligible": False,
+                "selected": {"positive": {"acceptance_rate": 0.99}},
+            }
+        }
+        self.assertIsNone(select_window(results))
+
+    def test_connected_negatives_are_scored_as_complete_streams(self):
+        records = [
+            {"path": Path("positive.wav"), "truth": "positive"},
+            {"path": Path("sentence.wav"), "truth": "hard_negative"},
+        ]
+        with (
+            patch("tools.select_recipe_cutoff.Model"),
+            patch(
+                "tools.select_recipe_cutoff.clip_probabilities",
+                side_effect=[np.array([0.1]), np.array([0.2])],
+            ) as probabilities,
+        ):
+            score_records(Path("model.tflite"), records, [1], 25, 2000)
+
+        self.assertEqual(probabilities.call_args_list[0].args[-1], 2000)
+        self.assertEqual(probabilities.call_args_list[1].args[-1], 0)
 
 
 if __name__ == "__main__":

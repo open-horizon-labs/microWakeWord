@@ -43,9 +43,32 @@ def _plan_provider(plan_item: dict) -> str:
     return plan_item.get("provider", "piper")
 
 
+def validate_metadata_texts(plan_item: dict, metadata: list[dict], path: Path) -> None:
+    """Bind synthesized records to the exact text contract in their plan item."""
+    text = plan_item.get("text")
+    expected = (
+        {text}
+        if isinstance(text, str) and text
+        else set(plan_item.get("normalized_texts", []))
+    )
+    if not expected:
+        raise ValueError(f"{path} plan item has no expected text contract")
+    actual = {record.get("text") for record in metadata}
+    unexpected = actual - expected
+    missing = expected - actual
+    if unexpected or missing:
+        raise ValueError(
+            f"{path} text contract mismatch; "
+            f"unexpected={sorted(str(value) for value in unexpected)}, "
+            f"missing={sorted(missing)}"
+        )
+
+
 def phrase_slug(text: str) -> str:
     readable = "_".join(
-        "".join(character.lower() if character.isalnum() else " " for character in text).split()
+        "".join(
+            character.lower() if character.isalnum() else " " for character in text
+        ).split()
     )
     return f"{readable}-{hashlib.sha256(text.encode()).hexdigest()[:8]}"
 
@@ -130,6 +153,7 @@ def validate_generated_corpus(recipe_path: Path, generated: Path) -> dict:
                 for item in manifest["plan"]
                 if Path(item["output"]).resolve() == phrase_dir
             )
+            validate_metadata_texts(plan_item, metadata, metadata_path)
             files = set()
             for record in metadata:
                 files.add(record.get("file"))
@@ -220,11 +244,15 @@ def staged_clip_source(
         root = Path(temporary)
         rejected = rejected or set()
         for source in source_dirs:
-            prefix = (
+            readable_prefix = (
                 source.parent.name
                 if source.name in {"train", "validation", "test"}
                 else source.name
             )
+            source_identity = hashlib.sha256(
+                source.resolve().as_posix().encode()
+            ).hexdigest()[:12]
+            prefix = f"{readable_prefix}-{source_identity}"
             clips = sorted(source.glob("*.wav"))
             if max_clips_per_speaker_phrase:
                 metadata_path = source / "synthesis-metadata.jsonl"
@@ -612,17 +640,21 @@ def main() -> int:
             "impulse_paths": [str(path) for path in args.impulses],
             "background_min_snr_db": minimum_snr,
             "background_max_snr_db": maximum_snr,
-            "probabilities": ({
-                "parametric_eq": 0.15,
-                "tanh_distortion": 0.1,
-                "pitch_shift": 0.1,
-                "band_stop_filter": 0.1,
-                "color_noise": 0.35,
-                "background_noise": 0.8 if backgrounds else 0.0,
-                "gain": 1.0,
-                "gain_transition": 0.15,
-                "room_impulse_response": 0.6 if args.impulses else 0.0,
-            } if augmenter is not None else {}),
+            "probabilities": (
+                {
+                    "parametric_eq": 0.15,
+                    "tanh_distortion": 0.1,
+                    "pitch_shift": 0.1,
+                    "band_stop_filter": 0.1,
+                    "color_noise": 0.35,
+                    "background_noise": 0.8 if backgrounds else 0.0,
+                    "gain": 1.0,
+                    "gain_transition": 0.15,
+                    "room_impulse_response": 0.6 if args.impulses else 0.0,
+                }
+                if augmenter is not None
+                else {}
+            ),
             "held_out_audio": "clean",
         },
     }

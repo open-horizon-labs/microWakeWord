@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -65,7 +66,17 @@ def observation_files(corpus: Path) -> list[Path]:
     )
 
 
-def weak_label(observation: dict[str, Any], matched: list[dict[str, Any]]) -> tuple[str, str]:
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def weak_label(
+    observation: dict[str, Any], matched: list[dict[str, Any]]
+) -> tuple[str, str]:
     if observation.get("outcome") == "no_command":
         return "false_wake_no_command", "device VAD timed out without command speech"
     transcripts = [
@@ -94,11 +105,27 @@ def weak_label(observation: dict[str, Any], matched: list[dict[str, Any]]) -> tu
     return "review", "speech evidence exists but automatic label is uncertain"
 
 
-def analyze(corpus: Path, reliability: dict[str, Any], window_seconds: float) -> dict[str, Any]:
+def analyze(
+    corpus: Path, reliability: dict[str, Any], window_seconds: float
+) -> dict[str, Any]:
     events = reliability.get("recent", [])
     observations = []
     for path in observation_files(corpus):
         observation = json.loads(path.read_text())
+        relative_metadata_path = path.relative_to(corpus)
+        audio_relative_path = Path(str(observation.get("path", "")))
+        audio_path = corpus / audio_relative_path
+        if not audio_relative_path.parts or not audio_path.is_file():
+            raise ValueError(
+                f"observation {path} references missing audio {audio_path}"
+            )
+        audio_sha256 = sha256_file(audio_path)
+        recorded_sha256 = observation.get("sha256")
+        if recorded_sha256 and recorded_sha256 != audio_sha256:
+            raise ValueError(
+                f"observation {path} audio hash mismatch: "
+                f"metadata={recorded_sha256} actual={audio_sha256}"
+            )
         timestamp = float(observation.get("received_at", 0))
         by_turn: dict[int, list[dict[str, Any]]] = {}
         for event in events:
@@ -107,9 +134,7 @@ def analyze(corpus: Path, reliability: dict[str, Any], window_seconds: float) ->
                 by_turn.setdefault(int(event.get("turn_id", -1)), []).append(event)
         turn_id, matched = min(
             by_turn.items(),
-            key=lambda item: abs(
-                float(item[1][0].get("timestamp", 0)) - timestamp
-            ),
+            key=lambda item: abs(float(item[1][0].get("timestamp", 0)) - timestamp),
             default=(-1, []),
         )
         label, basis = weak_label(observation, matched)
@@ -126,7 +151,11 @@ def analyze(corpus: Path, reliability: dict[str, Any], window_seconds: float) ->
         observations.append(
             {
                 "observation_id": observation.get("observation_id"),
-                "path": observation.get("path"),
+                "metadata_path": str(relative_metadata_path),
+                "metadata_sha256": sha256_file(path),
+                "path": str(audio_relative_path),
+                "audio_sha256": audio_sha256,
+                "audio_bytes": audio_path.stat().st_size,
                 "device_outcome": observation.get("outcome"),
                 "wake_probability": observation.get("wake_probability"),
                 "c_rms_dbfs": observation.get("c_rms_dbfs"),
@@ -137,12 +166,15 @@ def analyze(corpus: Path, reliability: dict[str, Any], window_seconds: float) ->
                 "stt": transcripts,
                 "weak_label": label,
                 "label_basis": basis,
+                "review": observation.get("review"),
             }
         )
     return {
         "schema_version": 1,
         "source": "quarantined_wake_observations_plus_uhc_reliability",
+        "source_corpus": str(corpus.resolve()),
         "human_review_required": True,
+        "training_eligible": False,
         "observation_count": len(observations),
         "label_counts": dict(Counter(item["weak_label"] for item in observations)),
         "observations": observations,
@@ -152,7 +184,9 @@ def analyze(corpus: Path, reliability: dict[str, Any], window_seconds: float) ->
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", type=Path, required=True)
-    parser.add_argument("--reliability-url", default="http://127.0.0.1:8088/voice/reliability")
+    parser.add_argument(
+        "--reliability-url", default="http://127.0.0.1:8088/voice/reliability"
+    )
     parser.add_argument("--reliability-file", type=Path)
     parser.add_argument("--window-seconds", type=float, default=10.0)
     parser.add_argument("--output", type=Path, required=True)
@@ -164,7 +198,12 @@ def main() -> int:
     report = analyze(args.corpus, reliability, args.window_seconds)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    print(json.dumps({key: report[key] for key in ("observation_count", "label_counts")}, indent=2))
+    print(
+        json.dumps(
+            {key: report[key] for key in ("observation_count", "label_counts")},
+            indent=2,
+        )
+    )
     return 0
 
 
