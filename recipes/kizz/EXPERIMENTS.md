@@ -270,3 +270,71 @@ the capture-only physical control. No v32 artifact is flashed. The next model
 work must change a declared mechanism—capacity, representation, sequential
 verification, or wake phrase—not silently continue this run or reopen the test
 sets for tuning.
+
+## Post-v32 probes failed to recover a usable boundary
+
+Three bounded probes tested whether v19's useful live recall could be retained
+while adding the missing conversation evidence. They were diagnostic runs, not
+product qualification: their selector used canonical positives and connected
+household-speech negatives, not the complete continuous 100-hour FAPH gate.
+
+| Probe | Declared mechanism | Best recorded validation point | Decision |
+| --- | --- | --- | --- |
+| v33a | Continue exact v19 at `2e-6` then `5e-7`, freeze batch normalization, and cap negative pressure at 45% | Steps 25, 50, 100, and 200 all had no deployable nonzero-recall operating point. | Rejected: the tested schedule and selector produced no deployable point. |
+| v33b | Freeze v19's feature extractor and retrain only the classifier as a tiny verifier proxy | Cutoff `.88235`: 110/1,715 canonical positives and 7/768 connected negatives accepted. | Rejected: 6.4% recall; the frozen representation did not expose a separable canonical-phrase feature. |
+| v34 | Continue v19 with frozen batch normalization and broader device, ordinary-speech, connected, and mined negatives | Best recall checkpoint, step 700 at cutoff `.98824`: 683/1,715 positives and 6/768 connected negatives accepted. Steps 900 and 1,500 remained at 36.1–39.7% recall with 5–7 accepts. | Rejected: high cutoffs near quantization saturation still left both major recall loss and residual speech accepts. |
+
+These probes reject the tested cheap versions of sequential verification that
+reuse the same binary representation: classifier-only retraining, microscopic
+v19 adaptation, and broader hard-negative continuation. They do not rule out a
+different temporal head, different pooling, or a genuinely independent verifier
+representation. Those alternatives need a declared memory/latency budget and
+cannot be represented as "just another threshold."
+
+## Ordered-state v1 was also rejected
+
+The next experiment changed the mechanism instead of continuing v19. One causal
+48,119-parameter acoustic model emitted 23 local phone-state logits; a tiny
+ordered dynamic program required `/h aɪ f aɪ k ɪ z/` without skips or interior
+starts. The first candidate trained from scratch against source-family-disjoint
+negative partitions and measured Piper token spans. The untouched test split
+remained closed.
+
+| Step | Validation recall | Ambient false accepts | False accepts/hour | AUC | Decision |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 5,000 | 71.2% | 8,534 | 76.08346 | `.91540` | Grossly over-triggering. |
+| 10,000 | 50.0% | 28 | 0.24963 | `.86697` | Best false-accept checkpoint, but far below the 90% recall floor and above the 0.1 FAPH ceiling. |
+| 15,000 | 51.8% | 86 | 0.76672 | `.84664` | Regression. |
+| 20,000 | 54.8% | 6,227 | 55.51578 | `.87217` | Severe instability; no recovery of recall. |
+
+Training was stopped during step-25,000 validation. The best fixed endpoint
+missed the recall floor by 40 points while exceeding the false-accept ceiling;
+later checkpoints were unstable rather than converging. A quantized
+decoder-margin sweep was therefore not used to claim qualification, and the
+untouched test partition and quarantined deployment anchors were not opened for
+model selection. No artifact was flashed.
+
+The result does not show that temporal ordering is useless. It shows that this
+specific fixed-duration topology plus equal-third B/M/E frame supervision did
+not solve the product boundary. The measured Piper token spans are real; the
+three equal subdivisions within each phone are constructed targets. Any future
+ordered experiment must first falsify the 630 ms minimum path and frame-target
+assumptions with a controlled ablation, rather than spending another full run
+on the same recipe.
+
+## Consolidated frame shift
+
+Across the tested reductions documented here, lower household-speech acceptance
+paid for it with unacceptable speaker/channel recall. The active problem is
+therefore not "find a slightly better cutoff" or "add more random negatives."
+It is to find a representation and phrase boundary that separate canonical
+wakes from ordinary speech on the target microphone. Until that mechanism is
+demonstrated on fresh real-speaker/device positives and continuous room exposure,
+v19 is evidence and capture infrastructure—not a model to polish or a release
+candidate.
+
+This is a stop decision for the tested recipes, not evidence that every temporal
+or sequential representation will fail.
+
+The exact post-v32 and ordered-state checkpoint records are preserved in
+[`ordered-state-v1-results.json`](ordered-state-v1-results.json).

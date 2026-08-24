@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "experiment": "kizz-ordered-state-v1",
+  "status": "rejected",
+  "issue": "muness/roon-knob#241",
+  "decision": {
+    "training_terminated": true,
+    "terminated_during": "step-25000 validation",
+    "reason": "No completed checkpoint approached the joint recall and false-accepts/hour gate; later checkpoints regressed.",
+    "test_partition_opened": false,
+    "deployment_anchors_used_for_selection": false,
+    "firmware_flashed": false
+  },
+  "qualification_gate": {
+    "minimum_fresh_device_speaker_recall": 0.9,
+    "maximum_false_accepts_per_hour": 0.1,
+    "stretch_false_accepts_per_hour": 0.041666666666666664
+  },
+  "frozen_negative_inventory": {
+    "manifest_sha256": "bb6850d3007f4a1e1931a308a7115a05381768b7bea58d5dbff6ecc2c46bff11",
+    "train_hours": 124.43,
+    "validation_hours": 112.166,
+    "test_hours": 665.661,
+    "test_untouched": true
+  },
+  "reproducibility": {
+    "training_config_sha256": "f4cde9c94797ccc41bf2b8ba1e3874c234778241f6558e8f99d47f677cd339ac",
+    "sampling_plan_sha256": "f0a5f116187dfb99f1d934ea44bb112d4e2b5aa4e7a152b71c4a4a2327f09515",
+    "hard_negative_mining_metadata_sha256": "366d65c8cbd6ff60e597aeb29b25d09d9297765b6ddf0ff4f834119af230645d",
+    "quarantined_anchor_manifest_sha256": "5558d3e7ed2bd4446c3777da0cfadd8b43085f66cbc267a01af0b81f3d56b0aa",
+    "v32_anchor_snapshot": {
+      "date": "2026-08-23",
+      "observation_count": 47,
+      "copied_manifest_sha256": "fa0fbc304ef78493fcc1b091608c52ffc37aba58a1f9121599e54f2b5f0ecbe9",
+      "provenance_status": "historical_local_snapshot",
+      "repository_bundled": false
+    },
+    "ordered_state_anchor_snapshot": {
+      "selection_since": "2026-08-24T00:00:00Z",
+      "frozen_at": "2026-08-24T14:41:30Z",
+      "observation_count": 62,
+      "manifest_sha256": "5558d3e7ed2bd4446c3777da0cfadd8b43085f66cbc267a01af0b81f3d56b0aa",
+      "distinct_from_v32_snapshot": true
+    }
+  },
+  "aligned_positive_inventory": {
+    "accepted_examples": 4086,
+    "rejected_overlong_examples": 10,
+    "manifest_sha256": "56a8dc69cf264e3af8213045dbd29964809c9116558731f11433615c7dd1716e"
+  },
+  "binary_scratch_control": {
+    "status": "rejected_early",
+    "checkpoints": [
+      {
+        "step": 5000,
+        "validation_recall": 0.044,
+        "false_accepts_per_hour": 1.96137,
+        "recall_at_no_false_accepts": 0.0
+      },
+      {
+        "step": 10000,
+        "validation_recall": 0.124,
+        "combined_validation_false_accepts": 2895,
+        "recall_at_no_false_accepts": 0.0,
+        "auc": 0.826438
+      }
+    ]
+  },
+  "ordered_state_candidate": {
+    "architecture": {
+      "learned_parameters": 48119,
+      "state_count": 23,
+      "frame_step_ms": 30,
+      "minimum_path_extent_ms": 630,
+      "frame_supervision_weight": 0.25
+    },
+    "validation_negative_exposure_hours": 112.166,
+    "checkpoints": [
+      {
+        "step": 5000,
+        "weights_sha256": "af09889e32e447f8269e6f64efabe1b0532988a8188e1cee47cb01552d32a066",
+        "validation_recall": 0.712,
+        "validation_precision": 0.18135507,
+        "ambient_false_accepts": 8534,
+        "false_accepts_per_hour": 76.08346,
+        "auc": 0.91540265,
+        "recall_at_no_false_accepts": 0.0
+      },
+      {
+        "step": 10000,
+        "weights_sha256": "e5c86520753d4af1473f2088a12f36ec73c7736dfa4cca5510227ff81a4cdcdc",
+        "validation_recall": 0.5,
+        "validation_precision": 0.20358306,
+        "ambient_false_accepts": 28,
+        "false_accepts_per_hour": 0.24963,
+        "auc": 0.86697096,
+        "recall_at_no_false_accepts": 0.0,
+        "preserved_as_best_weights": true
+      },
+      {
+        "step": 15000,
+        "weights_sha256": "df4600f64218eef835054183a4b59d67aadc704246ffa44b07bddfee550656b8",
+        "validation_recall": 0.518,
+        "validation_precision": 0.15102041,
+        "ambient_false_accepts": 86,
+        "false_accepts_per_hour": 0.76672,
+        "auc": 0.84663677,
+        "recall_at_no_false_accepts": 0.0
+      },
+      {
+        "step": 20000,
+        "weights_sha256": "9131b92227b6b09abbdee7fe04cfa43bb7874eb6a5add79d2f71c226d30bf7b3",
+        "validation_recall": 0.548,
+        "validation_precision": 0.27987742,
+        "ambient_false_accepts": 6227,
+        "false_accepts_per_hour": 55.51578,
+        "auc": 0.87216961,
+        "recall_at_no_false_accepts": 0.0
+      }
+    ],
+    "preserved_quantized_export_sha256": "8e45a363e7809511bdbd3fb03e3fae1c14d85cfc971aa8443d4ec64271d1249b",
+    "quantized_qualification_completed": false
+  },
+  "post_v32_probes": [
+    {
+      "name": "v33a-v19-retention",
+      "mechanism": "Very-low-rate v19 continuation with frozen batch normalization and at most 45 percent negative pressure.",
+      "result": "No deployable nonzero-recall validation point at steps 25, 50, 100, or 200."
+    },
+    {
+      "name": "v33b-classifier-verifier",
+      "model_sha256": "447e4d4447f5b648d81772630cee3ac76f49c382734c7660a88ac24e62f66403",
+      "mechanism": "Frozen v19 feature extractor with classifier-only retraining.",
+      "selected_cutoff": 0.8823529481887817,
+      "validation_positive_accepted": 110,
+      "validation_positive_total": 1715,
+      "connected_negative_accepted": 7,
+      "connected_negative_total": 768,
+      "result": "Rejected for 6.4 percent recall."
+    },
+    {
+      "name": "v34-v19-broad-hard-negative",
+      "mechanism": "Frozen-batch-normalization v19 continuation with device, ordinary, connected, mined, and random negatives.",
+      "best_recall_checkpoint": {
+        "step": 700,
+        "model_sha256": "4eecd7108f9d1549f9d8531643db9cad6c0914d4d52ebfb39b8fa5adef587068",
+        "selected_cutoff": 0.9882352948188782,
+        "validation_positive_accepted": 683,
+        "validation_positive_total": 1715,
+        "connected_negative_accepted": 6,
+        "connected_negative_total": 768
+      },
+      "result": "Rejected; less than 40 percent recall at a near-saturated cutoff with residual connected-speech accepts."
+    }
+  ],
+  "interpretation": {
+    "supported": [
+      "The v19 binary representation is brittle under corrected canonical labels and realistic conversation-negative pressure.",
+      "Classifier-only retraining on frozen v19 features does not expose a usable canonical-phrase boundary.",
+      "The first ordered-state recipe did not meet the joint recall and false-accept gate.",
+      "Validation threshold sweeps for v19 and v32 did not repair their observed binary score overlap."
+    ],
+    "not_supported": [
+      "All temporal-ordering wake models are ineffective.",
+      "All nearby representations or sequential verifiers are ineffective.",
+      "The untouched test set or quarantined deployment anchors qualify any candidate.",
+      "Additional training of this exact recipe is likely to meet the gate."
+    ]
+  }
+}

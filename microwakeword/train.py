@@ -170,6 +170,20 @@ def require_binary_validation(data_processor):
         )
 
 
+def _evaluate_batches(model, batches):
+    """Evaluate batches while retaining Keras' accumulated metric state."""
+    result = None
+    for fingerprints, ground_truth, _ in batches:
+        # ``test_on_batch`` resets compiled metrics on each call in the Keras
+        # versions supported by this project.  ``test_step`` is the exact
+        # per-batch operation used by ``evaluate`` and leaves metric state
+        # accumulated until the caller resets it.
+        result = model.test_step((fingerprints, ground_truth.reshape(-1, 1)))
+    if result is None:
+        raise ValueError("cannot evaluate an empty batch stream")
+    return result
+
+
 def validate_nonstreaming(config, data_processor, model, test_set):
     testing_fingerprints, testing_ground_truth, _ = data_processor.get_data(
         test_set,
@@ -214,26 +228,16 @@ def validate_nonstreaming(config, data_processor, model, test_set):
     metrics["average_viable_recall"] = metrics["recall_at_no_faph"]
 
     if data_processor.get_mode_size("validation_ambient") > 0:
-        (
-            ambient_testing_fingerprints,
-            ambient_testing_ground_truth,
-            _,
-        ) = data_processor.get_data(
-            test_set + "_ambient",
-            batch_size=config["batch_size"],
-            features_length=config["spectrogram_length"],
-            truncation_strategy="split",
-        )
-        ambient_testing_ground_truth = ambient_testing_ground_truth.reshape(-1, 1)
-
         # XXX: tf no longer provides a way to evaluate a model without updating metrics
         with swap_attribute(model, "reset_metrics", lambda: None):
-            ambient_predictions = model.evaluate(
-                ambient_testing_fingerprints,
-                ambient_testing_ground_truth,
-                batch_size=1024,
-                return_dict=True,
-                verbose=0,
+            ambient_predictions = _evaluate_batches(
+                model,
+                data_processor.get_data_batches(
+                    test_set + "_ambient",
+                    batch_size=1024,
+                    features_length=config["spectrogram_length"],
+                    truncation_strategy="split",
+                ),
             )
 
         duration_of_ambient_set = (
