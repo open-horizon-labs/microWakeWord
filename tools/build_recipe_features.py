@@ -232,6 +232,36 @@ def selected_phrase_directories(
     return [path for text in texts for path in by_text[text]]
 
 
+def selected_text_source_directories(
+    manifest: dict,
+    class_name: str,
+    text_sources: list[str],
+    split: str | None = None,
+    providers: set[str] | None = None,
+    age_groups: set[str] | None = None,
+) -> list[Path]:
+    """Select connected-sentence groups without mixing in phrase entries."""
+    by_source: dict[str, list[Path]] = {source: [] for source in text_sources}
+    available = {
+        item["text_source"]
+        for item in manifest.get("plan", [])
+        if item.get("class") == class_name and item.get("text_source")
+    }
+    unknown = sorted(set(text_sources) - available)
+    if unknown:
+        raise ValueError(f"unknown {class_name} text source(s): {unknown}")
+    for item in manifest.get("plan", []):
+        if (
+            item.get("class") == class_name
+            and item.get("text_source") in by_source
+            and (split is None or item.get("split") == split)
+            and (not providers or _plan_provider(item) in providers)
+            and (not age_groups or item.get("age_group") in age_groups)
+        ):
+            by_source[item["text_source"]].append(Path(item["output"]))
+    return [path for source in text_sources for path in by_source[source]]
+
+
 @contextmanager
 def staged_clip_source(
     source_dirs: list[Path],
@@ -435,6 +465,15 @@ def main() -> int:
         help="Build hard-negative features from only this exact phrase; repeatable",
     )
     parser.add_argument(
+        "--hard-negative-text-source",
+        action="append",
+        default=[],
+        help=(
+            "Build hard-negative features from only this connected-sentence "
+            "source; repeatable"
+        ),
+    )
+    parser.add_argument(
         "--provider",
         action="append",
         default=[],
@@ -469,6 +508,16 @@ def main() -> int:
     if args.hard_negative_text and args.class_name == "positive":
         parser.error(
             "--hard-negative-text requires hard_negative or both class generation"
+        )
+    if args.hard_negative_text_source and args.class_name == "positive":
+        parser.error(
+            "--hard-negative-text-source requires hard_negative or both class generation"
+        )
+    if args.hard_negative_text and args.hard_negative_text_source:
+        parser.error("select hard-negative phrases or connected text sources, not both")
+    if args.hard_negative_text_source and args.separate_by_phrase:
+        parser.error(
+            "--hard-negative-text-source cannot be combined with --separate-by-phrase"
         )
     if (
         args.max_clips_per_speaker_phrase is not None
@@ -545,6 +594,10 @@ def main() -> int:
         "positive": args.positive_text,
         "hard_negative": args.hard_negative_text,
     }
+    text_source_selections = {
+        "positive": [],
+        "hard_negative": args.hard_negative_text_source,
+    }
     requested_classes = (
         ("positive", "hard_negative")
         if args.class_name == "both"
@@ -555,13 +608,31 @@ def main() -> int:
         for feature_split in feature_splits:
             manifest_split = split_names[feature_split]
             texts = selections[class_name]
-            if args.separate_by_phrase:
+            text_sources = text_source_selections[class_name]
+            if text_sources:
+                source_groups = [
+                    (
+                        None,
+                        text_source,
+                        selected_text_source_directories(
+                            manifest,
+                            class_name,
+                            [text_source],
+                            manifest_split,
+                            providers,
+                            age_groups,
+                        ),
+                    )
+                    for text_source in text_sources
+                ]
+            elif args.separate_by_phrase:
                 phrase_texts = texts or [
                     phrase["text"] for phrase in recipe[f"{class_name}_phrases"]
                 ]
                 source_groups = [
                     (
                         text,
+                        None,
                         selected_phrase_directories(
                             manifest,
                             class_name,
@@ -592,11 +663,13 @@ def main() -> int:
                         age_groups,
                     )
                 )
-                source_groups = [(None, sources)]
-            for text, sources in source_groups:
+                source_groups = [(None, None, sources)]
+            for text, text_source, sources in source_groups:
                 destination = args.output / class_name
                 if text is not None:
                     destination /= phrase_slug(text)
+                elif text_source is not None:
+                    destination /= phrase_slug(text_source)
                 generate_class_features(
                     sources,
                     destination,
@@ -610,6 +683,7 @@ def main() -> int:
                     {
                         "class": class_name,
                         "text": text,
+                        "text_source": text_source,
                         "feature_split": feature_split,
                         "features_dir": str(destination),
                     }

@@ -10,7 +10,9 @@ cutoff with a one-frame sliding window. It is the model to beat in live use,
 not a qualified release. Later models improved some offline scores but either
 lost current-speaker recall or false-woke on physical Kizz. See
 [Training reference](TRAINING_REFERENCE.md) for the complete corpus and tooling
-story, and [Experiments](EXPERIMENTS.md) for the failure boundaries.
+story, [Experiments](EXPERIMENTS.md) for the failure boundaries, and the
+[ordered-state v1 outline](ORDERED_STATE_V1.md) for the scratch architecture
+that follows the failed v32 binary reboot.
 
 ## What made v19 work
 
@@ -73,6 +75,7 @@ augmentation settings, and the v1–v31 experiment lineage.
 | Collect and build device evidence | [`run_enrollment_service.py`](../../tools/run_enrollment_service.py), [`validate_device_corpus.py`](../../tools/validate_device_corpus.py), [`build_device_corpus_features.py`](../../tools/build_device_corpus_features.py) |
 | Control training mixture and comparisons | [`write_recipe_training_config.py`](../../tools/write_recipe_training_config.py), [`write_stratified_training_config.py`](../../tools/write_stratified_training_config.py), [`audit_training_ablation.py`](../../tools/audit_training_ablation.py), [`audit_source_ablation.py`](../../tools/audit_source_ablation.py) |
 | Evaluate models and select a cutoff | [`evaluate_recipe_model.py`](../../tools/evaluate_recipe_model.py), [`select_recipe_cutoff.py`](../../tools/select_recipe_cutoff.py), [`evaluate_device_corpus_model.py`](../../tools/evaluate_device_corpus_model.py) |
+| Train/evaluate the ordered-state candidate | [`ordered_state_model.py`](../../microwakeword/ordered_state_model.py), [`evaluate_ordered_state.py`](../../tools/evaluate_ordered_state.py), [`report_ordered_state_resources.py`](../../tools/report_ordered_state_resources.py) |
 
 ## Training workflow
 

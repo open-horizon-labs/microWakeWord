@@ -44,7 +44,9 @@ def constrain_faph_by_negative_false_accepts(ambient_faph, negative_false_positi
     return np.where(np.asarray(negative_false_positives) > 0, np.inf, ambient_faph)
 
 
-def labeled_validation_operating_point(true_positives, false_positives, false_negatives):
+def labeled_validation_operating_point(
+    true_positives, false_positives, false_negatives
+):
     """Select the lowest cutoff with no labeled false accepts."""
     true_positives = np.asarray(true_positives)
     false_positives = np.asarray(false_positives)
@@ -63,21 +65,63 @@ def labeled_validation_operating_point(true_positives, false_positives, false_ne
 
 
 def configured_training_loss(config):
-    """Build the declared binary training loss; BCE remains the default."""
+    """Build the declared endpoint loss; binary BCE remains the default."""
     loss_config = config.get("training_loss", {})
     name = loss_config.get("name", "binary_crossentropy")
     if name == "binary_crossentropy":
         return tf.keras.losses.BinaryCrossentropy(from_logits=False)
+    if name == "ordered_state_sequence":
+        return tf.keras.losses.BinaryCrossentropy(from_logits=True)
     if name == "binary_focal_crossentropy":
         return tf.keras.losses.BinaryFocalCrossentropy(
-            apply_class_balancing=bool(
-                loss_config.get("apply_class_balancing", False)
-            ),
+            apply_class_balancing=bool(loss_config.get("apply_class_balancing", False)),
             alpha=float(loss_config.get("alpha", 0.25)),
             gamma=float(loss_config.get("gamma", 2.0)),
             from_logits=False,
         )
     raise ValueError(f"unsupported training loss: {name}")
+
+
+@tf.keras.utils.register_keras_serializable(package="microwakeword")
+class ProbabilityMetric(tf.keras.metrics.Metric):
+    """Evaluate a probability-domain metric against logit model output."""
+
+    def __init__(self, metric, **kwargs):
+        super().__init__(name=metric.name, **kwargs)
+        self.metric = metric
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        return self.metric.update_state(
+            y_true, tf.math.sigmoid(y_pred), sample_weight=sample_weight
+        )
+
+    def result(self):
+        return self.metric.result()
+
+    def reset_state(self):
+        self.metric.reset_state()
+
+
+def configured_training_metrics(config):
+    """Build endpoint metrics in the model's declared score domain."""
+    probability_cutoffs = np.linspace(0.0, 1.0, 101).tolist()
+    ordered_state = (
+        config.get("training_loss", {}).get("name") == "ordered_state_sequence"
+    )
+    metrics = [
+        tf.keras.metrics.BinaryAccuracy(name="accuracy"),
+        tf.keras.metrics.Recall(name="recall"),
+        tf.keras.metrics.Precision(name="precision"),
+        tf.keras.metrics.TruePositives(name="tp", thresholds=probability_cutoffs),
+        tf.keras.metrics.FalsePositives(name="fp", thresholds=probability_cutoffs),
+        tf.keras.metrics.TrueNegatives(name="tn", thresholds=probability_cutoffs),
+        tf.keras.metrics.FalseNegatives(name="fn", thresholds=probability_cutoffs),
+        tf.keras.metrics.AUC(name="auc"),
+        tf.keras.metrics.BinaryCrossentropy(name="loss"),
+    ]
+    return (
+        [ProbabilityMetric(metric) for metric in metrics] if ordered_state else metrics
+    )
 
 
 def configure_trainable_layers(model, config):
@@ -117,9 +161,7 @@ def require_binary_validation(data_processor):
     """Reject checkpoint selection that cannot measure both error directions."""
     counts = data_processor.get_mode_label_counts("validation")
     missing = [
-        name
-        for label, name in ((0, "negative"), (1, "positive"))
-        if not counts[label]
+        name for label, name in ((0, "negative"), (1, "positive")) if not counts[label]
     ]
     if missing:
         raise ValueError(
@@ -207,12 +249,10 @@ def validate_nonstreaming(config, data_processor, model, test_set):
         metrics["auc"] = ambient_predictions["auc"]
         metrics["loss"] = ambient_predictions["loss"]
 
-        recall_at_cutoffs = (
-            all_true_positives / (all_true_positives + all_false_negatives)
+        recall_at_cutoffs = all_true_positives / (
+            all_true_positives + all_false_negatives
         )
-        ambient_faph_at_cutoffs = (
-            ambient_false_positives / duration_of_ambient_set
-        )
+        ambient_faph_at_cutoffs = ambient_false_positives / duration_of_ambient_set
         faph_at_cutoffs = constrain_faph_by_negative_false_accepts(
             ambient_faph_at_cutoffs, test_set_fp
         )
@@ -299,23 +339,27 @@ def train(model, config, data_processor):
     loss = configured_training_loss(config)
     optimizer = tf.keras.optimizers.Adam()
 
-    cutoffs = np.linspace(0.0, 1.0, 101).tolist()
-
-    metrics = [
-        tf.keras.metrics.BinaryAccuracy(name="accuracy"),
-        tf.keras.metrics.Recall(name="recall"),
-        tf.keras.metrics.Precision(name="precision"),
-        tf.keras.metrics.TruePositives(name="tp", thresholds=cutoffs),
-        tf.keras.metrics.FalsePositives(name="fp", thresholds=cutoffs),
-        tf.keras.metrics.TrueNegatives(name="tn", thresholds=cutoffs),
-        tf.keras.metrics.FalseNegatives(name="fn", thresholds=cutoffs),
-        tf.keras.metrics.AUC(name="auc"),
-        tf.keras.metrics.BinaryCrossentropy(name="loss"),
-    ]
+    metrics = configured_training_metrics(config)
 
     configure_trainable_layers(model, config)
 
     model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
+
+    frame_supervisor = None
+    loss_config = config.get("training_loss", {})
+    frame_config = loss_config.get("frame_supervision")
+    if frame_config is not None:
+        if loss_config.get("name") != "ordered_state_sequence":
+            raise ValueError("frame supervision requires ordered_state_sequence loss")
+        from microwakeword.ordered_state_training import OrderedStateFrameSupervisor
+
+        frame_supervisor = OrderedStateFrameSupervisor(
+            model,
+            optimizer,
+            {**frame_config, "frame_weight": loss_config.get("frame_weight", 0.0)},
+        )
+    elif loss_config.get("frame_weight", 0.0):
+        raise ValueError("frame_weight requires frame_supervision")
 
     # We un-decorate the `tf.function`, it's very slow to manually run training batches
     model.make_train_function()
@@ -402,6 +446,9 @@ def train(model, config, data_processor):
             train_ground_truth,
             sample_weight=combined_weights,
         )
+        frame_loss = (
+            frame_supervisor.train_on_batch() if frame_supervisor is not None else None
+        )
 
         # Print the running statistics in the current validation epoch
         print(
@@ -436,6 +483,8 @@ def train(model, config, data_processor):
                 tf.summary.scalar("recall", result[2], step=training_step)
                 tf.summary.scalar("precision", result[3], step=training_step)
                 tf.summary.scalar("auc", result[8], step=training_step)
+                if frame_loss is not None:
+                    tf.summary.scalar("frame_loss", frame_loss, step=training_step)
                 train_writer.flush()
 
             model.save_weights(
