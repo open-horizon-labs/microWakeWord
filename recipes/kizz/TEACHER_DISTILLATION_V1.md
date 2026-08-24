@@ -171,3 +171,6 @@ The remaining safe decision is **RECONSIDER the student target, preserve the
 teacher/cache infrastructure, and do not flash**. Human verification still
 needed: independent review of the 62 weak-label false-wake classifications and
 an exact StackChan resource/boot test after a future student qualifies.
+
+The accuracy audit and restart kit are preserved in
+[`TEACHER_DISTILLATION_SALVAGE.md`](TEACHER_DISTILLATION_SALVAGE.md).
