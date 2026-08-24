@@ -86,7 +86,8 @@ def load_config(flags, model_module):
         dict: dictionary containing training configuration
     """
     config_filename = flags.training_config
-    config = yaml.load(open(config_filename, "r").read(), yaml.Loader)
+    with open(config_filename, "r", encoding="utf-8") as config_file:
+        config = yaml.load(config_file.read(), yaml.Loader)
     apply_model_parameters(config, flags)
 
     config["summaries_dir"] = os.path.join(config["train_dir"], "logs/")
@@ -117,9 +118,14 @@ def load_config(flags, model_module):
             length_minus_window / window_step_samples
         )
 
-    config["spectrogram_length"] = config[
-        "spectrogram_length_final_layer"
-    ] + model_module.spectrogram_slices_dropped(flags)
+    if hasattr(model_module, "training_spectrogram_length"):
+        config["spectrogram_length"] = model_module.training_spectrogram_length(
+            flags, config["spectrogram_length_final_layer"]
+        )
+    else:
+        config["spectrogram_length"] = config[
+            "spectrogram_length_final_layer"
+        ] + model_module.spectrogram_slices_dropped(flags)
 
     config["flags"] = flags.__dict__
 

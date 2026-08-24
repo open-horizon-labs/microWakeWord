@@ -12,7 +12,7 @@ import yaml
 
 
 def _feature(entry: dict, features_dir: Path, source_name: str) -> dict:
-    return {
+    feature = {
         "features_dir": str(features_dir),
         "sampling_weight": float(entry.get("within_group_weight", 1.0)),
         "penalty_weight": float(entry.get("penalty_weight", 1.0)),
@@ -23,6 +23,9 @@ def _feature(entry: dict, features_dir: Path, source_name: str) -> dict:
         "sampling_source": source_name,
         "evaluation_enabled": bool(entry.get("evaluation_enabled", True)),
     }
+    if expected_path_sha256 := entry.get("expected_path_sha256"):
+        feature["expected_path_sha256"] = expected_path_sha256
+    return feature
 
 
 def expand_source(entry: dict) -> list[dict]:
@@ -33,7 +36,9 @@ def expand_source(entry: dict) -> list[dict]:
         include_phrases = entry.get("include_phrases")
         exclude_phrases = entry.get("exclude_phrases")
         if include_phrases is not None and exclude_phrases is not None:
-            raise ValueError("sampling source cannot combine include_phrases and exclude_phrases")
+            raise ValueError(
+                "sampling source cannot combine include_phrases and exclude_phrases"
+            )
         for field_name, phrases in (
             ("include_phrases", include_phrases),
             ("exclude_phrases", exclude_phrases),
@@ -77,7 +82,9 @@ def _stage_value(value: object, stage: int) -> float:
     return float(values[min(stage, len(values) - 1)])
 
 
-def planned_balance(config: dict, groups: dict[str, float], features: list[dict]) -> dict:
+def planned_balance(
+    config: dict, groups: dict[str, float], features: list[dict]
+) -> dict:
     """Summarize the static class pressure implied by a sampling plan."""
     group_details = {}
     total_group_weight = sum(groups.values())
@@ -91,10 +98,13 @@ def planned_balance(config: dict, groups: dict[str, float], features: list[dict]
         if len(truths) != 1:
             raise ValueError(f"sampling group {group!r} must contain one truth class")
         source_weight = sum(feature["sampling_weight"] for feature in active)
-        average_penalty = sum(
-            feature["sampling_weight"] * feature["penalty_weight"]
-            for feature in active
-        ) / source_weight
+        average_penalty = (
+            sum(
+                feature["sampling_weight"] * feature["penalty_weight"]
+                for feature in active
+            )
+            / source_weight
+        )
         group_details[group] = {
             "truth": truths.pop(),
             "sampling_share": group_weight / total_group_weight,
@@ -174,9 +184,7 @@ def stratified_config(base_config: Path, plan_path: Path) -> dict:
     if not groups or any(weight <= 0 for weight in groups.values()):
         raise ValueError("sampling group weights must be positive")
     features = [
-        feature
-        for entry in plan["sources"]
-        for feature in expand_source(entry)
+        feature for entry in plan["sources"] for feature in expand_source(entry)
     ]
     active_groups = {
         feature["sampling_group"]

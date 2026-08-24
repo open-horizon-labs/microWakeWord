@@ -9,6 +9,24 @@ import tensorflow as tf
 
 from microwakeword.ordered_state import KIZZ_TOPOLOGY
 from microwakeword.ordered_state_model import acoustic_model
+from microwakeword.provenance import sha256_file
+
+
+def validate_expected_file_hashes(directory: Path, expected: dict | None) -> None:
+    if expected is None:
+        return
+    if not isinstance(expected, dict) or not expected:
+        raise ValueError("expected_files_sha256 must be a non-empty mapping")
+    for filename, expected_hash in sorted(expected.items()):
+        path = directory / filename
+        if not path.is_file():
+            raise ValueError(f"missing hash-bound frame supervision file: {filename}")
+        actual_hash = sha256_file(path)
+        if actual_hash != expected_hash:
+            raise ValueError(
+                f"frame supervision hash mismatch for {filename}: "
+                f"expected {expected_hash}, got {actual_hash}"
+            )
 
 
 class OrderedStateFrameSupervisor:
@@ -16,6 +34,7 @@ class OrderedStateFrameSupervisor:
 
     def __init__(self, training_wrapper, optimizer, config):
         directory = Path(config["directory"])
+        validate_expected_file_hashes(directory, config.get("expected_files_sha256"))
         self.features = np.load(directory / "features.npy", mmap_mode="r")
         self.targets = np.load(directory / "targets.npy", mmap_mode="r")
         weights_path = directory / "weights.npy"

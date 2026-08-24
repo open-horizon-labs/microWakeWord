@@ -1,8 +1,8 @@
 # Kizz ordered-state model outline
 
-Status: architecture scaffold implemented under `muness/roon-knob#240`; no
-trained candidate has qualified yet. Training and qualification are tracked by
-`muness/roon-knob#241`.
+Status: architecture scaffold implemented under `muness/roon-knob#240`; the
+first scratch candidate was trained and rejected under `muness/roon-knob#241`.
+No ordered-state artifact qualified or was flashed.
 
 ## Why this is a new model
 
@@ -117,9 +117,11 @@ latency measurements, not ESP32-S3 latency or tensor-arena measurements.
 Firmware integration remains gated on a qualifying model and an exact-device
 resource report. The checked-in resource reporter reproduces the measurement.
 
-The 21-state path imposes a 630 ms minimum decoded phrase duration at the
-30 ms output cadence. Fast natural speakers are therefore an explicit recall
-risk to measure, not an assumption to hide.
+The 21-state path imposes a 630 ms minimum decoded phrase extent at the 30 ms
+output cadence. Event coordinates use an inclusive start frame and an
+end-exclusive timestamp: a path from frame `N` through `N+20` therefore spans
+630 ms. Fast natural speakers are an explicit recall risk to measure, not an
+assumption to hide.
 
 ## Training and evaluation contract
 
@@ -147,6 +149,44 @@ If no candidate clears that bar, no model is flashed and the failed run remains
 falsifying evidence. The next decision must then change a measured mechanism
 (state duration, capacity, frontend, data coverage, or wake phrase), rather
 than silently reopening the test set.
+
+## First-candidate result and stop decision
+
+The first candidate used the fixed 23-state topology, the 48,119-parameter
+causal encoder, the differentiable sequence loss, and `0.25` auxiliary aligned
+frame loss. Its negative inventory was frozen before training: 124.43 train
+hours, 112.17 validation hours, and 665.66 untouched test hours. The frozen
+inventory SHA-256 is
+`bb6850d3007f4a1e1931a308a7115a05381768b7bea58d5dbff6ecc2c46bff11`.
+The separate quarantined deployment-anchor snapshot froze 62 observations on
+2026-08-24 (manifest SHA-256
+`5558d3e7ed2bd4446c3777da0cfadd8b43085f66cbc267a01af0b81f3d56b0aa`);
+it is distinct from v32's 47-observation 2026-08-23 snapshot and was not used
+for model selection.
+
+The candidate never approached the joint gate. Its best false-accept checkpoint
+was step 10,000: 50.0% endpoint recall and 28 ambient false accepts over the
+112.17-hour validation exposure, or 0.24963 false accepts/hour. The required
+operating point was at least 90% fresh-speaker/device recall and at most 0.1
+false accepts/hour. Step 15,000 regressed to 0.76672 false accepts/hour, and
+step 20,000 regressed to 55.51578 false accepts/hour while recall remained only
+54.8%. Training was deliberately terminated during the step-25,000 validation
+pass; the untouched test partition was never opened and no firmware was flashed.
+
+These are bounded in-training endpoint measurements, not a completed quantized
+qualification report. They are nevertheless sufficient to stop this run: the
+best fixed endpoint missed the recall floor by 40 points while exceeding the
+false-accept ceiling, and additional training made false accepts unstable without
+recovering recall. A quantized decoder-margin sweep was not used to claim a
+stronger result. The machine-readable checkpoint ledger is
+[`ordered-state-v1-results.json`](ordered-state-v1-results.json).
+
+The failed result narrows the next question. A sequence constraint is cheap
+enough for the device, but this particular combination of local state encoder,
+fixed 630 ms minimum path, and equal-third B/M/E frame supervision did not
+produce a usable separation boundary. Preserve the implementation as a reusable
+research scaffold; do not continue this exact recipe, tune on the untouched
+test set, or treat the auxiliary frame targets as measured phone boundaries.
 
 Qualification reports must pass the artifact's `--decoder-contract` and
 `--require-declared-exposure` to the streaming evaluator. The contract supplies
