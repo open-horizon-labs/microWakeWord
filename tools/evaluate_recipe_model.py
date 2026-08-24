@@ -30,6 +30,29 @@ def peak_probability(
     clip_duration_ms: int,
     reset_state: bool = True,
 ) -> float:
+    probabilities = clip_probabilities(
+        model,
+        wav_path,
+        ignore_initial,
+        clip_duration_ms,
+        reset_state=reset_state,
+    )
+    if probabilities.size < sliding_window:
+        return 0.0
+    moving_average = np.convolve(
+        probabilities, np.ones(sliding_window) / sliding_window, mode="valid"
+    )
+    return float(np.max(moving_average))
+
+
+def clip_probabilities(
+    model: Model,
+    wav_path: Path,
+    ignore_initial: int,
+    clip_duration_ms: int,
+    reset_state: bool = True,
+) -> np.ndarray:
+    """Return one streaming prediction trace for reuse across detector windows."""
     sample_rate, pcm = wavfile.read(wav_path)
     if pcm.dtype != np.int16:
         raise ValueError(f"{wav_path} must be signed-16 PCM")
@@ -51,13 +74,7 @@ def peak_probability(
     if reset_state:
         reset_model(model)
     probabilities = np.asarray(model.predict_clip(pcm, step_ms=10), dtype=np.float32)
-    probabilities = probabilities[ignore_initial:]
-    if probabilities.size < sliding_window:
-        return 0.0
-    moving_average = np.convolve(
-        probabilities, np.ones(sliding_window) / sliding_window, mode="valid"
-    )
-    return float(np.max(moving_average))
+    return probabilities[ignore_initial:]
 
 
 def evaluate_group(
@@ -106,7 +123,13 @@ def clips_by_group(
                 continue
             if split != "all" and item.get("split") != split:
                 continue
-            grouped[item["group"]].extend(
+            group = (
+                item.get("group")
+                or item.get("text_source")
+                or item.get("text")
+                or Path(item["output"]).name
+            )
+            grouped[group].extend(
                 path
                 for path in sorted(Path(item["output"]).glob("*.wav"))
                 if path.resolve() not in rejected
@@ -146,10 +169,16 @@ def phrase_labels(generated: Path) -> dict[str, str]:
     if not manifest_path.exists():
         return {}
     manifest = json.loads(manifest_path.read_text())
-    return {
-        item.get("group", Path(item["output"]).name): item["text"]
-        for item in manifest.get("plan", [])
-    }
+    labels = {}
+    for item in manifest.get("plan", []):
+        group = (
+            item.get("group")
+            or item.get("text_source")
+            or item.get("text")
+            or Path(item["output"]).name
+        )
+        labels[group] = item.get("text") or item.get("text_source") or group
+    return labels
 
 
 def clips_by_age_group(
@@ -235,6 +264,9 @@ def main() -> int:
     }
     labels = phrase_labels(args.generated)
     for truth in ("positive", "hard_negative"):
+        evaluation_clip_duration_ms = (
+            args.clip_duration_ms if truth == "positive" else 0
+        )
         seed = args.split_seed + (1 if truth == "hard_negative" else 0)
         grouped = clips_by_group(
             args.generated / truth,
@@ -251,7 +283,7 @@ def main() -> int:
                 args.cutoff,
                 args.sliding_window,
                 args.ignore_initial,
-                args.clip_duration_ms,
+                evaluation_clip_duration_ms,
                 args.limit_per_phrase,
             )
         if generation_manifest and generation_manifest.get("schema_version") == 2:
@@ -269,7 +301,7 @@ def main() -> int:
                     args.cutoff,
                     args.sliding_window,
                     args.ignore_initial,
-                    args.clip_duration_ms,
+                    evaluation_clip_duration_ms,
                     args.limit_per_phrase,
                 )
 

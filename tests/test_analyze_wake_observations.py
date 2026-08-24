@@ -1,4 +1,5 @@
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,8 @@ class AnalyzeWakeObservationsTest(unittest.TestCase):
 
     def write_observation(self, directory, name, received_at, outcome):
         path = self.corpus / "observations" / directory / f"{name}.json"
+        audio_path = self.corpus / "observations" / directory / f"{name}.wav"
+        audio_path.write_bytes(b"test-pcm")
         path.write_text(
             json.dumps(
                 {
@@ -26,6 +29,7 @@ class AnalyzeWakeObservationsTest(unittest.TestCase):
                     "outcome": outcome,
                     "wake_probability": 0.71,
                     "path": f"observations/{directory}/{name}.wav",
+                    "sha256": hashlib.sha256(b"test-pcm").hexdigest(),
                 }
             )
         )
@@ -52,7 +56,10 @@ class AnalyzeWakeObservationsTest(unittest.TestCase):
         item = report["observations"][0]
         self.assertEqual(item["weak_label"], "stt_command_candidate")
         self.assertEqual(item["matched_turn_id"], 7)
+        self.assertEqual(item["audio_sha256"], hashlib.sha256(b"test-pcm").hexdigest())
+        self.assertTrue(item["metadata_sha256"])
         self.assertTrue(report["human_review_required"])
+        self.assertFalse(report["training_eligible"])
 
     def test_no_command_observation_does_not_need_stt_to_be_quarantined(self):
         self.write_observation("false-wakes", "wake-no-command", 200, "no_command")
@@ -82,6 +89,14 @@ class AnalyzeWakeObservationsTest(unittest.TestCase):
         item = report["observations"][0]
         self.assertEqual(item["weak_label"], "speech_unconfirmed")
         self.assertIsNone(item["matched_turn_id"])
+
+    def test_rejects_audio_changed_after_capture(self):
+        self.write_observation("false-wakes", "wake-tampered", 400, "no_command")
+        audio_path = self.corpus / "observations" / "false-wakes" / "wake-tampered.wav"
+        audio_path.write_bytes(b"different")
+
+        with self.assertRaisesRegex(ValueError, "audio hash mismatch"):
+            analyze(self.corpus, {"recent": []}, window_seconds=10)
 
 
 if __name__ == "__main__":
