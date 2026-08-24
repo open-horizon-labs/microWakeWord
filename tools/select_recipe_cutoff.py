@@ -108,6 +108,8 @@ def validation_records(
                 {
                     "path": wav_path,
                     "truth": item["class"],
+                    "text": item.get("text"),
+                    "text_source": item.get("text_source"),
                     "phrase": item.get("text")
                     or item.get("text_source")
                     or "unlabeled",
@@ -121,6 +123,36 @@ def validation_records(
     if not records:
         raise ValueError("generation manifest contains no eligible validation clips")
     return records
+
+
+def filter_selection_records(
+    records: list[dict],
+    positive_phrases: set[str] | None = None,
+    negative_phrases: set[str] | None = None,
+    negative_text_sources: set[str] | None = None,
+) -> list[dict]:
+    """Restrict cutoff selection to a declared validation contract."""
+    positive_phrases = positive_phrases or set()
+    negative_phrases = negative_phrases or set()
+    negative_text_sources = negative_text_sources or set()
+    selected = []
+    for record in records:
+        if record["truth"] == "positive":
+            if positive_phrases and record.get("text") not in positive_phrases:
+                continue
+        elif negative_phrases or negative_text_sources:
+            if (
+                record.get("text") not in negative_phrases
+                and record.get("text_source") not in negative_text_sources
+            ):
+                continue
+        selected.append(record)
+    truths = {record["truth"] for record in selected}
+    if truths != {"positive", "hard_negative"}:
+        raise ValueError(
+            "cutoff selection filters must retain positive and hard-negative clips"
+        )
+    return selected
 
 
 def score_records(
@@ -188,6 +220,24 @@ def main() -> int:
     parser.add_argument("--recipe", type=Path, required=True)
     parser.add_argument("--quality-mask", type=Path, required=True)
     parser.add_argument(
+        "--positive-phrase",
+        action="append",
+        default=[],
+        help="Use only this exact validation positive phrase; repeatable",
+    )
+    parser.add_argument(
+        "--negative-phrase",
+        action="append",
+        default=[],
+        help="Use only this exact validation hard-negative phrase; repeatable",
+    )
+    parser.add_argument(
+        "--negative-text-source",
+        action="append",
+        default=[],
+        help="Use only this connected validation negative source; repeatable",
+    )
+    parser.add_argument(
         "--sliding-window",
         type=int,
         action="append",
@@ -233,6 +283,12 @@ def main() -> int:
     mask = load_quality_mask(args.quality_mask, args.recipe, manifest_path)
     rejected = {(args.generated / relative).resolve() for relative in mask["rejected"]}
     records = validation_records(args.generated, generation_manifest, rejected)
+    records = filter_selection_records(
+        records,
+        set(args.positive_phrase),
+        set(args.negative_phrase),
+        set(args.negative_text_source),
+    )
     sliding_windows = sorted(set(args.sliding_window or [5]))
     if any(window < 1 for window in sliding_windows):
         parser.error("sliding windows must be positive")
@@ -360,6 +416,11 @@ def main() -> int:
         "recipe_sha256": sha256(args.recipe),
         "generation_manifest": str(manifest_path),
         "generation_manifest_sha256": sha256(manifest_path),
+        "record_selection": {
+            "positive_phrases": args.positive_phrase,
+            "negative_phrases": args.negative_phrase,
+            "negative_text_sources": args.negative_text_source,
+        },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

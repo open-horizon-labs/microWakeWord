@@ -8,6 +8,7 @@ import numpy as np
 
 from tools.select_recipe_cutoff import (
     cutoff_for_false_accept_rate,
+    filter_selection_records,
     piper_speakers,
     score_records,
     select_window,
@@ -16,6 +17,41 @@ from tools.select_recipe_cutoff import (
 
 
 class RecipeCutoffSelectionTest(unittest.TestCase):
+    def test_filters_connected_negative_contract_without_short_collisions(self):
+        records = [
+            {
+                "truth": "positive",
+                "text": "Hi-Fi Kizz",
+                "text_source": None,
+            },
+            {
+                "truth": "hard_negative",
+                "text": "high five kids",
+                "text_source": None,
+            },
+            {
+                "truth": "hard_negative",
+                "text": None,
+                "text_source": "connected-household-speech",
+            },
+        ]
+
+        self.assertEqual(
+            filter_selection_records(
+                records,
+                positive_phrases={"Hi-Fi Kizz"},
+                negative_text_sources={"connected-household-speech"},
+            ),
+            [records[0], records[2]],
+        )
+
+    def test_selection_filter_rejects_a_single_class(self):
+        with self.assertRaisesRegex(ValueError, "retain positive and hard-negative"):
+            filter_selection_records(
+                [{"truth": "positive", "text": "Hi-Fi Kizz"}],
+                negative_text_sources={"missing"},
+            )
+
     def test_zero_false_accept_budget_uses_maximum_negative(self):
         cutoff = cutoff_for_false_accept_rate([0.1, 0.3, 0.2], 0.0)
 
