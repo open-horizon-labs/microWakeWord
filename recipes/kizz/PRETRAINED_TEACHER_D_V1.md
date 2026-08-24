@@ -77,3 +77,27 @@ positive/negative distribution and event-label recipe. The next D experiment
 would need a measured change such as real device-channel positive mixtures,
 stronger continuous negative sampling, or a teacher objective with explicit
 event localization—not merely more training steps.
+
+## Review and dissent
+
+Phase: execute → review/dissent. Commit under review: `60ea6ae`.
+
+### Review: Adjust
+
+The implementation is bounded to the offline training fork, keeps the ESP32
+student and firmware untouched, has focused tests, and records exact
+qualification artifacts. The success criterion is not met: neither D variant
+qualified, so no distillation or flash is authorized.
+
+### Dissent: Reconsider the current D recipe
+
+The strongest contrary evidence is that both a frozen WavLM representation and
+partial WavLM adaptation produce hundreds of false accepts per hour at the
+recall floor. More model capacity and more training steps are therefore not
+the next justified action. The surviving hypothesis is narrower: a pretrained
+encoder may still help, but only after the waveform/channel distribution and
+event supervision are changed and measured independently.
+
+Human verification required: none for the offline measurements; a maintainer
+must approve any future teacher qualification before student distillation or
+firmware testing.
