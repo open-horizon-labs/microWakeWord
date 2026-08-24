@@ -2,7 +2,8 @@
 """Write reproducible validation and untouched-test manifests for feature scoring.
 
 The negative inventory is authoritative: this tool carries its declared
-exposure and path hash through unchanged.  Positive occurrences are derived
+exposure and frozen inventory hash through unchanged, while computing the
+scorer's live directory hash separately. Positive occurrences are derived
 from the stored RaggedMmap item lengths, so they do not depend on a second
 alignment or duration source.
 """
@@ -232,9 +233,10 @@ def _negative_sources(
             )
         if not path.is_dir():
             raise ValueError(f"{source_id}: feature path does not exist: {path}")
-        expected_hash = raw.get("path_sha256")
-        if not isinstance(expected_hash, str) or not expected_hash:
+        frozen_path_hash = raw.get("path_sha256")
+        if not isinstance(frozen_path_hash, str) or not frozen_path_hash:
             raise ValueError(f"{source_id}: missing frozen path_sha256")
+        live_path_hash = sha256_path(path)
         source = {
             "id": output_id,
             "path": str(path),
@@ -242,7 +244,8 @@ def _negative_sources(
             "label": "negative",
             "exposure_seconds": float(exposure),
             "feature_step_seconds": FEATURE_STEP_SECONDS,
-            "expected_path_sha256": expected_hash,
+            "expected_path_sha256": live_path_hash,
+            "frozen_path_sha256": frozen_path_hash,
             "source_id": source_id,
         }
         for field in (
