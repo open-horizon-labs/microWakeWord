@@ -1,0 +1,4 @@
+# Optional, offline-only dependencies for the D waveform teacher.
+torch>=2.5
+transformers>=4.45
+soundfile>=0.12

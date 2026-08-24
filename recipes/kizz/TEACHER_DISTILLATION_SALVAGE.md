@@ -88,6 +88,17 @@ accept/reject decision against the measured operating-point criteria.
 - Hash-bound teacher-logit cache and quarantine-aware false-wake split.
 - Batched exact Viterbi scorer used by the teacher qualification gate.
 - Joint background/silence rejection loss.
+
+### Pretrained waveform teacher D (2026-08-24)
+
+The M4 Pro path was implemented and tested with `microsoft/wavlm-base-plus`
+and a raw-waveform temporal event head. A frozen-backbone run reached no
+qualified operating point; its false-accept rate at the 90% recall floor was
+319.18/hour on 5,865 seconds of connected negatives. Unfreezing the final two
+WavLM layers did not help (356.62/hour). This is a measured rejection of the
+first D recipe, not evidence that the Mac or pretrained-teacher strategy is
+infeasible. The detailed artifact and decision are in
+`PRETRAINED_TEACHER_D_V1.md`.
 - Weighted negative-source sampling.
 - Qualification-before-distillation enforcement.
 
