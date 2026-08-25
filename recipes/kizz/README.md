@@ -1,9 +1,11 @@
 # HiPhi Kizz wake-word recipe
 
-This recipe trains one wake class for natural readings of **HiPhi Kizz**.
-It accepts several pronunciations of the invented name, including realizations
-that sound like “Hi-Fi Kids.” Bare `Kizz`, `kids`, `kiss`, `quiz`, partial
-phrases, and similar full phrases remain negatives.
+This repository preserves the research recipe for **HiPhi Kizz**, but that
+phrase is now stopped under the current phonetic-identifiability evidence.
+Intended positives and some captured false wakes both realize as “Hi-Fi Kids,”
+“High Five Kiss,” and nearby sequences. The current preliminary replacement is
+**Kizz Control**; Mycroft remains the device model until a replacement passes
+every gate.
 
 The current physical recall control is **v19**, operated at a `0.70` probability
 cutoff with a one-frame sliding window. Its live precision is unacceptable.
@@ -12,9 +14,11 @@ but its best recorded point reached only 39.8% recall and it was never
 hardware-qualified. Neither is a release model. V19's old Piper lineage is
 excluded from the new training baseline. See
 [Training reference](TRAINING_REFERENCE.md) for the complete corpus and tooling
-story, [Experiments](EXPERIMENTS.md) for the failure boundaries, and the
-[ordered-state v1 outline](archive/ORDERED_STATE_V1.md) for the scratch architecture
-that follows the failed v32 binary reboot.
+story, [Experiments](EXPERIMENTS.md) for the failure boundaries, the
+[canonical-v3 phonetic gate](CANONICAL_V3_PHONETIC_GATE.md) for the current
+stop decision and replacement-phrase screen, and the
+[ordered-state v1 outline](archive/ORDERED_STATE_V1.md) for the scratch
+architecture that follows the failed v32 binary reboot.
 
 The corrected teacher → student run, including PCM-context preparation,
 87→66 temporal alignment, qualification, distillation, stateful INT8 scoring,
@@ -36,6 +40,13 @@ firmware reverted to the ESP-IDF wake-word model. See
 [Experiments](EXPERIMENTS.md) for the measured decision history. Do not treat
 the offline student score, v19, or any checked-in configuration as evidence of
 acceptable live precision.
+
+The later canonical-v3 C teacher reached only 9/22 held-out positives and
+accepted 2/62 quarantined false wakes. A pinned pretrained IPA/CTC teacher then
+reached 13/14 aligned tests but only 3/13 household positives and also accepted
+2/62 false wakes from exact two-second pre-wake contexts; one decoded as the
+canonical phone sequence. No Hi-Fi Kizz teacher may proceed to distillation or
+firmware under this evidence.
 
 The commands in this document exercise the general recipe tooling. They do not
 recreate the reported clean-slate C/D run without its private audio, manifests,
@@ -104,6 +115,7 @@ also records the rejected ordered-state v1 run.
 | Control training mixture and comparisons | [`write_recipe_training_config.py`](../../tools/write_recipe_training_config.py), [`write_stratified_training_config.py`](../../tools/write_stratified_training_config.py), [`audit_training_ablation.py`](../../tools/audit_training_ablation.py), [`audit_source_ablation.py`](../../tools/audit_source_ablation.py) |
 | Evaluate models and select a cutoff | [`evaluate_recipe_model.py`](../../tools/evaluate_recipe_model.py), [`select_recipe_cutoff.py`](../../tools/select_recipe_cutoff.py), [`evaluate_device_corpus_model.py`](../../tools/evaluate_device_corpus_model.py) |
 | Train/evaluate the ordered-state candidate | [`ordered_state_model.py`](../../microwakeword/ordered_state_model.py), [`evaluate_ordered_state.py`](../../tools/evaluate_ordered_state.py), [`report_ordered_state_resources.py`](../../tools/report_ordered_state_resources.py) |
+| Qualify teachers and pre-screen replacement phrases | [`qualify_kizz_teacher_v3.py`](../../tools/qualify_kizz_teacher_v3.py), [`qualify_kizz_phoneme_teacher.py`](../../tools/qualify_kizz_phoneme_teacher.py), [`screen_kizz_wake_phrase_candidates.py`](../../tools/screen_kizz_wake_phrase_candidates.py) |
 
 ## Training workflow
 

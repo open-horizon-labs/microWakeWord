@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 Open Horizon Labs.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,16 +13,24 @@ teacher-logit cache or a distilled causal student.
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 import tensorflow as tf
-from mmap_ninja.ragged import RaggedMmap
 
-from microwakeword.ordered_state import KIZZ_TOPOLOGY, ordered_state_sequence_score
-
+from microwakeword.kizz_feature_archive import (
+    decode_frontend_features,
+    open_feature_archive,
+)
+from microwakeword.ordered_state import (
+    KIZZ_SINGLE_STATE_TOPOLOGY,
+    KIZZ_TOPOLOGY,
+    OrderedStateTopology,
+    ordered_state_sequence_score,
+)
 
 INPUT_FRAMES = 260
 FEATURE_BINS = 40
@@ -64,8 +71,25 @@ class TeacherDownsample(tf.keras.layers.Layer):
 class TeacherSequenceScore(tf.keras.layers.Layer):
     """Expose the same ordered-state score used by the deployed decoder."""
 
+    def __init__(self, topology: OrderedStateTopology = KIZZ_TOPOLOGY, **kwargs):
+        super().__init__(**kwargs)
+        if isinstance(topology, dict):
+            topology = OrderedStateTopology(
+                tuple(topology["phones"]), int(topology["states_per_phone"])
+            )
+        self.topology = topology
+
     def call(self, inputs):
-        return ordered_state_sequence_score(inputs)
+        return ordered_state_sequence_score(inputs, self.topology)
+
+    def get_config(self):
+        return {
+            **super().get_config(),
+            "topology": {
+                "phones": list(self.topology.phones),
+                "states_per_phone": self.topology.states_per_phone,
+            },
+        }
 
 
 def build_teacher(
@@ -75,6 +99,8 @@ def build_teacher(
     hidden_size: int = 128,
     recurrent_layers: int = 7,
     output_frames: int = OUTPUT_FRAMES,
+    topology: OrderedStateTopology | None = None,
+    states_per_phone: int | None = None,
 ) -> tf.keras.Model:
     """Build a full-context, high-capacity non-causal teacher."""
     if input_frames != INPUT_FRAMES or feature_bins != FEATURE_BINS:
@@ -83,6 +109,16 @@ def build_teacher(
         raise ValueError("teacher capacity is too small")
     if output_frames < 1:
         raise ValueError("teacher output_frames must be positive")
+    if topology is not None and states_per_phone is not None:
+        raise ValueError("provide topology or states_per_phone, not both")
+    if topology is None:
+        topology = (
+            KIZZ_SINGLE_STATE_TOPOLOGY
+            if states_per_phone == 1
+            else KIZZ_TOPOLOGY
+            if states_per_phone is None
+            else OrderedStateTopology(KIZZ_TOPOLOGY.phones, states_per_phone)
+        )
 
     inputs = tf.keras.Input(shape=(input_frames, feature_bins), name="features")
     net = tf.keras.layers.LayerNormalization(name="feature_norm")(inputs)
@@ -112,15 +148,19 @@ def build_teacher(
         net = tf.keras.layers.Activation("swish")(net)
         if residual.shape[-1] == net.shape[-1]:
             net = tf.keras.layers.Add(name=f"context_residual_{index}")([net, residual])
-    net = tf.keras.layers.Dense(hidden_size, activation="swish", name="state_projection")(net)
-    net = TeacherDownsample(
-        output_frames=output_frames, name="teacher_30ms_frames"
+    net = tf.keras.layers.Dense(
+        hidden_size, activation="swish", name="state_projection"
     )(net)
+    net = TeacherDownsample(output_frames=output_frames, name="teacher_30ms_frames")(
+        net
+    )
     logits = tf.keras.layers.Dense(
-        KIZZ_TOPOLOGY.state_count,
+        topology.state_count,
         name="teacher_state_logits",
     )(net)
-    return tf.keras.Model(inputs, logits, name="kizz_offline_teacher")
+    model = tf.keras.Model(inputs, logits, name="kizz_offline_teacher")
+    model.kizz_topology = topology
+    return model
 
 
 @dataclass(frozen=True)
@@ -145,18 +185,30 @@ class TeacherBatchSequence(tf.keras.utils.Sequence):
         steps_per_epoch: int = 250,
         negative_state: int = 1,
         negative_source_weights: Sequence[float] | None = None,
+        topology: OrderedStateTopology = KIZZ_TOPOLOGY,
     ) -> None:
         self.positive_features = np.load(positive_features, mmap_mode="r")
         self.positive_targets = np.load(positive_targets, mmap_mode="r")
-        if self.positive_features.shape != (
-            len(self.positive_targets),
-            INPUT_FRAMES,
-            FEATURE_BINS,
-        ) or self.positive_targets.ndim != 2:
+        if (
+            self.positive_features.shape
+            != (
+                len(self.positive_targets),
+                INPUT_FRAMES,
+                FEATURE_BINS,
+            )
+            or self.positive_targets.ndim != 2
+        ):
             raise ValueError(
                 "positive arrays must have shapes [N, 260, 40] and [N, output_frames]"
             )
         self.output_frames = int(self.positive_targets.shape[1])
+        self.topology = topology
+        if np.any(self.positive_targets < 0) or np.any(
+            self.positive_targets >= topology.state_count
+        ):
+            raise ValueError(
+                "positive target labels must be within the selected topology state count"
+            )
         if not negative_sources:
             raise ValueError("at least one negative source is required")
         self.negative_sources = tuple(negative_sources)
@@ -185,7 +237,7 @@ class TeacherBatchSequence(tf.keras.utils.Sequence):
                     raise ValueError("negative sources must not be empty")
                 self._negative_sets.append(values)
             else:
-                mmap = RaggedMmap(source.path)
+                mmap = open_feature_archive(source.path)
                 if len(mmap) == 0:
                     raise ValueError("negative sources must not be empty")
                 self._negative_sets.append(mmap)
@@ -205,6 +257,8 @@ class TeacherBatchSequence(tf.keras.utils.Sequence):
             if total <= 0:
                 raise ValueError("negative_source_weights must have positive mass")
             self._negative_probabilities = probabilities / total
+        self.positive_sample_count = 0
+        self.negative_source_sample_counts: Counter[str] = Counter()
 
     def __len__(self):
         return self.steps_per_epoch
@@ -225,7 +279,10 @@ class TeacherBatchSequence(tf.keras.utils.Sequence):
         rng = self._rng(batch_index)
         half = self.batch_size // 2
         positive_indices = rng.integers(0, len(self.positive_features), size=half)
-        x_positive = np.asarray(self.positive_features[positive_indices], dtype=np.float32)
+        self.positive_sample_count += half
+        x_positive = np.asarray(
+            self.positive_features[positive_indices], dtype=np.float32
+        )
         y_positive = np.asarray(self.positive_targets[positive_indices], dtype=np.int32)
 
         x_negative = np.empty((half, INPUT_FRAMES, FEATURE_BINS), dtype=np.float32)
@@ -236,13 +293,16 @@ class TeacherBatchSequence(tf.keras.utils.Sequence):
             source_index = int(
                 rng.choice(len(self._negative_sets), p=self._negative_probabilities)
             )
+            self.negative_source_sample_counts[
+                self.negative_sources[source_index].source_id
+            ] += 1
             source_set = self._negative_sets[source_index]
             item_index = int(rng.integers(0, len(source_set)))
-            item = np.asarray(source_set[item_index], dtype=np.float32)
+            item = decode_frontend_features(source_set[item_index])
             if item.shape == (INPUT_FRAMES, FEATURE_BINS):
                 x_negative[row] = item
             else:
-                start = int(rng.integers(0, max(1, len(item))))
+                start = int(rng.integers(0, max(1, len(item) - INPUT_FRAMES + 1)))
                 x_negative[row] = self._negative_window(item, start)
 
         x = np.concatenate([x_positive, x_negative], axis=0)
@@ -261,23 +321,47 @@ def teacher_loss(
     *,
     frame_weight: float = 1.0,
     sequence_weight: float = 0.0,
+    keyword_frame_weight: float = 1.0,
+    topology: OrderedStateTopology = KIZZ_TOPOLOGY,
 ) -> tf.Tensor:
     """Combine positive state fit, rejection-set fit, and sequence score.
 
     Negative frames are not forced into one arbitrary rejection class:
     background and silence are jointly valid rejection evidence.
     """
+    if (
+        state_logits.shape[-1] is not None
+        and state_logits.shape[-1] != topology.state_count
+    ):
+        raise ValueError("state_logits and topology state counts do not match")
+    if not np.isfinite(keyword_frame_weight) or keyword_frame_weight <= 0:
+        raise ValueError("keyword_frame_weight must be finite and positive")
+    targets = tf.cast(targets, tf.int32)
+    tf.debugging.assert_greater_equal(targets, 0)
+    tf.debugging.assert_less(targets, topology.state_count)
     positive_frame_loss = tf.keras.losses.sparse_categorical_crossentropy(
         targets, state_logits, from_logits=True
     )
     log_probs = tf.nn.log_softmax(state_logits, axis=-1)
     rejection_frame_loss = -tf.reduce_logsumexp(log_probs[:, :, :2], axis=-1)
     positive = tf.cast(tf.reshape(labels, [-1, 1]), positive_frame_loss.dtype)
-    frame_loss = tf.where(positive > 0.5, positive_frame_loss, rejection_frame_loss)
-    frame_loss = tf.reduce_mean(frame_loss)
+    selected_frame_loss = tf.where(
+        positive > 0.5, positive_frame_loss, rejection_frame_loss
+    )
+    keyword = tf.cast(
+        tf.logical_and(positive > 0.5, targets >= topology.first_ordered_state_index),
+        selected_frame_loss.dtype,
+    )
+    frame_weights = 1.0 + keyword * (float(keyword_frame_weight) - 1.0)
+    # Normalize each example independently.  Keyword up-weighting must not
+    # silently change the positive/negative class balance of the batch.
+    frame_loss = tf.reduce_mean(
+        tf.reduce_sum(selected_frame_loss * frame_weights, axis=1)
+        / tf.reduce_sum(frame_weights, axis=1)
+    )
     total = float(frame_weight) * frame_loss
     if sequence_weight:
-        sequence_logits = ordered_state_sequence_score(state_logits)
+        sequence_logits = ordered_state_sequence_score(state_logits, topology)
         sequence_loss = tf.reduce_mean(
             tf.nn.sigmoid_cross_entropy_with_logits(
                 labels=labels, logits=sequence_logits
@@ -291,8 +375,8 @@ __all__ = [
     "FEATURE_BINS",
     "FRAME_STRIDE",
     "INPUT_FRAMES",
-    "NegativeSource",
     "OUTPUT_FRAMES",
+    "NegativeSource",
     "TeacherBatchSequence",
     "build_teacher",
     "teacher_loss",

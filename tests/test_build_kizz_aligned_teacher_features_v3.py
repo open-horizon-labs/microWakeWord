@@ -1,0 +1,175 @@
+import hashlib
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import numpy as np
+import soundfile as sf
+
+from microwakeword.ordered_state import KIZZ_PHONES
+from tools.build_kizz_aligned_teacher_features_v3 import (
+    CONTEXT_SAMPLES,
+    build,
+    mix_at_snr,
+    place_phrase_context,
+    validate_aligned_positive,
+)
+
+
+def aligned_row(path: Path, source_id: str, split: str) -> dict:
+    phones = []
+    boundaries = np.linspace(0.4, 1.1, 8)
+    for phone, start, end in zip(KIZZ_PHONES, boundaries[:-1], boundaries[1:]):
+        phones.append({"phone": phone, "start_s": float(start), "end_s": float(end)})
+    return {
+        "path": str(path),
+        "label": 1,
+        "training_eligible": True,
+        "semantic_label": "canonical_exact",
+        "source_id": source_id,
+        "source_group": "test_synthesis",
+        "provider": "test-provider",
+        "split": split,
+        "target_phones": list(KIZZ_PHONES),
+        "phrase_span": {"start_s": 0.4, "end_s": 1.1},
+        "phone_spans": phones,
+        "audio_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "alignment": {
+            "method": "ctc_forced_alignment",
+            "timing_source": "pinned/model.pt",
+            "pronunciation_decision": {"accepted": True},
+        },
+    }
+
+
+class BuildKizzAlignedTeacherFeaturesV3Test(unittest.TestCase):
+    def test_phrase_context_translates_spans_for_pad_and_crop(self):
+        short = np.zeros(16_000, dtype=np.float32)
+        context, shift = place_phrase_context(
+            short, (0.2, 0.8), desired_phrase_center_s=1.4
+        )
+        self.assertEqual(context.shape, (CONTEXT_SAMPLES,))
+        self.assertAlmostEqual((0.2 + shift + 0.8 + shift) / 2, 1.4, places=4)
+        long = np.zeros(80_000, dtype=np.float32)
+        context, shift = place_phrase_context(
+            long, (2.0, 2.8), desired_phrase_center_s=1.0
+        )
+        self.assertEqual(context.shape, (CONTEXT_SAMPLES,))
+        self.assertAlmostEqual((2.0 + shift + 2.8 + shift) / 2, 1.0, places=4)
+
+    def test_alignment_gate_rejects_unqualified_or_locked_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "audio.wav"
+            sf.write(path, np.zeros(16_000, dtype=np.float32), 16_000)
+            row = aligned_row(path, "source", "train")
+            validate_aligned_positive(row)
+            row["alignment"]["pronunciation_decision"]["accepted"] = False
+            with self.assertRaisesRegex(ValueError, "failed acoustic"):
+                validate_aligned_positive(row)
+            row["alignment"]["pronunciation_decision"]["accepted"] = True
+            row["locked_deployment_anchor"] = True
+            with self.assertRaisesRegex(ValueError, "locked"):
+                validate_aligned_positive(row)
+
+    def test_build_keeps_eval_clean_and_writes_nine_state_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "positive.wav"
+            sf.write(
+                audio,
+                np.sin(np.linspace(0, 200, 24_000)).astype(np.float32) * 0.1,
+                16_000,
+            )
+            rows = [
+                aligned_row(audio, f"source-{split}", split)
+                for split in ("train", "validation", "test")
+            ]
+            manifest = root / "positives.json"
+            manifest.write_text(json.dumps({"examples": rows}))
+            background = root / "background.wav"
+            sf.write(background, np.ones(8_000, dtype=np.float32) * 0.01, 16_000)
+            background_manifest = root / "backgrounds.json"
+            background_manifest.write_text(
+                json.dumps(
+                    {
+                        "examples": [
+                            {
+                                "path": str(background),
+                                "label": 0,
+                                "split": "train",
+                                "source_group": "music",
+                                "source_id": "music-1",
+                            }
+                        ]
+                    }
+                )
+            )
+            fake_features = np.zeros((260, 40), dtype=np.float32)
+            with mock.patch(
+                "tools.build_kizz_aligned_teacher_features_v3.frontend",
+                return_value=fake_features,
+            ):
+                report = build(
+                    [manifest],
+                    root / "out",
+                    background_manifest=background_manifest,
+                    overlay_snr_db=(10.0,),
+                    seed=7,
+                )
+            self.assertEqual(
+                report["positive_counts"], {"train": 2, "validation": 1, "test": 1}
+            )
+            train_targets = np.load(root / "out" / "positive_targets-train.npy")
+            self.assertEqual(train_targets.shape, (2, 87))
+            self.assertGreaterEqual(int(train_targets.min()), 1)
+            self.assertLess(int(train_targets.max()), 9)
+            variants = [row["variant"] for row in report["examples"]]
+            self.assertEqual(variants.count("overlay-0"), 1)
+            self.assertTrue(
+                all(
+                    row["source_group"] == "test_synthesis"
+                    for row in report["examples"]
+                )
+            )
+            self.assertTrue(
+                all(row["provider"] == "test-provider" for row in report["examples"])
+            )
+
+    def test_two_states_per_phone_produce_sixteen_state_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "positive.wav"
+            sf.write(audio, np.zeros(24_000, dtype=np.float32), 16_000)
+            rows = [
+                aligned_row(audio, f"source-{split}", split)
+                for split in ("train", "validation", "test")
+            ]
+            manifest = root / "positives.json"
+            manifest.write_text(json.dumps({"examples": rows}))
+            fake_features = np.zeros((260, 40), dtype=np.float32)
+            with mock.patch(
+                "tools.build_kizz_aligned_teacher_features_v3.frontend",
+                return_value=fake_features,
+            ):
+                report = build(
+                    [manifest],
+                    root / "out",
+                    overlay_snr_db=(),
+                    states_per_phone=2,
+                )
+            targets = np.load(root / "out" / "positive_targets-train.npy")
+            self.assertEqual(report["state_count"], 16)
+            self.assertLess(int(targets.max()), 16)
+
+    def test_snr_mixer_preserves_shape_and_is_finite(self):
+        foreground = np.ones(CONTEXT_SAMPLES, dtype=np.float32) * 0.1
+        background = np.ones(CONTEXT_SAMPLES, dtype=np.float32) * 0.02
+        mixed = mix_at_snr(foreground, background, (0.4, 1.0), 10.0)
+        self.assertEqual(mixed.shape, foreground.shape)
+        self.assertTrue(np.all(np.isfinite(mixed)))
+
+
+if __name__ == "__main__":
+    unittest.main()

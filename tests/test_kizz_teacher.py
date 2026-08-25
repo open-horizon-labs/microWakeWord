@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest import mock
 
 import numpy as np
+import tensorflow as tf
 
 from microwakeword.kizz_teacher import (
     NegativeSource,
@@ -11,6 +12,7 @@ from microwakeword.kizz_teacher import (
     build_teacher,
     teacher_loss,
 )
+from microwakeword.ordered_state import KIZZ_SINGLE_STATE_TOPOLOGY
 
 
 class _FakeRaggedMmap:
@@ -24,11 +26,33 @@ class _FakeRaggedMmap:
         return self.items[index]
 
 
+class _FakeUint16RaggedMmap:
+    def __init__(self, path):
+        self.items = [np.full((520, 40), 256, dtype=np.uint16)]
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, index):
+        return self.items[index]
+
+
 class KizzTeacherTest(unittest.TestCase):
     def test_teacher_emits_full_context_state_logits(self):
         model = build_teacher(hidden_size=16, recurrent_layers=1)
         output = model(np.zeros((2, 260, 40), dtype=np.float32))
         self.assertEqual(tuple(output.shape), (2, 66, 23))
+
+    def test_single_state_topology_emits_nine_states(self):
+        model = build_teacher(
+            hidden_size=16, recurrent_layers=1, topology=KIZZ_SINGLE_STATE_TOPOLOGY
+        )
+        output = model(np.zeros((2, 260, 40), dtype=np.float32))
+        self.assertEqual(tuple(output.shape), (2, 66, 9))
+
+    def test_states_per_phone_is_a_direct_topology_option(self):
+        model = build_teacher(hidden_size=16, recurrent_layers=1, states_per_phone=1)
+        self.assertEqual(model.output_shape[-1], 9)
 
     def test_teacher_loss_is_finite(self):
         model = build_teacher(hidden_size=16, recurrent_layers=1)
@@ -58,7 +82,8 @@ class KizzTeacherTest(unittest.TestCase):
             np.save(base / "features.npy", features)
             np.save(base / "targets.npy", targets)
             with mock.patch(
-                "microwakeword.kizz_teacher.RaggedMmap", _FakeRaggedMmap
+                "microwakeword.kizz_teacher.open_feature_archive",
+                side_effect=lambda path: _FakeRaggedMmap(path),
             ):
                 sequence = TeacherBatchSequence(
                     base / "features.npy",
@@ -94,6 +119,74 @@ class KizzTeacherTest(unittest.TestCase):
             self.assertEqual(batch["states"].shape, (2, 66))
             self.assertEqual(np.sum(batch["label"]), 1)
 
+    def test_batch_sequence_rejects_labels_outside_topology(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            np.save(base / "features.npy", np.zeros((2, 260, 40), dtype=np.float32))
+            np.save(base / "targets.npy", np.full((2, 66), 9, dtype=np.int32))
+            np.save(base / "negative.npy", np.ones((2, 260, 40), dtype=np.float16))
+            with self.assertRaisesRegex(ValueError, "selected topology state count"):
+                TeacherBatchSequence(
+                    base / "features.npy",
+                    base / "targets.npy",
+                    [NegativeSource("negative", base / "negative.npy")],
+                    batch_size=2,
+                    steps_per_epoch=1,
+                    topology=KIZZ_SINGLE_STATE_TOPOLOGY,
+                )
+
+    def test_loss_rejects_mismatched_topology(self):
+        model = build_teacher(hidden_size=16, recurrent_layers=1)
+        logits = model(np.zeros((2, 260, 40), dtype=np.float32))
+        with self.assertRaisesRegex(ValueError, "state_logits and topology"):
+            teacher_loss(
+                logits,
+                np.ones((2, 66), dtype=np.int32),
+                np.ones((2,), dtype=np.float32),
+                topology=KIZZ_SINGLE_STATE_TOPOLOGY,
+            )
+
+    def test_loss_rejects_target_labels_outside_topology(self):
+        model = build_teacher(
+            hidden_size=16,
+            recurrent_layers=1,
+            topology=KIZZ_SINGLE_STATE_TOPOLOGY,
+        )
+        logits = model(np.zeros((2, 260, 40), dtype=np.float32))
+        with self.assertRaises(tf.errors.InvalidArgumentError):
+            teacher_loss(
+                logits,
+                np.full((2, 66), 9, dtype=np.int32),
+                np.ones((2,), dtype=np.float32),
+                topology=KIZZ_SINGLE_STATE_TOPOLOGY,
+            )
+
+    def test_keyword_weight_is_per_example_and_finite(self):
+        model = build_teacher(
+            hidden_size=16,
+            recurrent_layers=1,
+            topology=KIZZ_SINGLE_STATE_TOPOLOGY,
+        )
+        logits = model(np.zeros((2, 260, 40), dtype=np.float32))
+        targets = np.ones((2, 66), dtype=np.int32)
+        targets[0, :7] = np.arange(2, 9)
+        value = teacher_loss(
+            logits,
+            targets,
+            np.asarray([1.0, 0.0], dtype=np.float32),
+            keyword_frame_weight=3.0,
+            topology=KIZZ_SINGLE_STATE_TOPOLOGY,
+        )
+        self.assertTrue(np.isfinite(float(value.numpy())))
+        with self.assertRaisesRegex(ValueError, "keyword_frame_weight"):
+            teacher_loss(
+                logits,
+                targets,
+                np.asarray([1.0, 0.0], dtype=np.float32),
+                keyword_frame_weight=0.0,
+                topology=KIZZ_SINGLE_STATE_TOPOLOGY,
+            )
+
     def test_negative_examples_use_rejection_state_and_weighted_source_sampling(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -112,6 +205,27 @@ class KizzTeacherTest(unittest.TestCase):
             )
             _, batch = sequence[0]
             self.assertTrue(np.all(batch["states"][batch["label"] == 0] == 1))
+
+    def test_uint16_archive_negatives_are_decoded_before_training(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            np.save(base / "features.npy", np.zeros((2, 260, 40), dtype=np.float32))
+            np.save(base / "targets.npy", np.ones((2, 66), dtype=np.int32))
+            with mock.patch(
+                "microwakeword.kizz_teacher.open_feature_archive",
+                side_effect=lambda path: _FakeUint16RaggedMmap(path),
+            ):
+                sequence = TeacherBatchSequence(
+                    base / "features.npy",
+                    base / "targets.npy",
+                    [NegativeSource("negative", base / "negative")],
+                    batch_size=2,
+                    steps_per_epoch=1,
+                    seed=19,
+                )
+                features, batch = sequence[0]
+            negative = features[batch["label"] == 0]
+            self.assertTrue(np.allclose(negative, 10.0))
 
 
 if __name__ == "__main__":

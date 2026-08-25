@@ -4,8 +4,10 @@ import unittest
 import numpy as np
 
 from microwakeword.ordered_state import (
+    KIZZ_SINGLE_STATE_TOPOLOGY,
     KIZZ_TOPOLOGY,
     OrderedStateDecoder,
+    ordered_state_duration_score_numpy,
     ordered_state_sequence_loss,
     ordered_state_sequence_score,
     ordered_state_sequence_score_numpy,
@@ -39,6 +41,14 @@ class OrderedStateDecoderTest(unittest.TestCase):
         self.assertEqual(KIZZ_TOPOLOGY.silence_index, 1)
         self.assertEqual(KIZZ_TOPOLOGY.phone_state_index(0, 0), 2)
         self.assertEqual(KIZZ_TOPOLOGY.phone_state_index(6, 2), 22)
+
+    def test_declares_repaired_single_state_phone_topology(self):
+        self.assertEqual(KIZZ_SINGLE_STATE_TOPOLOGY.ordered_state_count, 7)
+        self.assertEqual(KIZZ_SINGLE_STATE_TOPOLOGY.state_count, 9)
+        self.assertEqual(
+            KIZZ_SINGLE_STATE_TOPOLOGY.state_names[2:],
+            tuple(phone + ":1" for phone in KIZZ_SINGLE_STATE_TOPOLOGY.phones),
+        )
 
     def test_legal_progression_emits_coordinates(self):
         state_decoder = decoder(completion_margin=0.0)
@@ -144,6 +154,65 @@ class OrderedStateDecoderTest(unittest.TestCase):
             state_decoder.step(item)
             completions.append(state_decoder.current_completion_score)
         self.assertAlmostEqual(expected, max(completions), places=10)
+
+    def test_duration_score_requires_a_complete_path_inside_bounds(self):
+        def single_frame(state):
+            values = np.full(KIZZ_SINGLE_STATE_TOPOLOGY.state_count, 0.001)
+            values[KIZZ_SINGLE_STATE_TOPOLOGY.background_index] = 0.01
+            values[KIZZ_SINGLE_STATE_TOPOLOGY.ordered_state_index(state)] = 0.98
+            return values
+
+        phrase = np.asarray(
+            [[single_frame(index) for index in range(7)]], dtype=np.float64
+        )
+        exact = ordered_state_duration_score_numpy(
+            phrase,
+            KIZZ_SINGLE_STATE_TOPOLOGY,
+            minimum_path_frames=7,
+            maximum_path_frames=7,
+            from_logits=False,
+        )
+        too_long = ordered_state_duration_score_numpy(
+            phrase,
+            KIZZ_SINGLE_STATE_TOPOLOGY,
+            minimum_path_frames=8,
+            maximum_path_frames=8,
+            from_logits=False,
+        )
+        self.assertTrue(np.isfinite(exact[0]))
+        self.assertTrue(np.isneginf(too_long[0]))
+
+    def test_duration_score_matches_unconstrained_score_when_bounds_cover_stream(self):
+        logits = np.random.default_rng(239).normal(
+            size=(3, 31, KIZZ_SINGLE_STATE_TOPOLOGY.state_count)
+        )
+        expected = ordered_state_sequence_score_numpy(
+            logits, KIZZ_SINGLE_STATE_TOPOLOGY
+        )
+        actual = ordered_state_duration_score_numpy(
+            logits,
+            KIZZ_SINGLE_STATE_TOPOLOGY,
+            minimum_path_frames=7,
+            maximum_path_frames=31,
+        )
+        np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)
+
+    def test_duration_score_rejects_impossible_bounds(self):
+        logits = np.zeros((1, 10, KIZZ_SINGLE_STATE_TOPOLOGY.state_count))
+        with self.assertRaisesRegex(ValueError, "shorter"):
+            ordered_state_duration_score_numpy(
+                logits,
+                KIZZ_SINGLE_STATE_TOPOLOGY,
+                minimum_path_frames=6,
+                maximum_path_frames=10,
+            )
+        with self.assertRaisesRegex(ValueError, "at least"):
+            ordered_state_duration_score_numpy(
+                logits,
+                KIZZ_SINGLE_STATE_TOPOLOGY,
+                minimum_path_frames=8,
+                maximum_path_frames=7,
+            )
 
 
 class OrderedStateTensorFlowTest(unittest.TestCase):

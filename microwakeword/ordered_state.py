@@ -9,9 +9,9 @@ by tests and embedded-model evaluation tools independently of training.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
-from typing import Iterable, Optional, Sequence
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -86,6 +86,10 @@ class OrderedStateTopology:
 
 
 KIZZ_TOPOLOGY = OrderedStateTopology(KIZZ_PHONES)
+# The repaired C teacher/student has one ordered state per measured phone,
+# plus the background and silence filler outputs.  Keep KIZZ_TOPOLOGY as the
+# archived three-state-per-phone contract for existing artifacts.
+KIZZ_SINGLE_STATE_TOPOLOGY = OrderedStateTopology(KIZZ_PHONES, states_per_phone=1)
 
 
 @dataclass(frozen=True)
@@ -170,6 +174,90 @@ def ordered_state_sequence_score_numpy(
     return np.asarray(results)
 
 
+def ordered_state_duration_score_numpy(
+    state_scores: Sequence[Sequence[Sequence[float]]],
+    topology: OrderedStateTopology = KIZZ_TOPOLOGY,
+    *,
+    minimum_path_frames: int,
+    maximum_path_frames: int,
+    from_logits: bool = True,
+    state_evidence_floor: float | None = None,
+    self_loop_probability: float = 0.6,
+    next_state_probability: float = 0.4,
+) -> np.ndarray:
+    """Score only complete ordered paths inside an explicit duration range.
+
+    The unconstrained decoder keeps one best path per ordered state.  That is
+    insufficient once duration is part of the detector contract: the best
+    unconstrained partial path may be too short or too long while a lower-score
+    valid path still exists.  This recurrence therefore retains one Viterbi
+    score per state *and* elapsed path duration.
+    """
+    values = np.asarray(state_scores)
+    if values.ndim != 3:
+        raise ValueError("state_scores must have shape [batch, time, state]")
+    if values.shape[-1] != topology.state_count:
+        raise ValueError("state_scores has the wrong state dimension")
+    minimum = int(minimum_path_frames)
+    maximum = int(maximum_path_frames)
+    if minimum < topology.ordered_state_count:
+        raise ValueError(
+            "minimum_path_frames cannot be shorter than the ordered topology"
+        )
+    if maximum < minimum:
+        raise ValueError("maximum_path_frames must be at least minimum_path_frames")
+    if not 0.0 < self_loop_probability <= 1.0:
+        raise ValueError("self_loop_probability must be in (0, 1]")
+    if not 0.0 < next_state_probability <= 1.0:
+        raise ValueError("next_state_probability must be in (0, 1]")
+    if from_logits:
+        shifted = values.astype(np.float64) - np.max(values, axis=-1, keepdims=True)
+        log_probs = shifted - np.log(np.sum(np.exp(shifted), axis=-1, keepdims=True))
+    else:
+        probabilities = values.astype(np.float64)
+        if np.any(~np.isfinite(probabilities)) or np.any(probabilities < 0.0):
+            raise ValueError("probability frames must be finite and non-negative")
+        totals = np.sum(probabilities, axis=-1, keepdims=True)
+        if np.any(totals <= 0.0):
+            raise ValueError("probability frame must contain positive mass")
+        log_probs = np.log(
+            np.maximum(probabilities / totals, np.finfo(np.float64).tiny)
+        )
+    rejection = np.logaddexp(
+        log_probs[:, :, topology.background_index],
+        log_probs[:, :, topology.silence_index],
+    )
+    emissions = (
+        log_probs[
+            :,
+            :,
+            topology.first_ordered_state_index : topology.state_count,
+        ]
+        - rejection[:, :, None]
+    )
+    if state_evidence_floor is not None:
+        emissions[emissions <= state_evidence_floor] = -np.inf
+    batch, time_steps, ordered = emissions.shape
+    scores = np.full((batch, ordered, maximum + 1), -np.inf, dtype=np.float64)
+    completions = np.full(batch, -np.inf, dtype=np.float64)
+    log_self = math.log(self_loop_probability)
+    log_next = math.log(next_state_probability)
+    for time in range(time_steps):
+        next_scores = np.full_like(scores, -np.inf)
+        next_scores[:, 0, 1] = emissions[:, time, 0]
+        next_scores[:, :, 2:] = (
+            scores[:, :, 1:-1] + log_self + emissions[:, time, :, None]
+        )
+        advances = scores[:, :-1, 1:-1] + log_next + emissions[:, time, 1:, None]
+        next_scores[:, 1:, 2:] = np.maximum(next_scores[:, 1:, 2:], advances)
+        scores = next_scores
+        completions = np.maximum(
+            completions,
+            np.max(scores[:, -1, minimum : maximum + 1], axis=1),
+        )
+    return completions
+
+
 class OrderedStateDecoder:
     """Numerically stable streaming decoder for an ordered-state topology.
 
@@ -235,8 +323,8 @@ class OrderedStateDecoder:
     def step(
         self,
         frame: Sequence[float],
-        frame_index: Optional[int] = None,
-    ) -> Optional[OrderedStateEvent]:
+        frame_index: int | None = None,
+    ) -> OrderedStateEvent | None:
         """Consume one state-probability frame and possibly emit an event."""
         if frame_index is not None:
             if frame_index < self._frame_index:
@@ -408,8 +496,8 @@ class OrderedStateMarginSweepDecoder:
     def step(
         self,
         frame: Sequence[float],
-        frame_index: Optional[int] = None,
-    ) -> list[Optional[OrderedStateEvent]]:
+        frame_index: int | None = None,
+    ) -> list[OrderedStateEvent | None]:
         """Consume one frame and return one event slot for each margin."""
         if frame_index is not None:
             if frame_index < self._frame_index:
@@ -427,9 +515,7 @@ class OrderedStateMarginSweepDecoder:
                 log_probs[self.topology.silence_index],
             )
         )
-        events: list[Optional[OrderedStateEvent]] = [
-            None
-        ] * self.completion_margins.size
+        events: list[OrderedStateEvent | None] = [None] * self.completion_margins.size
 
         cooling = self._cooldown_remaining > 0
         if np.any(cooling):
@@ -641,12 +727,13 @@ def ordered_state_sequence_loss(
 
 __all__ = [
     "KIZZ_PHONES",
+    "KIZZ_SINGLE_STATE_TOPOLOGY",
     "KIZZ_TOPOLOGY",
     "OrderedStateDecoder",
-    "OrderedStateMarginSweepDecoder",
     "OrderedStateEvent",
+    "OrderedStateMarginSweepDecoder",
     "OrderedStateTopology",
-    "ordered_state_sequence_score_numpy",
     "ordered_state_sequence_loss",
     "ordered_state_sequence_score",
+    "ordered_state_sequence_score_numpy",
 ]

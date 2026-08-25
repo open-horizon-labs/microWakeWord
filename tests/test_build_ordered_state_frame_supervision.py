@@ -23,9 +23,9 @@ def record(root, *, source_id="clip", group="session", split="train", **changes)
         "feature_frame_step_seconds": 0.01,
         "target_frame_times_s": [0.04, 0.07, 0.10, 0.13],
         "alignment": {
-            "method": "forced_aligner",
+            "method": "ctc_forced_alignment",
             "timing_source": "reviewed-alignment.json",
-            "reviewed": True,
+            "pronunciation_decision": {"accepted": True},
         },
         "phrase_span": {"start_s": 0.03, "end_s": 0.66},
         "phone_spans": [
@@ -39,9 +39,11 @@ def record(root, *, source_id="clip", group="session", split="train", **changes)
 
 class BuildOrderedStateFrameSupervisionTest(unittest.TestCase):
     def test_rejects_empty_records(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaisesRegex(ValueError, "is empty"):
-                build_frame_supervision([], Path(temporary), Path(temporary) / "out")
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            self.assertRaisesRegex(ValueError, "is empty"),
+        ):
+            build_frame_supervision([], Path(temporary), Path(temporary) / "out")
 
     def test_writes_trainer_compatible_arrays_from_measured_phone_spans(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -60,15 +62,16 @@ class BuildOrderedStateFrameSupervisionTest(unittest.TestCase):
             )
             self.assertEqual(np.load(output / "weights.npy").tolist(), [1.0])
 
-    def test_requires_explicit_alignment_timing_for_synthetic_records(self):
+    def test_rejects_unqualified_ctc_records(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             value = record(root)
             value["alignment"] = {
-                "method": "synthesizer",
-                "timing_source": "missing-timing.json",
+                "method": "ctc_forced_alignment",
+                "timing_source": "alignment.json",
+                "pronunciation_decision": {"accepted": False},
             }
-            with self.assertRaisesRegex(ValueError, "timing_record"):
+            with self.assertRaisesRegex(ValueError, "acoustically qualified"):
                 build_frame_supervision(
                     [value], root, root / "out", expected_target_frames=4
                 )
@@ -129,14 +132,14 @@ class BuildOrderedStateFrameSupervisionTest(unittest.TestCase):
                     [bad], root, root / "out", expected_target_frames=4
                 )
 
-    def test_accepts_jsonl_and_synthesizer_timing_record(self):
+    def test_accepts_jsonl_and_inherited_ctc_timing_record(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             value = record(root)
             value["alignment"] = {
-                "method": "synthesizer",
-                "timing_source": "piper-manifest.json",
-                "timing_record": {"phone_spans_are_measured": True},
+                "method": "inherited_ctc_forced_alignment",
+                "timing_source": "parent-source-id",
+                "pronunciation_decision": {"accepted": True},
             }
             manifest = root / "manifest.jsonl"
             manifest.write_text(json.dumps(value) + "\n", encoding="utf-8")
@@ -146,6 +149,54 @@ class BuildOrderedStateFrameSupervisionTest(unittest.TestCase):
                 _load_manifest(manifest), root, root / "out", expected_target_frames=4
             )
             self.assertEqual(summary["examples"], 1)
+
+    def test_one_state_per_phone_emits_nine_state_targets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            summary = build_frame_supervision(
+                [record(root)],
+                root,
+                root / "out",
+                expected_target_frames=4,
+                states_per_phone=1,
+            )
+            np.testing.assert_array_equal(
+                np.load(root / "out" / "targets.npy"), [[2, 2, 2, 3]]
+            )
+            self.assertEqual(summary["state_count"], 9)
+
+    def test_rejects_non_ctc_alignment_method(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            value = record(root)
+            value["alignment"]["method"] = "synthesizer"
+            with self.assertRaisesRegex(ValueError, "ctc_forced_alignment"):
+                build_frame_supervision([value], root, root / "out")
+
+    def test_measured_synthesizer_escape_hatch_is_explicit_and_hash_bound(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            value = record(root)
+            value["alignment"] = {
+                "method": "synthesizer",
+                "timing_source": "piper-manifest.json",
+                "timing_record": {"measured_token_samples": True},
+            }
+            with self.assertRaisesRegex(ValueError, "source audio hash"):
+                build_frame_supervision(
+                    [value],
+                    root,
+                    root / "out",
+                    allow_measured_synthesizer_timing=True,
+                )
+            value["alignment"]["timing_record"]["source_wav_sha256"] = "a" * 64
+            summary = build_frame_supervision(
+                [value],
+                root,
+                root / "out",
+                allow_measured_synthesizer_timing=True,
+            )
+            self.assertEqual(summary["alignment_policy"], "ctc_or_measured_synthesizer")
 
     def test_rejects_model_shape_and_feature_cadence_mismatches(self):
         with tempfile.TemporaryDirectory() as temporary:

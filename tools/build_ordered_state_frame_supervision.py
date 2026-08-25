@@ -19,9 +19,9 @@ Example record::
       "feature_frame_step_seconds": 0.01,
       "target_frame_times_s": [0.03, 0.06, 0.09],
       "alignment": {
-        "method": "forced_aligner",
+        "method": "ctc_forced_alignment",
         "timing_source": "alignments/clip-03.json",
-        "reviewed": true
+        "pronunciation_decision": {"accepted": true}
       },
       "phrase_span": {"start_s": 0.31, "end_s": 1.92},
       "phone_spans": [
@@ -40,11 +40,13 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 import numpy as np
 
+from microwakeword.ordered_state import KIZZ_PHONES
 from microwakeword.ordered_state_data import (
     example_from_mapping,
     frame_state_targets,
@@ -55,8 +57,9 @@ DEFAULT_TARGET_STEP_SECONDS = 0.03
 FEATURE_BINS = 40
 SPLITS = frozenset(("train", "validation", "test"))
 ALIGNMENT_METHODS = frozenset(
-    ("forced_aligner", "reviewed_forced_alignment", "synthesizer")
+    ("ctc_forced_alignment", "inherited_ctc_forced_alignment")
 )
+MEASURED_SYNTHESIZER_ALIGNMENT = "synthesizer"
 
 
 def _finite_float(value: Any, name: str) -> float:
@@ -132,22 +135,42 @@ def _load_features(record: Mapping[str, Any], manifest_dir: Path) -> np.ndarray:
     return features.astype(np.float32, copy=False)
 
 
-def _validate_alignment_metadata(record: Mapping[str, Any]) -> None:
+def _validate_alignment_metadata(
+    record: Mapping[str, Any], *, allow_measured_synthesizer_timing: bool
+) -> None:
     alignment = record.get("alignment")
     if not isinstance(alignment, Mapping):
-        raise ValueError("alignment timing metadata is required")
+        raise TypeError("alignment timing metadata is required")
     method = alignment.get("method")
-    if method not in ALIGNMENT_METHODS:
-        raise ValueError("alignment method must be a reviewed aligner or synthesizer")
+    if method not in ALIGNMENT_METHODS and not (
+        allow_measured_synthesizer_timing and method == MEASURED_SYNTHESIZER_ALIGNMENT
+    ):
+        raise ValueError(
+            "alignment method must be ctc_forced_alignment or "
+            "inherited_ctc_forced_alignment"
+        )
     timing_source = alignment.get("timing_source")
     if not isinstance(timing_source, str) or not timing_source.strip():
         raise ValueError("alignment timing_source is required")
-    if method in {"forced_aligner", "reviewed_forced_alignment"} and not bool(
-        alignment.get("reviewed")
-    ):
-        raise ValueError("forced-aligner timing must be explicitly reviewed")
-    if method == "synthesizer" and not alignment.get("timing_record"):
-        raise ValueError("synthesizer metadata requires a timing_record")
+    if method in ALIGNMENT_METHODS:
+        decision = alignment.get("pronunciation_decision")
+        if not isinstance(decision, Mapping) or decision.get("accepted") is not True:
+            raise ValueError("alignment must be acoustically qualified")
+    else:
+        timing = alignment.get("timing_record")
+        source_hash = (
+            timing.get("source_wav_sha256") if isinstance(timing, Mapping) else None
+        )
+        if (
+            not isinstance(timing, Mapping)
+            or timing.get("measured_token_samples") is not True
+            or not isinstance(source_hash, str)
+            or len(source_hash) != 64
+            or any(character not in "0123456789abcdef" for character in source_hash)
+        ):
+            raise ValueError(
+                "synthesizer timing must carry measured samples and source audio hash"
+            )
 
 
 def _target_times(record: Mapping[str, Any], expected_step: float) -> np.ndarray:
@@ -169,6 +192,8 @@ def _validate_record(
     manifest_dir: Path,
     feature_step: float,
     target_step: float,
+    states_per_phone: int,
+    allow_measured_synthesizer_timing: bool,
 ) -> tuple[np.ndarray, np.ndarray, float, str, str]:
     source_id = record.get("source_id")
     if not isinstance(source_id, str) or not source_id.strip():
@@ -184,7 +209,10 @@ def _validate_record(
     )
     if not _close(declared_feature_step, feature_step):
         raise ValueError("feature frame cadence is incorrect")
-    _validate_alignment_metadata(record)
+    _validate_alignment_metadata(
+        record,
+        allow_measured_synthesizer_timing=allow_measured_synthesizer_timing,
+    )
     features = _load_features(record, manifest_dir)
     duration = _finite_float(record.get("duration_s"), "duration_s")
     times = _target_times(record, target_step)
@@ -193,7 +221,7 @@ def _validate_record(
     if len(times) > features.shape[0]:
         raise ValueError("target frame count exceeds feature frame count")
     example = example_from_mapping(record)
-    targets = frame_state_targets(example, times)
+    targets = frame_state_targets(example, times, states_per_phone=states_per_phone)
     if targets is None:
         raise ValueError("positive frame supervision requires measured phone spans")
     weight = _finite_float(record.get("weight", 1.0), "weight")
@@ -211,12 +239,18 @@ def build_frame_supervision(
     target_step_seconds: float = DEFAULT_TARGET_STEP_SECONDS,
     expected_feature_frames: int | None = None,
     expected_target_frames: int | None = None,
+    states_per_phone: int = 3,
+    allow_measured_synthesizer_timing: bool = False,
 ) -> dict[str, Any]:
     """Validate records and write trainer-compatible NumPy arrays."""
     feature_step = _finite_float(feature_step_seconds, "feature cadence")
     target_step = _finite_float(target_step_seconds, "target cadence")
     if feature_step <= 0 or target_step <= 0:
         raise ValueError("cadences must be positive")
+    if not isinstance(states_per_phone, int) or isinstance(states_per_phone, bool):
+        raise TypeError("states_per_phone must be an integer")
+    if states_per_phone < 1:
+        raise ValueError("states_per_phone must be positive")
     if not _close(target_step, 3 * feature_step):
         raise ValueError("target cadence must be exactly three feature frames")
 
@@ -230,7 +264,12 @@ def build_frame_supervision(
     source_ids: set[str] = set()
     for record in records:
         features, targets, weight, group, split = _validate_record(
-            record, manifest_dir, feature_step, target_step
+            record,
+            manifest_dir,
+            feature_step,
+            target_step,
+            states_per_phone,
+            allow_measured_synthesizer_timing,
         )
         source_id = str(record["source_id"])
         if source_id in source_ids:
@@ -271,6 +310,13 @@ def build_frame_supervision(
         "target_shape": list(targets.shape),
         "feature_frame_step_seconds": feature_step,
         "target_frame_step_seconds": target_step,
+        "states_per_phone": states_per_phone,
+        "state_count": 2 + len(KIZZ_PHONES) * states_per_phone,
+        "alignment_policy": (
+            "ctc_or_measured_synthesizer"
+            if allow_measured_synthesizer_timing
+            else "ctc_only"
+        ),
         "splits": sorted({str(record["split"]) for record in records}),
     }
 
@@ -283,6 +329,7 @@ def main() -> int:
     parser.add_argument("--target-frame-step-seconds", type=float, default=0.03)
     parser.add_argument("--feature-frame-count", type=int, required=True)
     parser.add_argument("--target-frame-count", type=int, required=True)
+    parser.add_argument("--states-per-phone", type=int, default=3)
     args = parser.parse_args()
     summary = build_frame_supervision(
         _load_manifest(args.manifest),
@@ -292,6 +339,7 @@ def main() -> int:
         target_step_seconds=args.target_frame_step_seconds,
         expected_feature_frames=args.feature_frame_count,
         expected_target_frames=args.target_frame_count,
+        states_per_phone=args.states_per_phone,
     )
     print(json.dumps(summary, sort_keys=True))
     return 0

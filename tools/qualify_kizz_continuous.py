@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
 import hashlib
 import json
-from pathlib import Path
 import sys
-from typing import Sequence
+from collections.abc import Sequence
+from dataclasses import asdict
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -20,6 +20,23 @@ from microwakeword.kizz_continuous_evaluation import (
     select_threshold,
     stream_from_mapping,
 )
+
+
+def validate_input_contract(payload: dict) -> None:
+    """Require model-bound, explicitly untouched continuous evidence."""
+    if payload.get("schema_version") != 1:
+        raise ValueError("input schema_version must be 1")
+    model_sha = payload.get("model_sha256")
+    if (
+        not isinstance(model_sha, str)
+        or len(model_sha) != 64
+        or any(character not in "0123456789abcdef" for character in model_sha)
+    ):
+        raise ValueError("input must declare a lowercase model_sha256")
+    if payload.get("test_is_untouched") is not True:
+        raise ValueError("input must explicitly declare test_is_untouched=true")
+    if not isinstance(payload.get("streams"), list) or not payload["streams"]:
+        raise ValueError("input must contain continuous score streams")
 
 
 def sha256_file(path: Path) -> str:
@@ -46,8 +63,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--min-negative-exposure-hours", type=float, default=100.0)
     args = parser.parse_args(argv)
     payload = json.loads(args.input.read_text())
-    if payload.get("schema_version") != 1:
-        parser.error("input schema_version must be 1")
+    try:
+        validate_input_contract(payload)
+    except ValueError as error:
+        parser.error(str(error))
     streams = [stream_from_mapping(item) for item in payload.get("streams", [])]
     validation = [stream for stream in streams if stream.split == "validation"]
     test = [stream for stream in streams if stream.split == "test"]
@@ -71,6 +90,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(error))
     report = {
         "schema_version": 1,
+        "gate_scope": "untouched_continuous_qualification",
+        "qualified": result.qualified,
+        "model_sha256": payload["model_sha256"],
+        "test_is_untouched": payload["test_is_untouched"],
         "input": str(args.input.resolve()),
         "input_sha256": sha256_file(args.input),
         "threshold_provenance": asdict(provenance),

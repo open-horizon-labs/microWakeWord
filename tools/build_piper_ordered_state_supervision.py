@@ -344,6 +344,7 @@ def build_piper_supervision(
         output / "arrays",
         expected_feature_frames=feature_frames,
         expected_target_frames=target_frames,
+        allow_measured_synthesizer_timing=True,
     )
     summary.update(
         {

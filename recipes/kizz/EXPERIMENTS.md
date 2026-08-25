@@ -9,6 +9,11 @@ results, see the [Kizz training reference](TRAINING_REFERENCE.md).
 
 ## Current baseline: v19 checkpoint 100
 
+The current stop decision superseding further **Hi-Fi Kizz** training is
+recorded in
+[`CANONICAL_V3_PHONETIC_GATE.md`](CANONICAL_V3_PHONETIC_GATE.md). Mycroft is
+the physical fallback while replacement phrases are screened.
+
 V19 at cutoff `0.70` and sliding window `1` remains the physical baseline. In
 its selection replay, checkpoint 100 accepted 8/8 expanded positives and 3/8
 confusables. A repeat accepted 4/4 positives and 3/4 confusables. Checkpoint 200

@@ -6,9 +6,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Sequence
 
 import numpy as np
 import tensorflow as tf
@@ -25,10 +25,14 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def require_teacher_qualification(path: Path, teacher_weights: Path) -> dict:
+def require_teacher_qualification(
+    path: Path, teacher_weights: Path, continuous_path: Path
+) -> tuple[dict, dict]:
     report = json.loads(path.read_text())
     if not report.get("qualified"):
         raise ValueError("teacher qualification report does not pass its hard gate")
+    if report.get("gate_scope") != "teacher_clip_and_anchor_prequalification":
+        raise ValueError("teacher report has the wrong qualification scope")
     expected = report.get("model_sha256")
     actual = sha256_file(teacher_weights)
     if expected != actual:
@@ -36,7 +40,34 @@ def require_teacher_qualification(path: Path, teacher_weights: Path) -> dict:
             "teacher qualification report is for different weights: "
             f"expected {expected}, got {actual}"
         )
-    return report
+    if report.get("reasons"):
+        raise ValueError("teacher qualification report retains failure reasons")
+    continuous = json.loads(continuous_path.read_text())
+    qualification = continuous.get("qualification", {})
+    config = continuous.get("config", {})
+    if (
+        continuous.get("gate_scope") != "untouched_continuous_qualification"
+        or continuous.get("qualified") is not True
+        or qualification.get("qualified") is not True
+    ):
+        raise ValueError("continuous qualification report does not pass its hard gate")
+    if continuous.get("model_sha256") != actual:
+        raise ValueError("continuous qualification report is for different weights")
+    if continuous.get("test_is_untouched") is not True:
+        raise ValueError("continuous qualification test is not declared untouched")
+    if float(config.get("min_negative_exposure_hours", 0)) < 100.0:
+        raise ValueError("continuous qualification requires at least 100 hours")
+    if float(config.get("max_faph_upper_95", float("inf"))) > 0.1:
+        raise ValueError("continuous qualification FAPH guard is too permissive")
+    if float(qualification.get("negative_exposure_seconds", 0)) < 100 * 3600:
+        raise ValueError("continuous qualification measured less than 100 hours")
+    if float(qualification.get("false_accepts_per_hour_upper_95", float("inf"))) > 0.1:
+        raise ValueError("continuous qualification exceeds the FAPH upper bound")
+    if int(qualification.get("locked_anchor_false_accepts", -1)) != 0:
+        raise ValueError("continuous qualification accepted a locked anchor")
+    if float(qualification.get("recall", 0)) < 0.9:
+        raise ValueError("continuous qualification recall is below 90 percent")
+    return report, continuous
 
 
 def student_flags() -> SimpleNamespace:
@@ -56,6 +87,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache-prefix", type=Path, required=True)
     parser.add_argument("--teacher-qualification", type=Path, required=True)
+    parser.add_argument("--continuous-qualification", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--steps", type=int, default=3000)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -98,7 +130,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     prefix = args.cache_prefix
     cache_metadata = json.loads(prefix.with_suffix(".json").read_text())
     teacher_weights = Path(cache_metadata["teacher_weights"])
-    qualification = require_teacher_qualification(args.teacher_qualification, teacher_weights)
+    qualification, continuous_qualification = require_teacher_qualification(
+        args.teacher_qualification,
+        teacher_weights,
+        args.continuous_qualification,
+    )
     features = np.load(prefix.with_name("features.npy"), mmap_mode="r")
     targets = np.load(prefix.with_name("targets.npy"), mmap_mode="r")
     labels = np.load(prefix.with_name("labels.npy"), mmap_mode="r")
@@ -168,7 +204,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             best_loss = value
             student.save_weights(args.output / "best.weights.h5")
         if (step + 1) % args.log_interval == 0 or step == 0:
-            print(json.dumps({"step": step + 1, "loss": value, "best_loss": best_loss}), flush=True)
+            print(
+                json.dumps({"step": step + 1, "loss": value, "best_loss": best_loss}),
+                flush=True,
+            )
 
     student.save_weights(args.output / "last.weights.h5")
     student.save(args.output / "student.keras")
@@ -180,11 +219,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         "cache_prefix": str(prefix.resolve()),
         "cache_files_sha256": {
             name: sha256_file(prefix.with_name(name))
-            for name in ("features.npy", "targets.npy", "labels.npy", "teacher_logits.npy")
+            for name in (
+                "features.npy",
+                "targets.npy",
+                "labels.npy",
+                "teacher_logits.npy",
+            )
         },
         "teacher_qualification": str(args.teacher_qualification.resolve()),
         "teacher_qualification_sha256": sha256_file(args.teacher_qualification),
-        "teacher_qualification_threshold": qualification["operating_point"]["threshold"],
+        "teacher_qualification_threshold": qualification["validation"][
+            "operating_point"
+        ]["threshold"],
+        "continuous_qualification": str(args.continuous_qualification.resolve()),
+        "continuous_qualification_sha256": sha256_file(args.continuous_qualification),
+        "continuous_qualification_threshold": continuous_qualification["qualification"][
+            "threshold"
+        ],
         "steps": args.steps,
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
