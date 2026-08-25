@@ -89,9 +89,11 @@ check.
 
 ## Current Kizz baseline
 
-V19 checkpoint 100 is the best live control from this effort. It used a cutoff
-of `.70` and a one-frame sliding window. It is **not** a qualified release: its
-held-out and physical results still show too many misses and false wakes.
+V19 checkpoint 100 is the live-recall control from this effort. It used a cutoff
+of `.70` and a one-frame sliding window. V34 is the strongest v19-derived
+offline precision/separation candidate, but its best recorded point reached
+only 39.8% recall and was never hardware-qualified. Neither model is a release: v19 still
+produces too many live false wakes, while v34 loses too much recall.
 
 Its quantized TensorFlow Lite model file is preserved so later work has a stable
 comparison point:

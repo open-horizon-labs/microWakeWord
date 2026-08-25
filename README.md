@@ -57,8 +57,11 @@ The [Kizz recipe](recipes/kizz/README.md) treats natural readings of **HiPhi
 Kizz** as one wake class. Bare `Kizz`, `kids`, `kiss`, `quiz`, incomplete
 phrases, and phrases with the wrong prefix or suffix are negatives.
 
-Its current v19 physical control has useful recall but unacceptable live
-precision. It remains a comparison control, not a source for new training.
+V19 remains the live-recall control, but its live precision is unacceptable.
+V34 is the strongest v19-derived offline precision/separation candidate: its
+best recorded point accepted 683/1,715 positives and 6/768 connected negatives.
+That is only 39.8% recall, so v34 is also not a deployable replacement or a
+hardware-qualified model.
 We rebuilt the active Kizz recipe from a new manifest that lists the exact
 eligible audio files and their hash. It excludes the old Piper lineage and
 inherited feature caches. We tested two larger offline models that could teach
@@ -72,8 +75,8 @@ qualification. Read the
 [teacher → student salvage report](recipes/kizz/SALVAGE_TEACHER_STUDENT_V1.md),
 [aligned distillation record](recipes/kizz/TEACHER_DISTILLATION_ALIGNED_V1.md),
 and [experiment ledger](recipes/kizz/EXPERIMENTS.md) before starting another
-run. The ordered-state decoder was added and that exact student artifact was
-flashed to StackChan; it produced frequent live false wakes. The student was
+run. The separate aligned teacher/student artifact was flashed to StackChan; it
+produced frequent live false wakes. The student was
 rejected and firmware reverted to the ESP-IDF wake-word model. No Kizz model is
 currently hardware-qualified.
 

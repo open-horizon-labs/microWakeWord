@@ -14,9 +14,11 @@ Kizz is the worked example. Its detailed history is in the
 
 ## Current Kizz status
 
-V19 had useful recall but poor live precision. The clean-slate teacher → student
-attempt also failed in the house: its student produced frequent false positives
-on StackChan. Deployment reverted to the ESP-IDF wake-word model.
+V19 has useful recall but poor live precision. V34 is the strongest v19-derived
+offline precision/separation candidate, but its best recorded point reached
+only 39.8% recall and was never flashed. The clean-slate teacher → student attempt also
+failed in the house: its student produced frequent false positives on StackChan.
+Deployment reverted to the ESP-IDF wake-word model.
 
 The recipe is useful research infrastructure, not a deployable model. The
 private audio and checkpoints used for the reported run are not in this repo.

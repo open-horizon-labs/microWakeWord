@@ -5,10 +5,12 @@ It accepts several pronunciations of the invented name, including realizations
 that sound like “Hi-Fi Kids.” Bare `Kizz`, `kids`, `kiss`, `quiz`, partial
 phrases, and similar full phrases remain negatives.
 
-The current physical baseline is **v19**, operated at a `0.70` probability
-cutoff with a one-frame sliding window. It has useful recall but unacceptable
-live precision. It is the model to beat in live use, not a qualified release,
-and its old Piper lineage is excluded from the new training baseline. See
+The current physical recall control is **v19**, operated at a `0.70` probability
+cutoff with a one-frame sliding window. Its live precision is unacceptable.
+**V34** is the strongest v19-derived offline precision/separation candidate,
+but its best recorded point reached only 39.8% recall and it was never
+hardware-qualified. Neither is a release model. V19's old Piper lineage is
+excluded from the new training baseline. See
 [Training reference](TRAINING_REFERENCE.md) for the complete corpus and tooling
 story, [Experiments](EXPERIMENTS.md) for the failure boundaries, and the
 [ordered-state v1 outline](archive/ORDERED_STATE_V1.md) for the scratch architecture
