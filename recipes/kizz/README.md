@@ -22,6 +22,18 @@ The [clean-slate C/D comparison](CLEAN_SLATE_V2_C_D_RESULTS.md) explains why C
 survived and D was rejected; the [salvage report](SALVAGE_TEACHER_STUDENT_V1.md)
 is the restart contract.
 
+### Current disposition
+
+The recipe is reproducible research infrastructure, not a qualified production
+wake-word recipe. The clean-slate C teacher passed an explicitly experimental
+gate, but its aligned INT8 student reached only 72.62% recall at zero observed
+false accepts offline. After the ordered-state decoder was added and the exact
+artifact was flashed, StackChan produced frequent live false wakes. The student
+was rejected and the firmware reverted to the ESP-IDF wake-word model. See
+[Experiments](EXPERIMENTS.md) for the measured decision history. Do not treat
+the offline student score, v19, or any checked-in configuration as evidence of
+acceptable live precision.
+
 ## What made v19 work
 
 V19 combined evidence from different acoustic domains instead of letting the
@@ -232,7 +244,7 @@ python tools/evaluate_recipe_model.py \
   --generated work/kizz/generated \
   --recipe recipes/kizz/corpus.yaml \
   --quality-mask work/kizz/generated/quality-mask.json \
-  --split test \
+  --split validation \
   --cutoff 0.70 \
   --output work/kizz/pronunciation-metrics.json
 

@@ -22,6 +22,60 @@ It also accepted only two of four fresh current-room positive replays. A later
 its live recall felt better than the later candidates, not because these results
 meet the qualification bar.
 
+## Clean-slate teacher → student attempt
+
+The repeated v19 continuation experiments established that reducing false
+wakes by thresholding or adding more negatives also removed useful recall. The
+next attempt therefore started from a new source-bound corpus and qualified an
+offline teacher before distillation.
+
+### Shared corpus and teacher comparison
+
+The clean-slate-v2 manifest contained 4,706 examples: 1,848 positives and
+2,858 negatives. It combined AssemblyAI, Deepgram, ElevenLabs, Kokoro,
+device-rendered positives, and deterministic overlays with LibriSpeech and
+MUSAN negatives. Old Piper data and the 15 held-out household false wakes were
+excluded from training. The held-out wakes remained outside teacher training,
+distillation, and threshold selection.
+
+Two deliberately different teachers were tested:
+
+| Recipe | Representation | Result | Decision |
+| --- | --- | --- | --- |
+| C | 16 kHz device microfrontend, full-context dilated convolution, 23 ordered states | 90.08% recall, 0.00 FAPH, 0/15 held-out wakes on the initial fixed-window comparison | Survived to aligned qualification |
+| D | Frozen `microsoft/wavlm-base-plus` waveform backbone plus temporal head | 72.68 FAPH at the 90.08% recall point; 13/15 held-out wakes; full sliding-window gate also failed | Rejected before distillation |
+
+C was subsequently re-trained/evaluated with the exact context used for the
+student. Under the explicit experimental gate it achieved 222/252 positives
+(88.10%), 0/560 observed negative accepts, and 0/15 held-out false-wake
+accepts over 1,456 seconds. This was enough to test transfer, not enough to
+call the teacher production-qualified.
+
+### Aligned distillation
+
+The first distillation geometry was wrong: the teacher's 87 output frames were
+matched index-for-index against the student's later 66-frame streaming output.
+The corrected run padded/cropped in PCM before feature extraction, produced
+260 frontend frames, and distilled teacher frames `[21:87]` into the student's
+66-frame timeline. The student remained a single causal ordered-state model
+(50,023 parameters); no second runtime model was used.
+
+The firmware-shaped INT8 artifact reached 183/252 recall (72.62%) at 0/560
+observed negative accepts and 0/15 held-out accepts. At the first point reaching
+90% recall it accepted 2/560 negatives, or 4.95 FAPH on the short 1,456-second
+exposure. These are offline measurements, not a production qualification.
+
+The ordered-state decoder was then added to firmware and the exact artifact
+was flashed to StackChan. It produced frequent live false wakes in the
+household environment. This invalidated the student as a deployable model even
+though its desktop INT8 report looked substantially cleaner than v19. The
+firmware reverted to the ESP-IDF wake-word model; the student is preserved as
+research evidence only.
+
+The full data contract, teacher gate, alignment, conversion, and tensor-shape
+lessons are recorded in
+[`TEACHER_DISTILLATION_ALIGNED_V1.md`](TEACHER_DISTILLATION_ALIGNED_V1.md).
+
 ## Findings
 
 ### Synthetic-only search did not transfer
