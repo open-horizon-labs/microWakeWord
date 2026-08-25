@@ -452,6 +452,7 @@ class FeatureHandler(object):
         self.training_weighted_pressure = Counter()
         self.current_class_weights = {0: 1.0, 1: 1.0}
         self.sampling_source_config = {}
+        self.mixture_guard = config.get("mixture_guard")
 
         logging.info("Loading and analyzing data sets.")
 
@@ -772,10 +773,16 @@ class FeatureHandler(object):
         by_group = Counter()
         pressure_by_group = Counter()
         by_source = {}
+        by_class = Counter()
+        pressure_by_class = Counter()
         for (group, source), count in sorted(self.training_sampling_counts.items()):
             by_group[group] += count
             pressure = self.training_weighted_pressure[(group, source)]
             pressure_by_group[group] += pressure
+            truth = bool(self.sampling_source_config[source]["truth"])
+            class_name = "positive" if truth else "negative"
+            by_class[class_name] += count
+            pressure_by_class[class_name] += pressure
             by_source[source] = {
                 "group": group,
                 "samples": count,
@@ -786,10 +793,24 @@ class FeatureHandler(object):
                 ),
                 **self.sampling_source_config.get(source, {}),
             }
-        return {
+        ledger = {
             "configured_group_weights": self.sampling_group_weights,
             "total_samples": total,
             "total_weighted_pressure": total_pressure,
+            "mixture_guard": getattr(self, "mixture_guard", None),
+            "realized_classes": {
+                class_name: {
+                    "samples": count,
+                    "share": count / total if total else 0.0,
+                    "weighted_pressure": pressure_by_class[class_name],
+                    "weighted_pressure_share": (
+                        pressure_by_class[class_name] / total_pressure
+                        if total_pressure
+                        else 0.0
+                    ),
+                }
+                for class_name, count in sorted(by_class.items())
+            },
             "realized_groups": {
                 group: {
                     "samples": count,
@@ -805,3 +826,4 @@ class FeatureHandler(object):
             },
             "realized_sources": by_source,
         }
+        return ledger

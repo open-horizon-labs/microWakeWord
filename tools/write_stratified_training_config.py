@@ -10,6 +10,8 @@ from pathlib import Path
 
 import yaml
 
+from microwakeword.kizz_batch_mixture import validate_declared_mixture
+
 
 def _feature(entry: dict, features_dir: Path, source_name: str) -> dict:
     feature = {
@@ -144,10 +146,56 @@ def planned_balance(
                 "negative_share": pressures[False] / total_pressure,
             }
         )
+    first_stage = pressure_stages[0]
+    class_details = {
+        "positive": {
+            "sampling_share": positive_share,
+            "weighted_pressure_share": first_stage["positive_share"],
+        },
+        "negative": {
+            "sampling_share": 1 - positive_share,
+            "weighted_pressure_share": first_stage["negative_share"],
+        },
+    }
+    for group, detail in group_details.items():
+        pressure = (
+            detail["sampling_share"]
+            * detail["average_penalty_weight"]
+            * _stage_value(
+                config.get(
+                    (
+                        "positive_class_weight"
+                        if detail["truth"]
+                        else "negative_class_weight"
+                    ),
+                    [1],
+                ),
+                0,
+            )
+        )
+        detail["weighted_pressure_share"] = pressure / (
+            sum(
+                item["sampling_share"]
+                * item["average_penalty_weight"]
+                * _stage_value(
+                    config.get(
+                        (
+                            "positive_class_weight"
+                            if item["truth"]
+                            else "negative_class_weight"
+                        ),
+                        [1],
+                    ),
+                    0,
+                )
+                for item in group_details.values()
+            )
+        )
     return {
         "positive_sampling_share": positive_share,
         "negative_sampling_share": 1 - positive_share,
         "weighted_pressure_stages": pressure_stages,
+        "classes": class_details,
         "groups": group_details,
     }
 
@@ -204,6 +252,9 @@ def stratified_config(base_config: Path, plan_path: Path) -> dict:
     config.update(plan.get("config_overrides", {}))
     balance = planned_balance(config, groups, features)
     enforce_balance_guard(balance, plan.get("balance_guard", {}))
+    if mixture_guard := plan.get("mixture_guard"):
+        validate_declared_mixture(balance, mixture_guard)
+        config["mixture_guard"] = mixture_guard
     config["sampling_plan"] = {
         "path": str(plan_path),
         "sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
