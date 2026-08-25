@@ -72,7 +72,10 @@ but is not a production qualification. Read the
 [teacher → student salvage report](recipes/kizz/SALVAGE_TEACHER_STUDENT_V1.md),
 [aligned distillation record](recipes/kizz/TEACHER_DISTILLATION_ALIGNED_V1.md),
 and [experiment ledger](recipes/kizz/EXPERIMENTS.md) before starting another
-run. No Kizz model is hardware-qualified by these offline results.
+run. The ordered-state decoder was added and that exact student artifact was
+flashed to StackChan; it produced frequent live false wakes. The student was
+rejected and firmware reverted to the ESP-IDF wake-word model. No Kizz model is
+currently hardware-qualified.
 
 ## Start here
 
