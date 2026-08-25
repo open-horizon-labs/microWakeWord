@@ -1,0 +1,76 @@
+schema_version: 2
+training_split: train
+splits: [train, validation, test]
+require_each_split: [positive, negative]
+required_metadata:
+  - speaker_id
+  - session_id
+  - semantic_label
+  - source_id
+  - provenance_id
+  - parent_id
+  - ancestry_id
+  - duration_seconds
+  - audio_sha256
+
+semantic_labels:
+  enabled: true
+  field: semantic_label
+  canonical_labels: [canonical_exact]
+  prohibited_labels:
+    - kids_collision
+    - high_five_collision
+    - hiffy_collision
+    - hippy_collision
+    - vowel_collision
+
+provenance:
+  enabled: true
+  required_fields: [source_id, provenance_id, parent_id, ancestry_id]
+
+duration:
+  enabled: true
+  min_seconds: 0.20
+  max_seconds: 1200.0
+
+# This is an inventory contract, not the batch-sampling distribution. Long-form
+# negatives intentionally dominate stored duration; the training recipe must
+# separately declare and validate its per-batch class/source shares.
+overall:
+  min_positive_fraction: 0.002
+  max_positive_fraction: 0.10
+
+classes:
+  positive:
+    min_source_groups: 6
+    required_source_groups:
+      - assemblyai_synthetic
+      - deepgram_synthetic
+      - elevenlabs_synthetic
+      - kokoro_synthetic
+      - noisy_overlay
+      - device_replay
+    max_source_fraction: 0.75
+    max_source_duration_fraction: 0.75
+  negative:
+    min_source_groups: 6
+    required_source_groups:
+      - phonetic_collision
+      - collision_overlay
+      - device_collision
+      - public_speech
+      - music
+      - background_noise
+    # Inventory retains the full long-form public-speech pool for hard mining.
+    # The training recipe has a stricter, separately validated batch mixture.
+    max_source_fraction: 0.92
+    max_source_duration_fraction: 0.80
+
+split_disjoint:
+  speaker_id: true
+  session_id: true
+  source_id: true
+  provenance_id: true
+  parent_id: true
+  ancestry_id: true
+  source_group: false
