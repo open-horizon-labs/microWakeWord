@@ -7,7 +7,8 @@ precision unacceptable, so deployment reverted to the ESP-IDF wake-word model.
 
 This is the reproducible record for the corrected Recipe C teacher, aligned
 distillation, and fixed-context/stateful-INT8 evaluation. It supersedes the
-deployment conclusions in [`TEACHER_DISTILLATION_V1.md`](TEACHER_DISTILLATION_V1.md)
+deployment conclusions in
+[`TEACHER_DISTILLATION_V1.md`](archive/TEACHER_DISTILLATION_V1.md)
 for this run, while retaining that document as the earlier failed-recipe
 record.
 

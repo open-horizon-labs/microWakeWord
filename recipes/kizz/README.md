@@ -11,7 +11,7 @@ live precision. It is the model to beat in live use, not a qualified release,
 and its old Piper lineage is excluded from the new training baseline. See
 [Training reference](TRAINING_REFERENCE.md) for the complete corpus and tooling
 story, [Experiments](EXPERIMENTS.md) for the failure boundaries, and the
-[ordered-state v1 outline](ORDERED_STATE_V1.md) for the scratch architecture
+[ordered-state v1 outline](archive/ORDERED_STATE_V1.md) for the scratch architecture
 that follows the failed v32 binary reboot.
 
 The corrected teacher → student run, including PCM-context preparation,

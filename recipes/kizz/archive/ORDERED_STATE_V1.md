@@ -179,7 +179,7 @@ best fixed endpoint missed the recall floor by 40 points while exceeding the
 false-accept ceiling, and additional training made false accepts unstable without
 recovering recall. A quantized decoder-margin sweep was not used to claim a
 stronger result. The machine-readable checkpoint ledger is
-[`ordered-state-v1-results.json`](ordered-state-v1-results.json).
+[`ordered-state-v1-results.json`](../ordered-state-v1-results.json).
 
 The failed result narrows the next question. A sequence constraint is cheap
 enough for the device, but this particular combination of local state encoder,

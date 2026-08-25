@@ -5,7 +5,7 @@ Date: 2026-08-24
 This report records the clean-slate restart before the later C distillation and
 hardware test. Its “no distillation or firmware flash” statements describe the
 decision at that time; the later student was flashed experimentally and failed
-live precision. See [the final teacher → student salvage report](SALVAGE_TEACHER_STUDENT_V1.md).
+live precision. See [the final teacher → student salvage report](../SALVAGE_TEACHER_STUDENT_V1.md).
 
 ## Salvage report
 

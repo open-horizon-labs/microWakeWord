@@ -108,8 +108,8 @@ negative exposure:
 - zero accepts on the held-out false-wake feature cache by default.
 
 This is implemented by
-[`qualify_kizz_teacher.py`](../../tools/qualify_kizz_teacher.py) and enforced by
-[`distill_kizz_student.py`](../../tools/distill_kizz_student.py). Running the
+[`qualify_kizz_teacher.py`](../../../tools/qualify_kizz_teacher.py) and enforced by
+[`distill_kizz_student.py`](../../../tools/distill_kizz_student.py). Running the
 current teacher against the 11,593-second connected-speech validation slice
 produced `qualified: false` because no threshold met both recall and the false
 accept ceiling. Attempting to distill with that report now fails before model
