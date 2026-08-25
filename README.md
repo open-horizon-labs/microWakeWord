@@ -59,13 +59,15 @@ with the wrong final word, and wrong prefixes followed by `Kizz`.
 
 Its current v19 physical control has useful recall but unacceptable live
 precision. It remains a comparison control, not a source for new training.
-The active Kizz recipe was rebuilt from a clean-slate, source-bound manifest
-that excludes the old Piper lineage and inherited feature caches. Its two
-teacher candidates are documented in the
+We rebuilt the active Kizz recipe from a new manifest that lists the exact
+eligible audio files and their hash. It excludes the old Piper lineage and
+inherited feature caches. We tested two larger offline models that could teach
+a small firmware model; the results are documented in the
 [clean-slate comparison](recipes/kizz/CLEAN_SLATE_V2_C_D_RESULTS.md): C, a
 microfrontend ordered-state teacher, was the only candidate worth distilling;
-D, a WavLM waveform teacher, failed the false-activation gate. The aligned C
-student reached 72.62% recall at 0 observed FAPH on its short test exposure,
+D, a WavLM waveform teacher, failed the false-wake limit. The aligned C
+student reached 72.62% recall with 0 observed false accepts per hour on its
+short test exposure,
 but is not a production qualification. Read the
 [teacher → student salvage report](recipes/kizz/SALVAGE_TEACHER_STUDENT_V1.md),
 [aligned distillation record](recipes/kizz/TEACHER_DISTILLATION_ALIGNED_V1.md),

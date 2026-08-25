@@ -2,6 +2,17 @@
 
 Date: 2026-08-25
 
+## Short version
+
+V19 recognized real wake phrases but also woke on ordinary speech. We stopped
+using its training data, built a new mixed-source corpus, and tested two larger
+offline models as teachers for a small firmware model. C, the model that used
+the same audio frontend as the device, was the only teacher worth keeping. D,
+the raw-waveform WavLM model, failed the false-wake test. Distilling C produced
+a very selective 8-bit student, but it missed too many real wakes. The next
+run should improve the data and teacher-to-student transfer, not simply make a
+model larger.
+
 ## Salvage report
 
 **Reason:** This phase replaced v19's training lineage after repeated attempts
@@ -20,47 +31,50 @@ manifest. Two offline teachers were then compared before distillation.
 
 ## Learnings
 
-1. **The old corpus was not a safe foundation.** Active training excluded the
+1. **The old corpus was not a safe foundation.** We excluded the
    old Piper lineage, inherited feature caches, duplicate room-scale exports,
    and unproven source identities. v19 remains a comparison control, not an
    input source for the new recipe.
 2. **Fresh synthesis needs acoustic and provider diversity, not just more
-   clips.** The clean-slate-v2 manifest contains 4,706 examples: 1,848
+   clips.** The new manifest contains 4,706 examples: 1,848
    positives and 2,858 negatives. Positive sources include AssemblyAI,
    Deepgram, ElevenLabs, Kokoro, device-rendered anchors, and deterministic
    speech/music/noise overlays. Negatives include LibriSpeech speech and MUSAN
    music, noise, and speech. Fifteen household false wakes were held out.
-3. **The data contract is part of the model.** C and D consumed the same
-   versioned manifest; feature caches were required to carry its hash; content
-   duplicates were removed before quotas; and held-out false wakes were not
-   eligible for training, distillation, or cutoff selection.
-4. **C and D answered different questions.** C preserved the deployed
-   microfrontend and represented the wake as 23 ordered phone/rejection states.
-   D used `microsoft/wavlm-base-plus` over raw waveform, offering a genuinely
-   different representation and a plausible Mac-only teacher path.
+3. **The file list is part of the model.** C and D used the same versioned
+   manifest. Feature caches carried its hash. We removed duplicate audio before
+   setting source quotas. Held-out false wakes could not enter training,
+   distillation, or threshold selection.
+4. **C and D answered different questions.** C kept the device's 16 kHz audio
+   frontend and described the wake as 23 ordered sound states. D used
+   `microsoft/wavlm-base-plus` directly on the waveform, giving us a genuinely
+   different Mac-only model to test.
 5. **C was the only teacher worth distilling.** On the shared fixed-window
-   comparison, C reached 90.08% recall with 0.00 FAPH and 0/15 held-out wake
-   accepts. D reached 90% recall only at 72.68 FAPH and accepted 13/15 held-out
+   comparison, C reached 90.08% recall with 0 false accepts per hour and 0/15
+   held-out wake accepts. D reached 90% recall only at 72.68 FAPH (false
+   accepts per hour) and accepted 13/15 held-out
    false wakes. The full sliding-window D evaluations also failed.
-6. **Teacher qualification must precede distillation.** The aligned C teacher
+6. **We must qualify a teacher before distillation.** The aligned C teacher
    was accepted only under an explicit experimental gate: 88.10% recall,
-   0/560 observed negative accepts, 0.00 FAPH, and 0/15 held-out false wakes
+   0/560 observed negative accepts, 0.00 FAPH (false accepts per hour), and
+   0/15 held-out false wakes
    on 1,456 seconds of negative exposure. This was enough to test transfer,
    not enough to call the teacher production-qualified.
-7. **Temporal alignment was a first-order issue.** The teacher produced 87
-   frames from 260 frontend frames, while the causal student produced the
-   latency-shifted 66-frame slice. Index-to-index distillation was wrong. The
-   corrected cache used teacher frames `[21:87]` to match the student timeline.
-8. **The student transferred rejection better than recall.** The aligned
-   stateful INT8 student reached 72.62% recall at 0/560 observed false accepts
+7. **The two models did not see the same moment in time.** The teacher produced
+   87 outputs from 260 frontend frames. The small streaming model produced the
+   later 66-frame slice that matches its runtime delay. Copying output number 1
+   to output number 1 was wrong. The corrected cache used teacher frames
+   `[21:87]`.
+8. **The student learned rejection better than recognition.** The aligned
+   stateful 8-bit student reached 72.62% recall at 0/560 observed false accepts
    and 0/15 held-out accepts. At the first 90% recall point it had 2/560
    accepts, or 4.95 FAPH on only 1,456 seconds. This is a promising control,
    not a release result.
-9. **Quantization and deployment contracts must be evaluated together.** The
-   student emitted 23 state logits, not the scalar probability expected by the
-   old firmware. Matching input shapes did not make the artifact compatible;
-   the ordered-state decoder and stateful INT8 evaluator were required.
-10. **Training loss is not detector quality.** D initially selected checkpoints
+9. **The deployed model's output matters as much as its input.** The student
+   emitted 23 state scores, while the old firmware expected one probability.
+   Matching input shapes did not make the artifact compatible. We needed a
+   decoder in firmware and an 8-bit evaluator that preserved model memory.
+10. **Training loss is not detector quality.** D initially picked checkpoints
     by training loss and left dropout active in a supposedly frozen WavLM
     backbone. The corrected D path fixed both defects, added padding masks,
     balanced negative pressure, temporal rejection loss, and validation-based

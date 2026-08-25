@@ -11,44 +11,51 @@ and failed approaches—read the
 [clean-slate C/D results](../recipes/kizz/CLEAN_SLATE_V2_C_D_RESULTS.md), and
 the [teacher → student salvage report](../recipes/kizz/SALVAGE_TEACHER_STUDENT_V1.md).
 
-## Kizz clean-slate teacher → student path
+## Kizz clean-slate: use a large offline model to teach a small one
 
-Do not use the old v19/Piper corpus as the baseline for a new Kizz run. The
-clean-slate-v2 experiment started from an empty eligible manifest and produced
-4,706 source-bound examples: 1,848 positives and 2,858 negatives. Positives
+Do not use the old v19/Piper corpus as the baseline for a new Kizz run. We
+started clean: the manifest listed only approved files and recorded a hash of
+that list. The experiment produced
+4,706 examples from an exact, hashed file list: 1,848 positives and 2,858
+negatives. Positives
 came from AssemblyAI, Deepgram, ElevenLabs, Kokoro, device-rendered anchors,
 and deterministic speech/music/noise overlays. Negatives came from LibriSpeech
 speech plus MUSAN music, noise, and speech. Fifteen household false wakes were
 held out completely. Old Piper audio and inherited aligned feature caches were
 excluded; new Piper synthesis is, at most, a separately named ablation.
 
-Two offline teachers were trained on the same manifest:
+We trained two larger offline models on the same manifest. Their only job was
+to provide a better training signal for a small model that could run on the
+ESP32-S3:
 
 | Candidate | Representation | Result | Decision |
 | --- | --- | --- | --- |
-| C | 16 kHz microfrontend, full-context dilated network, 23 ordered states | 90.08% recall, 0.00 FAPH, 0/15 held-out accepts on fixed windows | Surviving teacher candidate |
-| D | `microsoft/wavlm-base-plus` waveform encoder plus temporal head | 72.68 FAPH at 90% recall and 13/15 held-out accepts | Reject before distillation |
+| C | 16 kHz microfrontend, full-context sequence model, 23 ordered states | 90.08% recall, 0 false accepts per hour, 0/15 held-out accepts on fixed windows | Keep |
+| D | `microsoft/wavlm-base-plus` waveform model plus temporal head | 72.68 false accepts per hour at 90% recall and 13/15 held-out accepts | Reject before distillation |
 
-C then required a second, stricter alignment/evaluation pass. Its teacher was
+C needed a second, stricter check. Its teacher was
 accepted only for a controlled transfer experiment at 88.10% recall, 0/560
-observed negative accepts, and 0/15 held-out accepts on 1,456 seconds of
-negative exposure. The student received teacher frames `[21:87]`, matching its
-latency-shifted 66-frame output rather than copying teacher logits by index.
+observed negative accepts, and 0/15 held-out accepts in 1,456 seconds of
+negative audio. We matched the teacher's outputs to the part of the audio the
+small model could actually see. The student used teacher frames `[21:87]`, not
+the same frame numbers by accident.
 
-The resulting stateful INT8 student reached 72.62% recall at 0/560 observed
-false accepts. That is the best clean student control in this experiment, not
-a production claim: the exposure is short, and it still loses too much recall.
+The resulting firmware-shaped, 8-bit student remembers earlier audio chunks
+while it runs. It reached 72.62% recall with 0/560 observed false accepts.
+That is the best clean student control in this experiment, not a production
+claim: the negative exposure is short, and the student still misses too many
+real wakes.
 The exact process is recorded in
 [`TEACHER_DISTILLATION_ALIGNED_V1.md`](../recipes/kizz/TEACHER_DISTILLATION_ALIGNED_V1.md).
 
-The mandatory gates are:
+The rules for the next run are:
 
-1. Bind raw data, features, teacher weights, qualification, distillation cache,
-   and converted student to one source-manifest hash.
-2. Qualify the teacher on held-out positives, untouched negative exposure, and
-   held-out device false wakes before generating student targets.
-3. Evaluate the student with stateful INT8 streaming, including warm-up and
-   carry-state behavior, before considering firmware.
+1. Use one manifest hash for the raw files, extracted features, teacher,
+   teacher outputs, student, and reports.
+2. Prove that the teacher meets the false-wake and recall limits before using
+   it to train the student.
+3. Test the 8-bit student the way firmware runs it: in chunks, with its memory
+   reset and carried between audio streams as appropriate.
 4. Keep live false-wake captures quarantined until human review promotes them.
 5. Treat natural human positives, long-form household/TV audio, and physical
    artifact tests as remaining qualification work.
@@ -97,7 +104,8 @@ GPU is recommended for generation and training; commands are unchanged on CPU.
 
 ## 2. Obtain the optional Piper generator model
 
-The general recipe tooling supports the LibriTTS-R multi-speaker generator through the Open Horizon Labs
+The general recipe tooling supports the LibriTTS-R multi-speaker generator
+through the Open Horizon Labs
 [`piper-sample-generator` fork](https://github.com/open-horizon-labs/piper-sample-generator).
 The fork reserves disjoint speaker ranges and records per-WAV provenance:
 
