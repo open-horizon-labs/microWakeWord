@@ -100,21 +100,17 @@ comparison point:
 76250d0cef49f893df4724ea6cce0e87b8a8d0d63cf10fbe23c0e624298871ff
 ```
 
-### Current live observation
+### Current live result
 
-Kizz has produced some false wake triggers with no speech following them. The
-post-wake timeout prevented those events from becoming accidental music
-commands, so they were harmless to the listener but still failures of the wake
-detector. We do not yet know whether these events come from the model confusing
-ambient sound, a microphone level that is too high, movement, or a runtime state
-transition. A gain change without an audio capture would be a guess.
+The v19 control still wakes on ordinary household speech and ambient playback.
+The clean-slate teacher/student attempt reduced false accepts in a short offline
+report, but the flashed student produced frequent false wakes on StackChan. The
+student was rejected and deployment reverted to the ESP-IDF wake-word model.
 
-The next capture path must retain a short ring buffer around every wake. If no
-speech follows before the post-wake timeout, label the reviewed recording
-`false_wake_no_command` and preserve the peak wake score, cutoff, gain, device
-profile, room condition, and detector state. Do not add these clips to training
-automatically: an abandoned but legitimate request is different evidence from
-an ambient false wake.
+The enrollment path now preserves post-wake audio and metadata as quarantined
+evidence. Review each clip before promotion: an abandoned legitimate request is
+different evidence from an ambient false wake. Do not add these recordings to
+training automatically.
 
 ## What this work taught us
 
@@ -208,7 +204,7 @@ otherwise a better or worse result will not tell you why it changed.
 The reusable parts are the speaker-split generators, voice catalog, source
 quality screen, background inventory, device recording rules, phrase
 alignment, batch sampler, one-change-at-a-time audits, cutoff selector, and
-two-mode evaluator. The [tool ledger](#tools-and-what-each-preserves) maps each
+two-mode evaluator. The [tool ledger](#tools-and-the-records-they-create) maps each
 one to code.
 
 ### Rules we now follow

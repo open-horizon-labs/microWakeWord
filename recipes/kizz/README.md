@@ -26,15 +26,20 @@ is the restart contract.
 
 The recipe is reproducible research infrastructure, not a qualified production
 wake-word recipe. The clean-slate C teacher passed an explicitly experimental
-gate, but its aligned INT8 student reached only 72.62% recall at zero observed
-false accepts offline. After the ordered-state decoder was added and the exact
-artifact was flashed, StackChan produced frequent live false wakes. The student
-was rejected and the firmware reverted to the ESP-IDF wake-word model. See
+gate, but its aligned INT8 student reached only 72.62% recall with 0/560
+observed false accepts over 1,456 seconds of offline negative exposure. After
+the ordered-state decoder was added and the exact artifact was flashed,
+StackChan produced frequent live false wakes. The student was rejected and the
+firmware reverted to the ESP-IDF wake-word model. See
 [Experiments](EXPERIMENTS.md) for the measured decision history. Do not treat
 the offline student score, v19, or any checked-in configuration as evidence of
 acceptable live precision.
 
-## What made v19 work
+The commands in this document exercise the general recipe tooling. They do not
+recreate the reported clean-slate C/D run without its private audio, manifests,
+feature caches, and checkpoints.
+
+## What v19 established—and failed to establish
 
 V19 combined evidence from different acoustic domains instead of letting the
 largest directory determine training:

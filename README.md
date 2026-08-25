@@ -54,8 +54,8 @@ Record rejected candidates; aggregate scores never satisfy a release gate.
 ## Worked recipe: Kizz
 
 The [Kizz recipe](recipes/kizz/README.md) treats natural readings of **HiPhi
-Kizz** as one wake class. It tests `Kizz`, `kids`, `kiss`, `quiz`, valid prefixes
-with the wrong final word, and wrong prefixes followed by `Kizz`.
+Kizz** as one wake class. Bare `Kizz`, `kids`, `kiss`, `quiz`, incomplete
+phrases, and phrases with the wrong prefix or suffix are negatives.
 
 Its current v19 physical control has useful recall but unacceptable live
 precision. It remains a comparison control, not a source for new training.
@@ -66,9 +66,9 @@ a small firmware model; the results are documented in the
 [clean-slate comparison](recipes/kizz/CLEAN_SLATE_V2_C_D_RESULTS.md): C, a
 microfrontend ordered-state teacher, was the only candidate worth distilling;
 D, a WavLM waveform teacher, failed the false-wake limit. The aligned C
-student reached 72.62% recall with 0 observed false accepts per hour on its
-short test exposure,
-but is not a production qualification. Read the
+student reached 72.62% recall with 0/560 observed false accepts over 1,456
+seconds of offline negative exposure, but that was not a production
+qualification. Read the
 [teacher → student salvage report](recipes/kizz/SALVAGE_TEACHER_STUDENT_V1.md),
 [aligned distillation record](recipes/kizz/TEACHER_DISTILLATION_ALIGNED_V1.md),
 and [experiment ledger](recipes/kizz/EXPERIMENTS.md) before starting another

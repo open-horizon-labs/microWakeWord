@@ -170,7 +170,7 @@ python tools/apply_phrase_spans.py \
 ```
 
 The same spans can anchor the synthetic quality mask described in
-[Usage](USAGE.md#4-screen-synthetic-audio-and-build-features). This lets the
+[Usage](USAGE.md#4-build-features-and-train). This lets the
 recorded corpus prevent generated speech with implausible timing or truncation
 risk from entering feature generation.
 

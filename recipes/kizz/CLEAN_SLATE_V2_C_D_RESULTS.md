@@ -81,12 +81,16 @@ The earlier full sliding-window D report also failed: no operating point met
 
 ## Decision at this phase
 
-At this phase, proceed with C as the only surviving teacher candidate. Before
-distillation:
+At this phase, C was the only surviving teacher candidate. The later aligned
+teacher run documented the corrected context geometry and applied the following
+gates before distillation:
 
 1. score C over the same raw test audio with bounded streaming sliding windows;
 2. require the hard false-activation gate and zero held-out household accepts;
 3. only then distill C into a causal firmware-sized student.
+
+The aligned student passed its short offline screen but failed live StackChan
+precision. It is preserved as research evidence, not a deployment candidate.
 
 The C and D checkpoints, manifests, and reports remain local under
 `/private/tmp/kizz-training/clean-slate-v2/`; this repository records the

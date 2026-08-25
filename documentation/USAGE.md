@@ -1,7 +1,8 @@
 # Usage
 
 This fork trains and evaluates custom wake words for real microphones. The
-usual path is:
+commands below build a candidate and collect the evidence needed for a release
+decision; they do not make a model deployable by themselves. The usual path is:
 
 ```text
 define phrases → generate or collect audio → build features → train
@@ -153,6 +154,8 @@ For a teacher → student experiment:
 The aligned Kizz distillation record is
 [`TEACHER_DISTILLATION_ALIGNED_V1.md`](../recipes/kizz/TEACHER_DISTILLATION_ALIGNED_V1.md).
 Its student passed a short offline screen but failed live StackChan precision.
+That exact artifact was rejected; deployment reverted to the ESP-IDF wake-word
+model.
 
 ## 6. Collect device evidence
 
