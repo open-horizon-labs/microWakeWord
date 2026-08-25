@@ -57,13 +57,20 @@ The [Kizz recipe](recipes/kizz/README.md) treats natural readings of **HiPhi
 Kizz** as one wake class. It tests `Kizz`, `kids`, `kiss`, `quiz`, valid prefixes
 with the wrong final word, and wrong prefixes followed by `Kizz`.
 
-Its current v19 physical control remains experimental: later candidates exposed
-confusable acceptance, weak fresh-speaker recall, and gaps between offline and
-room results. See the
-[full Kizz training reference](recipes/kizz/TRAINING_REFERENCE.md) for the
-generated voices, physical corpus, augmentation, v19 recipe, tooling, and
-salvaged lessons. The [experiment ledger](recipes/kizz/EXPERIMENTS.md) records
-rejected approaches; no Kizz model is hardware-qualified.
+Its current v19 physical control has useful recall but unacceptable live
+precision. It remains a comparison control, not a source for new training.
+The active Kizz recipe was rebuilt from a clean-slate, source-bound manifest
+that excludes the old Piper lineage and inherited feature caches. Its two
+teacher candidates are documented in the
+[clean-slate comparison](recipes/kizz/CLEAN_SLATE_V2_C_D_RESULTS.md): C, a
+microfrontend ordered-state teacher, was the only candidate worth distilling;
+D, a WavLM waveform teacher, failed the false-activation gate. The aligned C
+student reached 72.62% recall at 0 observed FAPH on its short test exposure,
+but is not a production qualification. Read the
+[teacher → student salvage report](recipes/kizz/SALVAGE_TEACHER_STUDENT_V1.md),
+[aligned distillation record](recipes/kizz/TEACHER_DISTILLATION_ALIGNED_V1.md),
+and [experiment ledger](recipes/kizz/EXPERIMENTS.md) before starting another
+run. No Kizz model is hardware-qualified by these offline results.
 
 ## Start here
 

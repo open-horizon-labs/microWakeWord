@@ -6,9 +6,9 @@ that sound like “Hi-Fi Kids.” Bare `Kizz`, `kids`, `kiss`, `quiz`, partial
 phrases, and similar full phrases remain negatives.
 
 The current physical baseline is **v19**, operated at a `0.70` probability
-cutoff with a one-frame sliding window. It is the model to beat in live use,
-not a qualified release. Later models improved some offline scores but either
-lost current-speaker recall or false-woke on physical Kizz. See
+cutoff with a one-frame sliding window. It has useful recall but unacceptable
+live precision. It is the model to beat in live use, not a qualified release,
+and its old Piper lineage is excluded from the new training baseline. See
 [Training reference](TRAINING_REFERENCE.md) for the complete corpus and tooling
 story, [Experiments](EXPERIMENTS.md) for the failure boundaries, and the
 [ordered-state v1 outline](ORDERED_STATE_V1.md) for the scratch architecture
@@ -18,6 +18,9 @@ The current corrected teacher → student run, including PCM-context preparation
 87→66 temporal alignment, qualification, distillation, stateful INT8 scoring,
 and the firmware tensor-contract blocker, is documented in
 [TEACHER_DISTILLATION_ALIGNED_V1.md](TEACHER_DISTILLATION_ALIGNED_V1.md).
+The [clean-slate C/D comparison](CLEAN_SLATE_V2_C_D_RESULTS.md) explains why C
+survived and D was rejected; the [salvage report](SALVAGE_TEACHER_STUDENT_V1.md)
+is the restart contract.
 
 ## What made v19 work
 

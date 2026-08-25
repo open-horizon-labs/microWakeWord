@@ -4,10 +4,54 @@ This guide covers setup, corpus generation, feature building, training,
 evaluation, and device qualification. Kizz is the worked example, not a
 framework limit.
 
-For the complete case study—including Piper and ElevenLabs generation,
-alternate synthesis pilots, physical re-recording through Kizz, the v19 source
-ledger, and failed approaches—read the
-[Kizz training reference](../recipes/kizz/TRAINING_REFERENCE.md).
+For the complete case study—including the v19 control, the clean-slate source
+restart, provider-diverse synthesis, teacher comparison, aligned distillation,
+and failed approaches—read the
+[Kizz training reference](../recipes/kizz/TRAINING_REFERENCE.md), the
+[clean-slate C/D results](../recipes/kizz/CLEAN_SLATE_V2_C_D_RESULTS.md), and
+the [teacher → student salvage report](../recipes/kizz/SALVAGE_TEACHER_STUDENT_V1.md).
+
+## Kizz clean-slate teacher → student path
+
+Do not use the old v19/Piper corpus as the baseline for a new Kizz run. The
+clean-slate-v2 experiment started from an empty eligible manifest and produced
+4,706 source-bound examples: 1,848 positives and 2,858 negatives. Positives
+came from AssemblyAI, Deepgram, ElevenLabs, Kokoro, device-rendered anchors,
+and deterministic speech/music/noise overlays. Negatives came from LibriSpeech
+speech plus MUSAN music, noise, and speech. Fifteen household false wakes were
+held out completely. Old Piper audio and inherited aligned feature caches were
+excluded; new Piper synthesis is, at most, a separately named ablation.
+
+Two offline teachers were trained on the same manifest:
+
+| Candidate | Representation | Result | Decision |
+| --- | --- | --- | --- |
+| C | 16 kHz microfrontend, full-context dilated network, 23 ordered states | 90.08% recall, 0.00 FAPH, 0/15 held-out accepts on fixed windows | Surviving teacher candidate |
+| D | `microsoft/wavlm-base-plus` waveform encoder plus temporal head | 72.68 FAPH at 90% recall and 13/15 held-out accepts | Reject before distillation |
+
+C then required a second, stricter alignment/evaluation pass. Its teacher was
+accepted only for a controlled transfer experiment at 88.10% recall, 0/560
+observed negative accepts, and 0/15 held-out accepts on 1,456 seconds of
+negative exposure. The student received teacher frames `[21:87]`, matching its
+latency-shifted 66-frame output rather than copying teacher logits by index.
+
+The resulting stateful INT8 student reached 72.62% recall at 0/560 observed
+false accepts. That is the best clean student control in this experiment, not
+a production claim: the exposure is short, and it still loses too much recall.
+The exact process is recorded in
+[`TEACHER_DISTILLATION_ALIGNED_V1.md`](../recipes/kizz/TEACHER_DISTILLATION_ALIGNED_V1.md).
+
+The mandatory gates are:
+
+1. Bind raw data, features, teacher weights, qualification, distillation cache,
+   and converted student to one source-manifest hash.
+2. Qualify the teacher on held-out positives, untouched negative exposure, and
+   held-out device false wakes before generating student targets.
+3. Evaluate the student with stateful INT8 streaming, including warm-up and
+   carry-state behavior, before considering firmware.
+4. Keep live false-wake captures quarantined until human review promotes them.
+5. Treat natural human positives, long-form household/TV audio, and physical
+   artifact tests as remaining qualification work.
 
 ## Training workflow at a glance
 
@@ -51,9 +95,9 @@ python -m unittest discover -s tests -v
 
 GPU is recommended for generation and training; commands are unchanged on CPU.
 
-## 2. Obtain the Piper generator model
+## 2. Obtain the optional Piper generator model
 
-Kizz uses the LibriTTS-R multi-speaker generator through the Open Horizon Labs
+The general recipe tooling supports the LibriTTS-R multi-speaker generator through the Open Horizon Labs
 [`piper-sample-generator` fork](https://github.com/open-horizon-labs/piper-sample-generator).
 The fork reserves disjoint speaker ranges and records per-WAV provenance:
 
@@ -64,9 +108,12 @@ curl -L \
   -o models/en_US-libritts_r-medium.pt
 ```
 
-Pass `--generator-source ../piper-sample-generator` to generation commands.
+Pass `--generator-source ../piper-sample-generator` to generation commands. The
+old Kizz Piper corpus is excluded from the clean-slate baseline; use this path
+only for a separately tagged experiment with its own speaker, phrase, quality,
+and split quotas.
 
-## 3. Inspect and generate the Kizz corpus
+## 3. Inspect and generate a conventional recipe corpus
 
 [`recipes/kizz/corpus.yaml`](../recipes/kizz/corpus.yaml) defines phrases,
 counts, pronunciations, confusables, and Piper variation. Inspect it first:
@@ -101,7 +148,10 @@ To reuse unchanged phrase audio from an earlier run, repeat
 sample count, generator model, and synthesis command. The new manifest records
 the source.
 
-Add age-labeled voices before feature building. The Kizz recipe requires two
+For the clean-slate Kizz teacher experiment, use the provider-diverse manifest
+and reports linked above instead of treating this Piper command as the baseline.
+
+Add age-labeled voices before feature building. The general Kizz recipe requires two
 adult and two child voices in train, plus distinct adult and child identities in
 validation and test. Design them with ElevenLabs, or supply an equivalent
 catalog from another licensed source:
