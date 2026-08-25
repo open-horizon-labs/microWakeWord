@@ -102,6 +102,41 @@ infeasible. The detailed artifact and decision are in
 - Weighted negative-source sampling.
 - Qualification-before-distillation enforcement.
 
+### Corrected D follow-up (2026-08-24)
+
+The original D result did contain a concrete implementation bug: frozen WavLM
+parameters were placed under `model.train()`, so dropout remained active in
+the frozen representation. The run also chose checkpoints by training-batch
+loss. That defect was corrected, along with explicit padding masks, weighted
+public-speech negatives, a temporal localization/rejection auxiliary loss,
+and validation-based checkpoint selection.
+
+The correction improved but did not rescue D:
+
+| run | change | untouched-test FAPH at 90% recall | decision |
+|---|---|---:|---|
+| original D | frozen WavLM, old recipe | 63.36 | reject |
+| D0 | corrected frozen control | 53.77 | reject |
+| D1 | D0 + final two WavLM blocks unfrozen at `2e-5` | 31.75 | reject |
+
+The same 252-positive / 560-negative test set and 26,646.6-second sliding
+exposure were used. D1's best validation point was 14.44 FAPH, but it did not
+generalize to the untouched test. This is evidence for a recipe/data/window
+boundary problem after the implementation bug is fixed, not evidence that all
+pretrained encoders are unusable.
+
+### Corrected-D guardrails
+
+- A frozen pretrained encoder must be in evaluation mode during head training;
+  `requires_grad=False` alone is insufficient.
+- Checkpoints must be selected by the deployment qualification metric on a
+  validation split, never by a single training-batch loss.
+- Any claimed padding-mask fix must be exercised in both training and scoring.
+- A materially lower FAPH on validation is not evidence of improvement until
+  the untouched sliding-window test agrees.
+- Do not spend additional compute on D distillation while the same hard gate is
+  red; change data/window/target geometry first.
+
 ### Fresh-start recommendation
 
 Start with a data/target audit and a teacher-only experiment. Verify positive

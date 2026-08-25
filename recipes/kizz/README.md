@@ -14,6 +14,11 @@ story, [Experiments](EXPERIMENTS.md) for the failure boundaries, and the
 [ordered-state v1 outline](ORDERED_STATE_V1.md) for the scratch architecture
 that follows the failed v32 binary reboot.
 
+The current corrected teacher → student run, including PCM-context preparation,
+87→66 temporal alignment, qualification, distillation, stateful INT8 scoring,
+and the firmware tensor-contract blocker, is documented in
+[TEACHER_DISTILLATION_ALIGNED_V1.md](TEACHER_DISTILLATION_ALIGNED_V1.md).
+
 ## What made v19 work
 
 V19 combined evidence from different acoustic domains instead of letting the

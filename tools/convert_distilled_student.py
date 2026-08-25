@@ -44,7 +44,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     def representative_dataset():
         for index in range(min(500, len(features))):
-            spectrogram = np.asarray(features[index], dtype=np.float32)
+            # ``features`` is opened as a read-only memmap. Calibration tweaks
+            # must operate on a writable per-example copy.
+            spectrogram = np.array(features[index], dtype=np.float32, copy=True)
             spectrogram[0, 0] = 0.0
             spectrogram[0, 1] = 26.0
             for offset in range(0, len(spectrogram) - 2, 3):

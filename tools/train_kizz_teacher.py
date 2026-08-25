@@ -74,7 +74,12 @@ def train(args: argparse.Namespace) -> dict:
         )
     tf.keras.utils.set_random_seed(args.seed)
 
-    model = build_teacher(hidden_size=args.hidden_size, recurrent_layers=args.recurrent_layers)
+    target_frames = int(np.load(args.positive_targets, mmap_mode="r").shape[1])
+    model = build_teacher(
+        hidden_size=args.hidden_size,
+        recurrent_layers=args.recurrent_layers,
+        output_frames=target_frames,
+    )
     sequence = TeacherBatchSequence(
         args.positive_features,
         args.positive_targets,
@@ -137,7 +142,7 @@ def train(args: argparse.Namespace) -> dict:
         "schema_version": 1,
         "model": "kizz_offline_teacher",
         "input_shape": [260, 40],
-        "output_shape": [66, 23],
+        "output_shape": [target_frames, 23],
         "hidden_size": args.hidden_size,
         "recurrent_layers": args.recurrent_layers,
         "seed": args.seed,
@@ -190,6 +195,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--hidden-size", type=int, default=128)
     parser.add_argument("--recurrent-layers", type=int, default=2)
+    parser.add_argument(
+        "--output-frames",
+        type=int,
+        help="Teacher timeline length; defaults to the positive-target width.",
+    )
     parser.add_argument("--learning-rate", type=float, default=0.0005)
     parser.add_argument("--frame-weight", type=float, default=0.25)
     parser.add_argument("--sequence-weight", type=float, default=0.75)
@@ -207,6 +217,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         parser.error("invalid training objective or schedule")
     args.negative_source_probabilities = dict(args.negative_source_probability)
+    if args.output_frames is not None:
+        target_frames = int(np.load(args.positive_targets, mmap_mode="r").shape[1])
+        if args.output_frames != target_frames:
+            parser.error(
+                "--output-frames must match positive-targets second dimension"
+            )
     unknown = set(args.negative_source_probabilities) - {
         source.source_id for source in args.negative_source
     }

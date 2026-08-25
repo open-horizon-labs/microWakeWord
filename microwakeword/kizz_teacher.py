@@ -33,19 +33,31 @@ FRAME_STRIDE = 3
 
 @tf.keras.utils.register_keras_serializable(package="microwakeword")
 class TeacherDownsample(tf.keras.layers.Layer):
-    """Pool the first 198 ten-ms feature frames into 66 teacher frames."""
+    """Pool a fixed input into a configurable 30-ms teacher timeline."""
+
+    def __init__(self, output_frames: int = OUTPUT_FRAMES, **kwargs):
+        super().__init__(**kwargs)
+        if output_frames < 1:
+            raise ValueError("output_frames must be positive")
+        self.output_frames = int(output_frames)
 
     def call(self, inputs):
         batch = tf.shape(inputs)[0]
-        trimmed = inputs[:, : OUTPUT_FRAMES * FRAME_STRIDE, :]
+        required = self.output_frames * FRAME_STRIDE
+        padding = tf.maximum(0, required - tf.shape(inputs)[1])
+        padded = tf.pad(inputs, [[0, 0], [0, padding], [0, 0]])
+        trimmed = padded[:, :required, :]
         reshaped = tf.reshape(
             trimmed,
-            [batch, OUTPUT_FRAMES, FRAME_STRIDE, tf.shape(inputs)[-1]],
+            [batch, self.output_frames, FRAME_STRIDE, tf.shape(inputs)[-1]],
         )
         return tf.reduce_mean(reshaped, axis=2)
 
     def compute_output_shape(self, input_shape):
-        return (input_shape[0], OUTPUT_FRAMES, input_shape[2])
+        return (input_shape[0], self.output_frames, input_shape[2])
+
+    def get_config(self):
+        return {**super().get_config(), "output_frames": self.output_frames}
 
 
 @tf.keras.utils.register_keras_serializable(package="microwakeword")
@@ -62,12 +74,15 @@ def build_teacher(
     feature_bins: int = FEATURE_BINS,
     hidden_size: int = 128,
     recurrent_layers: int = 7,
+    output_frames: int = OUTPUT_FRAMES,
 ) -> tf.keras.Model:
     """Build a full-context, high-capacity non-causal teacher."""
     if input_frames != INPUT_FRAMES or feature_bins != FEATURE_BINS:
         raise ValueError("teacher input contract is [260, 40]")
     if hidden_size < 16 or recurrent_layers < 1 or recurrent_layers > 8:
         raise ValueError("teacher capacity is too small")
+    if output_frames < 1:
+        raise ValueError("teacher output_frames must be positive")
 
     inputs = tf.keras.Input(shape=(input_frames, feature_bins), name="features")
     net = tf.keras.layers.LayerNormalization(name="feature_norm")(inputs)
@@ -98,7 +113,9 @@ def build_teacher(
         if residual.shape[-1] == net.shape[-1]:
             net = tf.keras.layers.Add(name=f"context_residual_{index}")([net, residual])
     net = tf.keras.layers.Dense(hidden_size, activation="swish", name="state_projection")(net)
-    net = TeacherDownsample(name="teacher_30ms_frames")(net)
+    net = TeacherDownsample(
+        output_frames=output_frames, name="teacher_30ms_frames"
+    )(net)
     logits = tf.keras.layers.Dense(
         KIZZ_TOPOLOGY.state_count,
         name="teacher_state_logits",
@@ -135,8 +152,11 @@ class TeacherBatchSequence(tf.keras.utils.Sequence):
             len(self.positive_targets),
             INPUT_FRAMES,
             FEATURE_BINS,
-        ):
-            raise ValueError("positive arrays must have shapes [N, 260, 40] and [N, 66]")
+        ) or self.positive_targets.ndim != 2:
+            raise ValueError(
+                "positive arrays must have shapes [N, 260, 40] and [N, output_frames]"
+            )
+        self.output_frames = int(self.positive_targets.shape[1])
         if not negative_sources:
             raise ValueError("at least one negative source is required")
         self.negative_sources = tuple(negative_sources)
@@ -210,7 +230,7 @@ class TeacherBatchSequence(tf.keras.utils.Sequence):
 
         x_negative = np.empty((half, INPUT_FRAMES, FEATURE_BINS), dtype=np.float32)
         y_negative = np.full(
-            (half, OUTPUT_FRAMES), self.negative_state, dtype=np.int32
+            (half, self.output_frames), self.negative_state, dtype=np.int32
         )
         for row in range(half):
             source_index = int(

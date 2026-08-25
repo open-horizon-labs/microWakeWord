@@ -71,6 +71,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--sequence-weight", type=float, default=0.0)
     parser.add_argument(
+        "--sequence-teacher-weight",
+        type=float,
+        default=0.0,
+        help="match the teacher's ordered-state completion margin directly",
+    )
+    parser.add_argument(
         "--sequence-every",
         type=int,
         default=10,
@@ -85,6 +91,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         or args.batch_size < 1
         or args.sequence_every < 1
         or args.negative_state not in (0, 1)
+        or args.sequence_teacher_weight < 0
     ):
         parser.error("steps, batch-size, and sequence-every must be positive")
 
@@ -122,6 +129,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 hard_weight=args.hard_weight,
                 teacher_weight=args.teacher_weight,
                 sequence_weight=args.sequence_weight if use_sequence else 0.0,
+                sequence_teacher_weight=(
+                    args.sequence_teacher_weight if use_sequence else 0.0
+                ),
                 sequence_labels=sequence_labels,
             )
         gradients = tape.gradient(loss, student.trainable_variables)
@@ -183,6 +193,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "teacher_weight": args.teacher_weight,
         "negative_state": args.negative_state,
         "sequence_weight": args.sequence_weight,
+        "sequence_teacher_weight": args.sequence_teacher_weight,
         "sequence_every": args.sequence_every,
         "seed": args.seed,
         "best_loss": best_loss,

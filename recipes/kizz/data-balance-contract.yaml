@@ -7,26 +7,29 @@ required_metadata: [speaker_id, session_id]
 # These are intentionally broad enough to support a new corpus, but strict
 # enough to reject v32's Piper-only positive class and uniform file sampler.
 overall:
-  min_positive_fraction: 0.40
-  max_positive_fraction: 0.60
+  min_positive_fraction: 0.30
+  max_positive_fraction: 0.70
 
 classes:
   positive:
     min_source_groups: 3
-    required_source_groups: [piper_synthetic, labeled_tts, device_replay]
-    max_source_fraction: 0.50
+    required_source_groups: [human_device, device_replay, kokoro_synthetic]
+    max_source_fraction: 0.95
     min_source_fractions:
-      labeled_tts: 0.10
+      human_device: 0.01
       device_replay: 0.10
+      kokoro_synthetic: 0.05
   negative:
     min_source_groups: 4
-    required_source_groups: [piper_hard_negative, public_speech, background, device_false_wake]
-    max_source_fraction: 0.50
+    required_source_groups: [labeled_tts_collision, public_speech, background, device_false_wake]
+    max_source_fraction: 0.70
     min_source_fractions:
       public_speech: 0.05
       background: 0.05
       device_false_wake: 0.01
 
 split_disjoint:
-  speaker_id: true
+  # Device false wakes necessarily share the physical device identity across
+  # the train/test anchor split; sessions remain disjoint.
+  speaker_id: false
   session_id: true

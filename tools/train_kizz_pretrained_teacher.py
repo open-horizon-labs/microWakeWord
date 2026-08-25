@@ -15,9 +15,11 @@ from microwakeword.kizz_pretrained_teacher import (
     CONTEXT_SAMPLES,
     TARGET_SAMPLE_RATE,
     build_model,
+    fit_context,
     list_audio_files,
     load_waveform,
     mix_positive_context,
+    mix_positive_context_with_mask,
 )
 from microwakeword.kizz_data_contract import sha256_file as balance_sha256_file
 from microwakeword.kizz_data_contract import validate_balance_manifest
@@ -56,13 +58,55 @@ def load_manifest(path: Path) -> list[dict]:
     return examples
 
 
-def batch_examples(examples, background_paths, *, batch_size, rng):
+def _fit_context_with_mask(waveform):
+    values = fit_context(waveform, context_samples=CONTEXT_SAMPLES)
+    mask = np.zeros(CONTEXT_SAMPLES, dtype=np.int64)
+    mask[: min(len(waveform), CONTEXT_SAMPLES)] = 1
+    return values, mask
+
+
+def _source_weights(specs):
+    weights = {"public_speech": 3.0}
+    for spec in specs:
+        source, separator, value = spec.partition("=")
+        if not separator or not source or float(value) <= 0:
+            raise ValueError(f"invalid --negative-source-weight: {spec!r}")
+        weights[source] = float(value)
+    return weights
+
+
+def batch_examples(
+    examples,
+    background_paths,
+    *,
+    batch_size,
+    rng,
+    negative_source_weights,
+):
     import torch
 
+    positives = [item for item in examples if int(item["label"]) == 1]
+    negatives = [item for item in examples if int(item["label"]) == 0]
+    positive_count = batch_size // 2
+    negative_count = batch_size - positive_count
+    probabilities = np.asarray(
+        [
+            negative_source_weights.get(item.get("source_group"), 1.0)
+            for item in negatives
+        ],
+        dtype=np.float64,
+    )
+    probabilities /= probabilities.sum()
     selected = [
-        examples[int(i)] for i in rng.integers(0, len(examples), size=batch_size)
+        positives[int(i)] for i in rng.integers(0, len(positives), size=positive_count)
     ]
+    selected.extend(
+        negatives[int(i)]
+        for i in rng.choice(len(negatives), size=negative_count, p=probabilities)
+    )
+    rng.shuffle(selected)
     values = []
+    masks = []
     labels = []
     for item in selected:
         waveform = load_waveform(Path(item["path"]), sample_rate=TARGET_SAMPLE_RATE)
@@ -71,18 +115,109 @@ def batch_examples(examples, background_paths, *, batch_size, rng):
                 int(rng.integers(0, len(background_paths)))
             ]
             background = load_waveform(background_path, sample_rate=TARGET_SAMPLE_RATE)
-            waveform = mix_positive_context(waveform, background, rng=rng)
+            waveform, mask = mix_positive_context_with_mask(
+                waveform, background, rng=rng
+            )
         else:
             if len(waveform) > CONTEXT_SAMPLES:
                 start = int(rng.integers(0, len(waveform) - CONTEXT_SAMPLES + 1))
                 waveform = waveform[start : start + CONTEXT_SAMPLES]
+                mask = np.ones(CONTEXT_SAMPLES, dtype=np.int64)
             else:
-                waveform = np.pad(waveform, (0, CONTEXT_SAMPLES - len(waveform)))
+                waveform, mask = _fit_context_with_mask(waveform)
         values.append(waveform)
+        masks.append(mask)
         labels.append(float(item["label"]))
-    return torch.from_numpy(np.asarray(values, dtype=np.float32)), torch.tensor(
-        labels, dtype=torch.float32
+    return (
+        torch.from_numpy(np.asarray(values, dtype=np.float32)),
+        torch.from_numpy(np.asarray(masks, dtype=np.int64)),
+        torch.tensor(labels, dtype=torch.float32),
     )
+
+
+def temporal_auxiliary_loss(frame_logits, labels):
+    """Localize positives while requiring every negative frame to reject."""
+    import torch
+    import torch.nn.functional as F
+
+    valid = torch.isfinite(frame_logits)
+    losses = []
+    positives = labels > 0.5
+    if torch.any(positives):
+        positive_peaks = torch.amax(
+            frame_logits[positives].masked_fill(~valid[positives], -torch.inf), dim=1
+        )
+        losses.append(F.softplus(1.0 - positive_peaks).mean())
+    if torch.any(~positives):
+        negative_frames = frame_logits[~positives][valid[~positives]]
+        if negative_frames.numel():
+            losses.append(F.softplus(negative_frames).mean())
+    if not losses:
+        return frame_logits.new_zeros(())
+    return torch.stack(losses).mean()
+
+
+def validation_scores(model, examples, background_paths, *, device, seed):
+    import torch
+
+    rng = np.random.default_rng(seed)
+    positive_scores = []
+    negative_scores = []
+    negative_seconds = 0.0
+    model.eval()
+    with torch.inference_mode():
+        for item in examples:
+            waveform = load_waveform(Path(item["path"]), sample_rate=TARGET_SAMPLE_RATE)
+            if int(item["label"]):
+                background = load_waveform(
+                    background_paths[int(rng.integers(0, len(background_paths)))],
+                    sample_rate=TARGET_SAMPLE_RATE,
+                )
+                waveform, mask = mix_positive_context_with_mask(
+                    waveform, background, rng=rng
+                )
+            else:
+                negative_seconds += len(waveform) / TARGET_SAMPLE_RATE
+                waveform, mask = _fit_context_with_mask(waveform)
+            inputs = torch.from_numpy(waveform[None]).to(device)
+            attention_mask = torch.from_numpy(mask[None]).to(device)
+            score, _ = model(inputs, attention_mask=attention_mask)
+            target = positive_scores if int(item["label"]) else negative_scores
+            target.append(float(score[0].detach().cpu()))
+    return (
+        np.asarray(positive_scores, dtype=np.float64),
+        np.asarray(negative_scores, dtype=np.float64),
+        negative_seconds,
+    )
+
+
+def validation_point(positive, negative, negative_seconds, *, min_recall, max_faph):
+    thresholds = np.unique(np.concatenate([positive, negative]))
+    candidates = []
+    for threshold in thresholds:
+        recall = float(np.mean(positive >= threshold))
+        false_accepts = int(np.sum(negative >= threshold))
+        faph = false_accepts / max(negative_seconds / 3600.0, 1e-12)
+        if recall >= min_recall and faph <= max_faph:
+            candidates.append((recall, -faph, float(threshold), false_accepts))
+    if candidates:
+        recall, neg_faph, threshold, false_accepts = max(candidates)
+        return {
+            "qualified": True,
+            "recall": recall,
+            "faph": -neg_faph,
+            "threshold": threshold,
+            "false_accepts": false_accepts,
+        }
+    threshold = float(np.quantile(positive, 1.0 - min_recall, method="lower"))
+    false_accepts = int(np.sum(negative >= threshold))
+    return {
+        "qualified": False,
+        "recall": float(np.mean(positive >= threshold)),
+        "faph": false_accepts / max(negative_seconds / 3600.0, 1e-12),
+        "threshold": threshold,
+        "false_accepts": false_accepts,
+    }
 
 
 def train(args: argparse.Namespace) -> dict:
@@ -114,31 +249,74 @@ def train(args: argparse.Namespace) -> dict:
     )
     model.to(device)
     model.train()
+    # Frozen weights are not enough: dropout and layer-normalization behavior
+    # must also be deterministic for a frozen representation.
+    if args.unfreeze_last_n == 0:
+        model.backbone.eval()
     all_examples = load_manifest(args.manifest)
     examples = [item for item in all_examples if item.get("split") == "train"]
+    validation = [item for item in all_examples if item.get("split") == "validation"]
     if not examples:
         raise ValueError("manifest has no train examples for teacher fitting")
+    if not validation:
+        raise ValueError("manifest has no validation examples for checkpoint selection")
     background_paths = list_audio_files(args.background_dir)
+    negative_source_weights = _source_weights(args.negative_source_weight)
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=args.learning_rate, weight_decay=1e-4)
     best_loss = float("inf")
     losses = []
+    validation_history = []
+    best_validation_key = None
     for step in range(args.steps):
-        inputs, labels = batch_examples(
-            examples, background_paths, batch_size=args.batch_size, rng=rng
+        inputs, attention_mask, labels = batch_examples(
+            examples,
+            background_paths,
+            batch_size=args.batch_size,
+            rng=rng,
+            negative_source_weights=negative_source_weights,
         )
-        inputs, labels = inputs.to(device), labels.to(device)
+        inputs = inputs.to(device)
+        attention_mask = attention_mask.to(device)
+        labels = labels.to(device)
         optimizer.zero_grad(set_to_none=True)
-        scores, _ = model(inputs)
-        loss = F.binary_cross_entropy_with_logits(scores, labels)
+        model.train()
+        if args.unfreeze_last_n == 0:
+            model.backbone.eval()
+        scores, frame_logits = model(inputs, attention_mask=attention_mask)
+        classification_loss = F.binary_cross_entropy_with_logits(scores, labels)
+        temporal_loss = temporal_auxiliary_loss(frame_logits, labels)
+        loss = classification_loss + args.temporal_weight * temporal_loss
         loss.backward()
         torch.nn.utils.clip_grad_norm_(trainable, 1.0)
         optimizer.step()
         value = float(loss.detach().cpu())
         losses.append(value)
-        if value < best_loss:
-            best_loss = value
-            torch.save(model.state_dict(), output / "best.pt")
+        if (step + 1) % args.validation_interval == 0 or step == 0:
+            positive_scores, negative_scores, negative_seconds = validation_scores(
+                model,
+                validation,
+                background_paths,
+                device=device,
+                seed=args.seed + step + 1,
+            )
+            point = validation_point(
+                positive_scores,
+                negative_scores,
+                negative_seconds,
+                min_recall=args.min_recall,
+                max_faph=args.max_faph,
+            )
+            validation_history.append({"step": step + 1, **point})
+            validation_key = (
+                int(point["qualified"]),
+                -point["faph"],
+                point["recall"],
+            )
+            if best_validation_key is None or validation_key > best_validation_key:
+                best_validation_key = validation_key
+                best_loss = value
+                torch.save(model.state_dict(), output / "best.pt")
         if step == 0 or (step + 1) % args.log_interval == 0:
             print(
                 json.dumps({"step": step + 1, "loss": value, "best_loss": best_loss}),
@@ -167,6 +345,13 @@ def train(args: argparse.Namespace) -> dict:
         "best_loss": best_loss,
         "last_loss": losses[-1],
         "mean_last_100_loss": float(np.mean(losses[-100:])),
+        "temporal_weight": args.temporal_weight,
+        "negative_source_weights": negative_source_weights,
+        "validation_interval": args.validation_interval,
+        "min_recall": args.min_recall,
+        "max_faph": args.max_faph,
+        "validation_history": validation_history,
+        "best_validation_key": best_validation_key,
     }
     (output / "teacher-training.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n"
@@ -189,8 +374,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=24103)
     parser.add_argument("--device")
     parser.add_argument("--log-interval", type=int, default=50)
+    parser.add_argument("--validation-interval", type=int, default=50)
+    parser.add_argument("--temporal-weight", type=float, default=0.25)
+    parser.add_argument(
+        "--negative-source-weight",
+        action="append",
+        default=[],
+        help="Override negative source sampling weight, e.g. public_speech=3",
+    )
+    parser.add_argument("--min-recall", type=float, default=0.90)
+    parser.add_argument("--max-faph", type=float, default=0.10)
     args = parser.parse_args(argv)
-    if args.steps < 1 or args.batch_size < 2 or args.learning_rate <= 0:
+    if (
+        args.steps < 1
+        or args.batch_size < 4
+        or args.learning_rate <= 0
+        or args.validation_interval < 1
+        or args.temporal_weight < 0
+    ):
         parser.error("invalid training parameters")
     train(args)
     return 0

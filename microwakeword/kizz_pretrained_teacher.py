@@ -19,7 +19,6 @@ from typing import Iterable, Sequence
 
 import numpy as np
 
-
 TARGET_SAMPLE_RATE = 16_000
 CONTEXT_SAMPLES = 32_000
 
@@ -37,10 +36,13 @@ def list_audio_files(root: Path) -> tuple[Path, ...]:
     """Return stable, non-empty WAV/FLAC paths below ``root``."""
     if not root.is_dir():
         raise ValueError(f"audio root does not exist: {root}")
-    paths = tuple(sorted(
-        path for path in root.rglob("*")
-        if path.is_file() and path.suffix.lower() in {".wav", ".flac"}
-    ))
+    paths = tuple(
+        sorted(
+            path
+            for path in root.rglob("*")
+            if path.is_file() and path.suffix.lower() in {".wav", ".flac"}
+        )
+    )
     if not paths:
         raise ValueError(f"audio root contains no WAV/FLAC files: {root}")
     return paths
@@ -79,10 +81,16 @@ def fit_context(
     if values.ndim != 1:
         raise ValueError("waveform must be one-dimensional")
     if len(values) >= context_samples:
-        offset = 0 if start is None else max(0, min(int(start), len(values) - context_samples))
+        offset = (
+            0
+            if start is None
+            else max(0, min(int(start), len(values) - context_samples))
+        )
         return values[offset : offset + context_samples].copy()
     result = np.zeros(context_samples, dtype=np.float32)
-    offset = 0 if start is None else max(0, min(int(start), context_samples - len(values)))
+    offset = (
+        0 if start is None else max(0, min(int(start), context_samples - len(values)))
+    )
     result[offset : offset + len(values)] = values
     return result
 
@@ -115,7 +123,41 @@ def mix_positive_context(
     return output.astype(np.float32)
 
 
-def build_model(backbone_name: str = "microsoft/wavlm-base-plus", *, unfreeze_last_n: int = 0):
+def mix_positive_context_with_mask(
+    positive: np.ndarray,
+    background: np.ndarray,
+    *,
+    rng: np.random.Generator,
+    context_samples: int = CONTEXT_SAMPLES,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return a mixed context and an attention mask for real samples.
+
+    The original D recipe always supplied a full-length input to WavLM, even
+    when a short background had been zero-padded.  The corrected recipe keeps
+    the valid-sample extent explicit so padding cannot become a class cue.
+    """
+    output = fit_context(background, context_samples=context_samples)
+    mask = np.zeros(context_samples, dtype=np.int64)
+    background_length = min(len(np.asarray(background)), context_samples)
+    mask[:background_length] = 1
+    positive = np.asarray(positive, dtype=np.float32)
+    if len(positive) > context_samples:
+        start = int(rng.integers(0, len(positive) - context_samples + 1))
+        positive = positive[start : start + context_samples]
+    max_start = context_samples - len(positive)
+    start = int(rng.integers(0, max_start + 1)) if max_start else 0
+    gain = float(rng.uniform(0.75, 1.0))
+    output[start : start + len(positive)] += gain * positive
+    mask[start : start + len(positive)] = 1
+    peak = float(np.max(np.abs(output)))
+    if peak > 0.99:
+        output *= 0.99 / peak
+    return output.astype(np.float32), mask
+
+
+def build_model(
+    backbone_name: str = "microsoft/wavlm-base-plus", *, unfreeze_last_n: int = 0
+):
     """Build the offline teacher and return ``(model, hidden_size)``.
 
     Imports are lazy so the base microWakeWord package remains TensorFlow-only.
@@ -156,13 +198,23 @@ def build_model(backbone_name: str = "microsoft/wavlm-base-plus", *, unfreeze_la
                 nn.Conv1d(96, 1, kernel_size=1),
             )
 
-        def forward(self, input_values):
-            hidden = self.backbone(input_values).last_hidden_state
+        def forward(self, input_values, attention_mask=None):
+            hidden = self.backbone(
+                input_values=input_values, attention_mask=attention_mask
+            ).last_hidden_state
             hidden = self.representation_norm(hidden)
             frame_logits = self.temporal(hidden.transpose(1, 2)).squeeze(1)
+            if attention_mask is None:
+                frame_mask = torch.ones_like(frame_logits, dtype=torch.bool)
+            else:
+                frame_mask = self.backbone._get_feature_vector_attention_mask(
+                    frame_logits.shape[1], attention_mask
+                )
+                frame_logits = frame_logits.masked_fill(~frame_mask, -torch.inf)
             # Multiple-instance learning: the phrase may occur anywhere in
             # the context, while every frame in a negative must reject it.
-            score = torch.logsumexp(frame_logits, dim=1) - np.log(frame_logits.shape[1])
+            valid_frames = frame_mask.sum(dim=1).clamp_min(1).to(frame_logits.dtype)
+            score = torch.logsumexp(frame_logits, dim=1) - torch.log(valid_frames)
             return score, frame_logits
 
     return KizzPretrainedTeacher(), hidden_size
@@ -177,4 +229,5 @@ __all__ = [
     "list_audio_files",
     "load_waveform",
     "mix_positive_context",
+    "mix_positive_context_with_mask",
 ]

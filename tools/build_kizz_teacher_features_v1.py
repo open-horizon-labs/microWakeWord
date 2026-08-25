@@ -22,8 +22,9 @@ from microwakeword.audio.audio_utils import MicroFrontend
 
 INPUT_FRAMES = 260
 FEATURE_BINS = 40
-OUTPUT_FRAMES = 66
+OUTPUT_FRAMES = 87
 SAMPLES_PER_CALL = 160
+CONTEXT_SAMPLES = 41_920  # 260 frontend frames, including frontend warm-up.
 
 
 def frontend(samples: np.ndarray, sample_rate: int) -> np.ndarray:
@@ -61,15 +62,37 @@ def frontend(samples: np.ndarray, sample_rate: int) -> np.ndarray:
     return np.stack(rows)
 
 
+def fit_waveform_context(samples: np.ndarray, context_samples: int = CONTEXT_SAMPLES) -> np.ndarray:
+    """Place audio in a fixed context before extracting features.
+
+    Padding after feature extraction creates a synthetic, class-correlated
+    tail for short clips.  Pad/crop PCM instead so positives and negatives
+    have the same frontend contract and the model sees real silence where
+    context is unavailable.
+    """
+    values = np.asarray(samples, dtype=np.float32)
+    if values.ndim == 2:
+        values = np.mean(values, axis=1)
+    values = np.clip(values, -1.0, 1.0)
+    if len(values) >= context_samples:
+        start = (len(values) - context_samples) // 2
+        return values[start : start + context_samples]
+    left = (context_samples - len(values)) // 2
+    right = context_samples - len(values) - left
+    return np.pad(values, (left, right))
+
+
 def fixed_window(path: Path) -> np.ndarray:
     samples, rate = sf.read(path, dtype="float32", always_2d=False)
-    values = frontend(samples, rate)
-    if len(values) >= INPUT_FRAMES:
-        start = (len(values) - INPUT_FRAMES) // 2
-        return values[start : start + INPUT_FRAMES]
-    result = np.zeros((INPUT_FRAMES, FEATURE_BINS), dtype=np.float32)
-    result[: len(values)] = values
-    return result
+    if rate != 16_000:
+        samples = resample_poly(samples, 16_000, rate).astype(np.float32)
+    values = frontend(fit_waveform_context(samples), 16_000)
+    if len(values) != INPUT_FRAMES:
+        raise ValueError(
+            f"{path}: canonical PCM context produced {len(values)} frontend "
+            f"frames; expected {INPUT_FRAMES}"
+        )
+    return values
 
 
 def main(argv: Sequence[str] | None = None) -> int:

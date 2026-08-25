@@ -64,6 +64,40 @@ Artifact: `/private/tmp/kizz-training/teacher-d/v2-unfreeze2-500/`
 - Held-out false-wake score maximum: -4.73; again there was no qualified
   operating point.
 
+### Corrected clean-slate-v2 runs
+
+The first clean-slate-v2 D run exposed a real recipe defect: freezing WavLM
+parameters while calling `model.train()` left dropout active in the supposedly
+fixed representation. It also selected `best.pt` by minimum training-batch
+loss rather than by validation detector quality. The corrected trainer now:
+
+- forces a frozen backbone into `eval()` mode;
+- passes explicit padding masks to WavLM;
+- samples balanced positive/negative batches with 3x public-speech negative
+  pressure;
+- adds a temporal localization/rejection auxiliary loss; and
+- selects checkpoints on validation recall/FAPH rather than training loss.
+
+The corrected frozen control (D0) used 1,000 steps, batch size 8, temporal
+weight 0.25, and the same clean-slate-v2 manifest. Its best validation point
+was 90.20% recall at 35.88 FAPH. On the untouched sliding-window test it
+reached 90% recall at 53.77 FAPH.
+
+D1 additionally unfroze the final two WavLM blocks, used learning rate
+`2e-5`, and kept the corrected recipe. Its best validation point was 90.20%
+recall at 14.44 FAPH. On the untouched test it reached 90% recall at 31.75
+FAPH. Neither run produced a qualifying operating point; held-out false-wake
+acceptance is therefore not reported as zero or passable.
+
+Artifacts and reports were kept under:
+
+- `/private/tmp/kizz-training/clean-slate-v2/D-teacher-corrected/`
+- `/private/tmp/kizz-training/clean-slate-v2/D-teacher-corrected-unfreeze2/`
+
+These results revise the diagnosis: the original implementation was partly
+buggy, but correcting it and adapting WavLM still leaves a large ordinary
+speech overlap. D remains rejected for distillation.
+
 ## Decision
 
 D is feasible on the M4 Pro and is genuinely different from the old state
@@ -72,11 +106,11 @@ before distillation. No student was trained from these artifacts and no
 firmware was changed or flashed.
 
 The result does not prove that all pretrained encoders fail. It does prove
-that changing the representation alone does not overcome the current
-positive/negative distribution and event-label recipe. The next D experiment
-would need a measured change such as real device-channel positive mixtures,
-stronger continuous negative sampling, or a teacher objective with explicit
-event localization—not merely more training steps.
+that fixing the first implementation defect, adding explicit temporal
+rejection pressure, and lightly adapting WavLM do not overcome the current
+positive/window/negative boundary. A future D attempt needs a genuinely
+different data or target geometry—not merely more training steps, another
+checkpoint, or more unfreezing.
 
 ## Review and dissent
 

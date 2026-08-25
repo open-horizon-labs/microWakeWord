@@ -48,11 +48,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--seed", type=int, default=24104)
+    parser.add_argument(
+        "--alignment-offset",
+        type=int,
+        default=21,
+        help="Teacher 30-ms frames to skip before the student's first output.",
+    )
+    parser.add_argument("--student-output-frames", type=int, default=66)
     args = parser.parse_args(argv)
     if args.steps < 1 or args.batch_size < 2 or args.batch_size % 2:
         parser.error("steps must be positive and batch-size must be even")
 
-    teacher = build_teacher()
+    positive_target_width = int(
+        np.load(args.positive_targets, mmap_mode="r").shape[1]
+    )
+    if args.alignment_offset < 0 or (
+        args.alignment_offset + args.student_output_frames > positive_target_width
+    ):
+        parser.error("teacher alignment slice does not fit the teacher timeline")
+    teacher = build_teacher(output_frames=positive_target_width)
     teacher.load_weights(args.teacher_weights)
     sequence = TeacherBatchSequence(
         args.positive_features,
@@ -64,17 +78,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     total = args.steps * args.batch_size
     features = np.empty((total, 260, 40), dtype=np.float16)
-    targets = np.empty((total, 66), dtype=np.int8)
+    targets = np.empty((total, args.student_output_frames), dtype=np.int8)
     labels = np.empty((total,), dtype=np.float16)
-    logits = np.empty((total, 66, 23), dtype=np.float16)
+    logits = np.empty((total, args.student_output_frames, 23), dtype=np.float16)
     for step in range(args.steps):
         x, batch = sequence[step]
         start = step * args.batch_size
         end = start + args.batch_size
         features[start:end] = x
-        targets[start:end] = batch["states"]
+        targets[start:end] = batch["states"][:,
+            args.alignment_offset : args.alignment_offset + args.student_output_frames
+        ]
         labels[start:end] = batch["label"]
-        logits[start:end] = teacher.predict(x, verbose=0)
+        teacher_logits = teacher.predict(x, verbose=0)
+        logits[start:end] = teacher_logits[
+            :, args.alignment_offset : args.alignment_offset + args.student_output_frames
+        ]
         if (step + 1) % 50 == 0 or step == 0:
             print(json.dumps({"step": step + 1, "total": args.steps}), flush=True)
 
@@ -102,6 +121,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "seed": args.seed,
         "steps": args.steps,
         "batch_size": args.batch_size,
+        "teacher_output_frames": positive_target_width,
+        "student_output_frames": args.student_output_frames,
+        "alignment_offset_frames": args.alignment_offset,
+        "alignment_basis": "student_valid_receptive_field_offset_64_frames_div_3",
     }
     metadata["cache_sha256"] = hashlib.sha256(
         b"".join(

@@ -23,7 +23,13 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def scores(model, path: Path, batch_size: int) -> np.ndarray:
+def scores(
+    model,
+    path: Path,
+    batch_size: int,
+    alignment_offset: int = 0,
+    score_frames: int | None = None,
+) -> np.ndarray:
     values = np.load(path, mmap_mode="r")
     result = []
     for offset in range(0, len(values), batch_size):
@@ -31,6 +37,8 @@ def scores(model, path: Path, batch_size: int) -> np.ndarray:
             np.asarray(values[offset : offset + batch_size], dtype=np.float32),
             verbose=0,
         )
+        if score_frames is not None:
+            logits = logits[:, alignment_offset : alignment_offset + score_frames]
         result.extend(fast_sequence_scores(logits))
     return np.asarray(result, dtype=np.float64)
 
@@ -43,19 +51,36 @@ def main() -> None:
     p.add_argument("--heldout", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--batch-size", type=int, default=128)
+    p.add_argument("--output-frames", type=int, default=87)
+    p.add_argument("--alignment-offset", type=int, default=0)
+    p.add_argument("--score-frames", type=int)
     p.add_argument("--min-recall", type=float, default=0.90)
     p.add_argument("--max-faph", type=float, default=0.10)
     args = p.parse_args()
+    if args.alignment_offset < 0 or args.score_frames is not None and args.score_frames < 1:
+        p.error("invalid teacher alignment slice")
 
-    model = build_teacher()
+    model = build_teacher(output_frames=args.output_frames)
     model.load_weights(args.model)
     positive = np.concatenate(
-        [scores(model, path, args.batch_size) for path in args.positive]
+        [
+            scores(model, path, args.batch_size, args.alignment_offset, args.score_frames)
+            for path in args.positive
+        ]
     )
     negative = np.concatenate(
-        [scores(model, path, args.batch_size) for path in args.negative]
+        [
+            scores(model, path, args.batch_size, args.alignment_offset, args.score_frames)
+            for path in args.negative
+        ]
     )
-    heldout = scores(model, args.heldout, args.batch_size)
+    heldout = scores(
+        model,
+        args.heldout,
+        args.batch_size,
+        args.alignment_offset,
+        args.score_frames,
+    )
     thresholds = np.unique(np.concatenate([positive, negative]))
     exposure_seconds = len(negative) * 2.6
     candidates = []
@@ -79,6 +104,9 @@ def main() -> None:
         "schema_version": 1,
         "model": str(args.model.resolve()),
         "model_sha256": sha256(args.model),
+        "output_frames": args.output_frames,
+        "alignment_offset": args.alignment_offset,
+        "score_frames": args.score_frames,
         "positive_count": len(positive),
         "negative_count": len(negative),
         "negative_exposure_seconds_assumed": exposure_seconds,
