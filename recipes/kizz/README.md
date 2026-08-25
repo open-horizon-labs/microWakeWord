@@ -14,9 +14,9 @@ story, [Experiments](EXPERIMENTS.md) for the failure boundaries, and the
 [ordered-state v1 outline](ORDERED_STATE_V1.md) for the scratch architecture
 that follows the failed v32 binary reboot.
 
-The current corrected teacher → student run, including PCM-context preparation,
+The corrected teacher → student run, including PCM-context preparation,
 87→66 temporal alignment, qualification, distillation, stateful INT8 scoring,
-and the firmware tensor-contract blocker, is documented in
+experimental firmware integration, and the live-precision failure, is documented in
 [TEACHER_DISTILLATION_ALIGNED_V1.md](TEACHER_DISTILLATION_ALIGNED_V1.md).
 The [clean-slate C/D comparison](CLEAN_SLATE_V2_C_D_RESULTS.md) explains why C
 survived and D was rejected; the [salvage report](SALVAGE_TEACHER_STUDENT_V1.md)

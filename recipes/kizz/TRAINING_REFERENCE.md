@@ -792,7 +792,10 @@ their temporary scripts.
 - physical qualification across other microphone profiles before claiming a
   shared model.
 
-## Recommended next training pass
+## Historical recommended next training pass
+
+The following recommendation was written before the clean-slate teacher/student
+experiment and is preserved as history. It is not the current plan.
 
 Treat v19 as the control. The next iteration is a narrow continuation from its
 checkpoint, not a replacement based on one encouraging live session:
@@ -811,6 +814,19 @@ checkpoint, not a replacement based on one encouraging live session:
 6. Select the cutoff only after the score distributions improve, then repeat the
    physical fresh-speaker challenge before flashing.
 
-The success condition is fewer reviewed false wakes with no follow-up speech,
-while held-out and real-speaker recall stays at least as good as v19. A lower
-false-wake count without that recall guard is not an improvement.
+The success condition recorded at that time was fewer reviewed false wakes with
+no follow-up speech while held-out and real-speaker recall stayed at least as
+good as v19. A lower false-wake count without that recall guard was not an
+improvement.
+
+## Current disposition
+
+The clean-slate teacher/student experiment followed this historical
+recommendation but did not produce a deployable model. Its student looked clean
+on the short offline evaluation and then produced frequent false positives on
+StackChan. Deployment therefore reverts to the ESP-IDF wake-word model.
+
+The next training run must add representative natural human positives and
+long-form household/TV negatives, then qualify the exact firmware-shaped
+artifact in live use. Do not tune the discarded student into deployment by
+threshold alone.

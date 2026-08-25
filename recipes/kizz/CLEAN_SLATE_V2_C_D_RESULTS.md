@@ -2,6 +2,12 @@
 
 Date: 2026-08-24
 
+This is the pre-distillation comparison record. The later aligned C teacher and
+student are documented in
+[`TEACHER_DISTILLATION_ALIGNED_V1.md`](TEACHER_DISTILLATION_ALIGNED_V1.md).
+That student was tested on StackChan and rejected because live false positives
+made its precision unacceptable.
+
 ## Aim
 
 Find a teacher that can separate the Kizz wake phrase from ordinary household
@@ -73,9 +79,10 @@ Same-metric fixed-window result:
 The earlier full sliding-window D report also failed: no operating point met
 90% recall and `<=0.10` false accepts/hour. D is not eligible for distillation.
 
-## Decision
+## Decision at this phase
 
-Proceed with C as the only surviving teacher candidate. Before distillation:
+At this phase, proceed with C as the only surviving teacher candidate. Before
+distillation:
 
 1. score C over the same raw test audio with bounded streaming sliding windows;
 2. require the hard false-activation gate and zero held-out household accepts;

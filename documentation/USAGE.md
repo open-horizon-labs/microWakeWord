@@ -58,7 +58,8 @@ The rules for the next run are:
    reset and carried between audio streams as appropriate.
 4. Keep live false-wake captures quarantined until human review promotes them.
 5. Treat natural human positives, long-form household/TV audio, and physical
-   artifact tests as remaining qualification work.
+   artifact tests as qualification requirements. The current student failed
+   the physical test and must not be deployed.
 
 ## Training workflow at a glance
 

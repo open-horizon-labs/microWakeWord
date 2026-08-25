@@ -2,6 +2,11 @@
 
 Date: 2026-08-24
 
+This report records the clean-slate restart before the later C distillation and
+hardware test. Its “no distillation or firmware flash” statements describe the
+decision at that time; the later student was flashed experimentally and failed
+live precision. See [the final teacher → student salvage report](SALVAGE_TEACHER_STUDENT_V1.md).
+
 ## Salvage report
 
 ### Reason
@@ -98,7 +103,7 @@ eligible inputs and will cause missing-path failures if accidentally reused.
   prototype; it must gain source-manifest hashing and C feature provenance
   before being used for a production run.
 
-## Fresh-start recommendation
+## Fresh-start recommendation at that time
 
 Do not train another teacher from the current artifacts. First build a new
 source inventory, deduplicate it by content hash, and select a small reviewed
@@ -106,3 +111,9 @@ corpus from fresh device recordings, fresh labeled positives, fresh public
 speech, and fresh ambient/background negatives. Materialize C features from
 that exact manifest, bind the hash into the feature manifest, then run C and D
 once each. Keep the old v19/v32/D artifacts only as comparison controls.
+
+That recommendation was followed by the clean-slate C/D comparison and aligned
+distillation. The current disposition is stricter: keep the ESP-IDF wake-word
+model in deployment, treat the distilled student as rejected, and collect more
+representative household positives and long-form negatives before another
+firmware candidate.

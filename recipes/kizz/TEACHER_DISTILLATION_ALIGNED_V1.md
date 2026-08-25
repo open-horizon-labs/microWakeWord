@@ -1,6 +1,9 @@
 # Kizz aligned teacher → student experiment
 
-Status: **measured candidate; not firmware-ready** on 2026-08-24.
+Status: **measured offline candidate; rejected for live deployment** on
+2026-08-25. This record began before firmware integration. The student was
+later integrated and tested on StackChan; frequent live false wakes made its
+precision unacceptable, so deployment reverted to the ESP-IDF wake-word model.
 
 This is the reproducible record for the corrected Recipe C teacher, aligned
 distillation, and fixed-context/stateful-INT8 evaluation. It supersedes the
@@ -204,10 +207,9 @@ The teacher-caught/student-missed diagnostic found 49 clips: 42 noisy overlays,
 0.673 s versus 0.871 s for teacher catches. The 252 test positives remain
 frozen and must not be used for hard-positive retraining.
 
-## Firmware readiness
+## Firmware integration and live result
 
-The student is not a drop-in replacement yet. Current firmware expects a scalar
-wake probability:
+At the time of this experiment, firmware expected a scalar wake probability:
 
 ```text
 input:  [1, 3, 40] int8
@@ -221,9 +223,10 @@ input:  [1, 3, 40] int8
 output: [1, 1, 23] uint8
 ```
 
-Firmware must add the small ordered-state recurrence and use the 23-state model
-directly before this artifact can be flashed. Replacing `hiphi_kizz.tflite`
-without that decoder is unsafe and was not attempted.
+The ordered-state decoder was later added and the artifact was flashed for an
+explicit hardware test. That test produced frequent false positives in the
+household environment. The artifact is therefore preserved as research
+evidence, not a deployable replacement for `hiphi_kizz.tflite`.
 
 ## Guardrails
 
@@ -231,8 +234,8 @@ without that decoder is unsafe and was not attempted.
 - Do not train on the 252 test positives or 15 held-out false wakes.
 - Do not lower the teacher gate silently; 88% is explicit and experimental.
 - Do not infer scalar-probability compatibility from matching input shapes.
-- Do not flash the 23-state artifact until the firmware decoder and exact
-  StackChan build/boot test exist.
+- The firmware decoder and exact StackChan test now exist, but the live result
+  failed; do not deploy this artifact.
 - Preserve this INT8 artifact as the current student control.
 
 ## Reproduction map
