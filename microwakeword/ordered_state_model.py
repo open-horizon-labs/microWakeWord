@@ -161,11 +161,16 @@ def model(flags, shape, batch_size):
         )(net)
         net = tf.keras.layers.Activation("relu")(net)
 
-    for filters, repeat, kernel_sizes, residual_enabled in zip(
-        pointwise_filters,
-        repeat_in_block,
-        mixconv_kernel_sizes,
-        residual_connections,
+    blocks = list(
+        zip(
+            pointwise_filters,
+            repeat_in_block,
+            mixconv_kernel_sizes,
+            residual_connections,
+        )
+    )
+    for block_index, (filters, repeat, kernel_sizes, residual_enabled) in enumerate(
+        blocks
     ):
         if residual_enabled:
             residual = tf.keras.layers.Conv2D(
@@ -173,7 +178,7 @@ def model(flags, shape, batch_size):
             )(net)
             residual = tf.keras.layers.BatchNormalization()(residual)
 
-        for _ in range(repeat):
+        for repeat_index in range(repeat):
             if max(kernel_sizes) > 1:
                 net = MixConv(kernel_size=kernel_sizes)(net)
             net = tf.keras.layers.Conv2D(
@@ -185,7 +190,12 @@ def model(flags, shape, batch_size):
                     residual
                 )
                 net = net + residual
-            net = tf.keras.layers.Activation("relu")(net)
+            activation_name = (
+                "encoder_hidden"
+                if block_index == len(blocks) - 1 and repeat_index == repeat - 1
+                else None
+            )
+            net = tf.keras.layers.Activation("relu", name=activation_name)(net)
 
     logits = tf.keras.layers.Conv2D(
         filters=flags.num_states,

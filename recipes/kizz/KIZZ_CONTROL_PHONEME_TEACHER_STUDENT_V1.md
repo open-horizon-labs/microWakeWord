@@ -148,11 +148,18 @@ The compact-phone contract hash is
 
 ### Multichannel checkpoint selection
 
-Checkpoint selection is validation-only and uses the ordered key:
+The original v11 checkpoint selection was validation-only and used the ordered
+key:
 
 ```text
 (qualified, zero_false_accept_recall, recall, separation)
 ```
+
+That selector was later found not to be deployment-equivalent: it consumed raw
+logits as log probabilities and maximized over internal endpoints. It is
+preserved here as v11 provenance, not as the current contract. The corrected
+selector and rescored A/B/C/D tournament are documented in
+[`DISTILLATION_TOURNAMENT_V1.md`](DISTILLATION_TOURNAMENT_V1.md).
 
 Ties resolve to the earliest evaluation step. The multichannel validation set
 contains 1,131 items: 1,119 clean items and 12 device positives. The selected

@@ -24,6 +24,11 @@ The corrected teacher → student run, including PCM-context preparation,
 87→66 temporal alignment, qualification, distillation, stateful INT8 scoring,
 experimental firmware integration, and the live-precision failure, is documented in
 [TEACHER_DISTILLATION_ALIGNED_V1.md](TEACHER_DISTILLATION_ALIGNED_V1.md).
+The later [Kizz Control distillation tournament](DISTILLATION_TOURNAMENT_V1.md)
+implements temperature KD, sequence-conditioned occupation KD, intermediate
+representation KD, and a bounded temporal-residual student. D3 was the best
+float candidate, but no candidate passed the frozen promotion gate; therefore
+none was quantized, packaged, or flashed.
 The [clean-slate C/D comparison](CLEAN_SLATE_V2_C_D_RESULTS.md) explains why C
 survived and D was rejected; the [salvage report](SALVAGE_TEACHER_STUDENT_V1.md)
 is the restart contract.

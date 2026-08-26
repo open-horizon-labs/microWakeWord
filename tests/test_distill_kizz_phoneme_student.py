@@ -16,8 +16,10 @@ from tools.distill_kizz_phoneme_student import (
     WINDOW_LENGTHS_FRAMES,
     _student_scores,
     checkpoint_binding,
+    checkpoint_selection_key,
     collision_path_supervision,
     deployment_path_scores,
+    delayed_occupation_loss,
     distillation_loss,
     expected_schedule_counts,
     map_ordered_targets,
@@ -31,14 +33,95 @@ from tools.distill_kizz_phoneme_student import (
     require_teacher_gates,
     sha256_file,
     student_architecture_contract,
+    student_flags_for_architecture,
     teacher_sequence_score_targets,
     strict_collision_negative_loss,
+    teacher_sequence_ranking_loss,
+    utterance_representation_loss,
 )
 from tools.package_kizz_phoneme_student_firmware import EXPECTED_WINDOWS
 from tools.qualify_kizz_phoneme_student import WINDOW_LENGTHS as QUALIFICATION_WINDOWS
+from tools.qualify_kizz_phoneme_student import score_features
 
 
 class DistillKizzPhonemeStudentTests(unittest.TestCase):
+    def test_checkpoint_selection_prefers_fewer_false_accepts_at_recall_floor(self):
+        common = {"qualified": False, "recall": 0.90}
+        fewer_false_accepts = checkpoint_selection_key(
+            {**common, "false_accepts_at_recall_floor": 2}, 0.75, -0.5
+        )
+        more_false_accepts = checkpoint_selection_key(
+            {**common, "false_accepts_at_recall_floor": 8}, 0.75, 0.5
+        )
+        self.assertGreater(fewer_false_accepts, more_false_accepts)
+
+    def test_checkpoint_forward_sum_scores_match_deployment_normalization(self):
+        contract = compact_phone_contract()
+        rng = np.random.default_rng(238)
+        logits = rng.normal(size=(1, 66, len(contract["tokens"]))).astype(np.float32)
+        offsets = rng.normal(size=(1, 66, 1)).astype(np.float32) * 10
+
+        class FixedModel:
+            def __call__(self, values, training=False):
+                return np.repeat(logits + offsets, len(values), axis=0)
+
+        features = np.zeros((1, 260, 40), dtype=np.float32)
+        selected = _student_scores(
+            FixedModel(),
+            features,
+            contract,
+            1,
+            decoder_algorithm="forward_sum_ctc",
+        )[0]
+        deployed = score_features(
+            FixedModel(),
+            features[0],
+            contract,
+            decoder_algorithm="forward_sum_ctc",
+        )
+        self.assertAlmostEqual(float(selected), float(deployed), places=5)
+
+    def test_teacher_sequence_ranking_transfers_cross_label_order(self):
+        import tensorflow as tf
+
+        teacher = tf.constant([1.0, -1.0])
+        mask = tf.ones((2,))
+        ordered = teacher_sequence_ranking_loss(tf.constant([1.0, -1.0]), teacher, mask)
+        reversed_order = teacher_sequence_ranking_loss(
+            tf.constant([-1.0, 1.0]), teacher, mask
+        )
+        self.assertLess(float(ordered), float(reversed_order))
+
+    def test_projected_representation_loss_accepts_signed_teacher_space(self):
+        import tensorflow as tf
+
+        student = tf.constant([[1.0, -1.0], [-1.0, 1.0]])
+        teacher = tf.constant([[1.0, -1.0], [-1.0, 1.0]])
+        loss = utterance_representation_loss(student, teacher, tf.constant([1.0, 1.0]))
+        self.assertAlmostEqual(float(loss), 0.0, places=6)
+
+    def test_delayed_occupation_selects_one_causal_sequence_shift(self):
+        import tensorflow as tf
+
+        teacher = np.full((1, 4, 3), -20.0, dtype=np.float32)
+        student = np.full((1, 4, 3), -20.0, dtype=np.float32)
+        teacher[0, np.arange(4), [0, 1, 2, 0]] = 0.0
+        student[0, np.arange(4), [2, 0, 1, 2]] = 0.0
+        no_delay = delayed_occupation_loss(
+            tf.constant(student),
+            tf.constant(teacher),
+            tf.ones((1,)),
+            max_delay_frames=0,
+        )
+        one_frame = delayed_occupation_loss(
+            tf.constant(student),
+            tf.constant(teacher),
+            tf.ones((1,)),
+            max_delay_frames=1,
+        )
+        self.assertGreater(float(no_delay), 10.0)
+        self.assertLess(float(one_frame), 1e-4)
+
     def test_explicit_collision_loss_cannot_escape_through_low_canonical_fit(self):
         import tensorflow as tf
 
@@ -56,15 +139,39 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         contract = compact_phone_contract()
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.json"
-            source.write_text(json.dumps({"examples": [
-                {"source_id": "patrol", "semantic_label": "phonetic_collision", "render_text": "Kizz patrol"},
-                {"source_id": "quiz", "semantic_label": "phonetic_collision", "render_text": "Quiz Control"},
-            ]}))
-            indexes, report = collision_path_supervision([
-                {"source_group": "kizz_control_phonetic_collision", "parent_source_id": "patrol"},
-                {"source_group": "kizz_control_phonetic_collision", "parent_source_id": "quiz"},
-                {"source_group": "public_speech"},
-            ], source, contract)
+            source.write_text(
+                json.dumps(
+                    {
+                        "examples": [
+                            {
+                                "source_id": "patrol",
+                                "semantic_label": "phonetic_collision",
+                                "render_text": "Kizz patrol",
+                            },
+                            {
+                                "source_id": "quiz",
+                                "semantic_label": "phonetic_collision",
+                                "render_text": "Quiz Control",
+                            },
+                        ]
+                    }
+                )
+            )
+            indexes, report = collision_path_supervision(
+                [
+                    {
+                        "source_group": "kizz_control_phonetic_collision",
+                        "parent_source_id": "patrol",
+                    },
+                    {
+                        "source_group": "kizz_control_phonetic_collision",
+                        "parent_source_id": "quiz",
+                    },
+                    {"source_group": "public_speech"},
+                ],
+                source,
+                contract,
+            )
         path_order = list(contract["collision_paths"])
         self.assertEqual(indexes.tolist(), [path_order.index("kizpatrol"), -1, -1])
         self.assertEqual(report["generic_text_counts"], {"Quiz Control": 1})
@@ -109,14 +216,14 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         import tensorflow as tf
 
         contract = compact_phone_contract()
-        logits = np.random.default_rng(238).normal(
-            size=(2, 66, len(contract["tokens"]))
-        ).astype(np.float32)
+        logits = (
+            np.random.default_rng(238)
+            .normal(size=(2, 66, len(contract["tokens"])))
+            .astype(np.float32)
+        )
         canonical, margin = deployment_path_scores(tf.constant(logits), contract)
         normalized = logits - np.max(logits, axis=-1, keepdims=True)
-        log_probs = normalized - np.log(
-            np.exp(normalized).sum(axis=-1, keepdims=True)
-        )
+        log_probs = normalized - np.log(np.exp(normalized).sum(axis=-1, keepdims=True))
         expected = [
             exhaustive_suffix_score(
                 sequence,
@@ -135,13 +242,13 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
 
     def test_teacher_sequence_targets_record_canonical_fit_and_margin(self):
         contract = compact_phone_contract()
-        logits = np.random.default_rng(239).normal(
-            size=(1, 66, len(contract["tokens"]))
-        ).astype(np.float32)
-        normalized = logits - np.max(logits, axis=-1, keepdims=True)
-        log_probs = normalized - np.log(
-            np.exp(normalized).sum(axis=-1, keepdims=True)
+        logits = (
+            np.random.default_rng(239)
+            .normal(size=(1, 66, len(contract["tokens"])))
+            .astype(np.float32)
         )
+        normalized = logits - np.max(logits, axis=-1, keepdims=True)
+        log_probs = normalized - np.log(np.exp(normalized).sum(axis=-1, keepdims=True))
         targets = teacher_sequence_score_targets(log_probs, contract)
         expected = exhaustive_suffix_score(
             log_probs[0],
@@ -157,16 +264,16 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         import tensorflow as tf
 
         contract = compact_phone_contract()
-        logits = np.random.default_rng(240).normal(
-            size=(2, 66, len(contract["tokens"]))
-        ).astype(np.float32)
+        logits = (
+            np.random.default_rng(240)
+            .normal(size=(2, 66, len(contract["tokens"])))
+            .astype(np.float32)
+        )
         canonical, margin = deployment_path_scores(
             tf.constant(logits), contract, algorithm="forward_sum_ctc"
         )
         normalized = logits - np.max(logits, axis=-1, keepdims=True)
-        log_probs = normalized - np.log(
-            np.exp(normalized).sum(axis=-1, keepdims=True)
-        )
+        log_probs = normalized - np.log(np.exp(normalized).sum(axis=-1, keepdims=True))
         expected = []
         for sequence in log_probs:
             candidates = [
@@ -199,9 +306,11 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         import tensorflow as tf
 
         contract = compact_phone_contract()
-        logits = np.random.default_rng(241).normal(
-            size=(2, 66, len(contract["tokens"]))
-        ).astype(np.float32)
+        logits = (
+            np.random.default_rng(241)
+            .normal(size=(2, 66, len(contract["tokens"])))
+            .astype(np.float32)
+        )
         endpoints = np.asarray([38, 57], dtype=np.int32)
         canonical, margin = deployment_path_scores(
             tf.constant(logits),
@@ -230,30 +339,38 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             clip = root / "clip.json"
-            clip.write_text(json.dumps({
-                "gate_scope": "teacher_clip_and_anchor_prequalification",
-                "qualified": True,
-                "phones": {"phrase_id": "kizz-control"},
-                "counts": {"natural_positive": 24, "false_wake_accepted": 0},
-                "validation_operating_point": {"recall": 0.95},
-                "model": {
-                    "weights_sha256": "a" * 64,
-                    "config_sha256": "c" * 64,
-                    "tokenizer_vocab_sha256": "v" * 64,
-                },
-            }))
+            clip.write_text(
+                json.dumps(
+                    {
+                        "gate_scope": "teacher_clip_and_anchor_prequalification",
+                        "qualified": True,
+                        "phones": {"phrase_id": "kizz-control"},
+                        "counts": {"natural_positive": 24, "false_wake_accepted": 0},
+                        "validation_operating_point": {"recall": 0.95},
+                        "model": {
+                            "weights_sha256": "a" * 64,
+                            "config_sha256": "c" * 64,
+                            "tokenizer_vocab_sha256": "v" * 64,
+                        },
+                    }
+                )
+            )
             continuous = root / "continuous.json"
-            continuous.write_text(json.dumps({
-                "gate_scope": "untouched_continuous_qualification",
-                "qualified": True,
-                "teacher_qualification": {"report_sha256": sha256_file(clip)},
-                "counts": {"exposure_hours": 100.0, "faph_upper_95": 0.03},
-                "model": {
-                    "weights_sha256": "a" * 64,
-                    "config_sha256": "c" * 64,
-                    "tokenizer_vocab_sha256": "v" * 64,
-                },
-            }))
+            continuous.write_text(
+                json.dumps(
+                    {
+                        "gate_scope": "untouched_continuous_qualification",
+                        "qualified": True,
+                        "teacher_qualification": {"report_sha256": sha256_file(clip)},
+                        "counts": {"exposure_hours": 100.0, "faph_upper_95": 0.03},
+                        "model": {
+                            "weights_sha256": "a" * 64,
+                            "config_sha256": "c" * 64,
+                            "tokenizer_vocab_sha256": "v" * 64,
+                        },
+                    }
+                )
+            )
             require_teacher_gates(clip, continuous)
             payload = json.loads(continuous.read_text())
             payload["teacher_qualification"]["report_sha256"] = "b" * 64
@@ -267,7 +384,10 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         provenance = {
             "states_per_phone": 2,
             "state_count": topology.state_count,
-            "wake_phrase": {"phrase_id": "kizz-control", "phones": list(KIZZ_CONTROL.phones)},
+            "wake_phrase": {
+                "phrase_id": "kizz-control",
+                "phones": list(KIZZ_CONTROL.phones),
+            },
             "target_frame_times_seconds": (0.015 + 0.030 * np.arange(87)).tolist(),
         }
         values = np.full((1, 87), topology.background_index, dtype=np.int32)
@@ -277,7 +397,9 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         )
         output_positions = list(range(20, 20 + topology.state_count))
         for state_id, output_position in enumerate(output_positions):
-            source_position = int(np.abs(target_times - student_times[output_position]).argmin())
+            source_position = int(
+                np.abs(target_times - student_times[output_position]).argmin()
+            )
             values[0, source_position] = state_id
         mapped = map_ordered_targets(values, provenance, contract)
         self.assertEqual(mapped.shape, (1, 66))
@@ -295,7 +417,10 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         provenance = {
             "states_per_phone": 2,
             "state_count": 22,
-            "wake_phrase": {"phrase_id": "kizz-control", "phones": list(KIZZ_CONTROL.phones)},
+            "wake_phrase": {
+                "phrase_id": "kizz-control",
+                "phones": list(KIZZ_CONTROL.phones),
+            },
             "target_frame_times_seconds": (0.015 + 0.030 * np.arange(87)).tolist(),
         }
         values = np.zeros((1, 87), dtype=np.int32)
@@ -304,19 +429,36 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "state_count"):
             map_ordered_targets(values, {**provenance, "state_count": 23}, contract)
         with self.assertRaisesRegex(ValueError, "phone topology"):
-            map_ordered_targets(values, {**provenance, "wake_phrase": {**provenance["wake_phrase"], "phones": list(KIZZ_CONTROL.phones[:-1])}}, contract)
+            map_ordered_targets(
+                values,
+                {
+                    **provenance,
+                    "wake_phrase": {
+                        **provenance["wake_phrase"],
+                        "phones": list(KIZZ_CONTROL.phones[:-1]),
+                    },
+                },
+                contract,
+            )
 
-    def test_ordered_overlay_target_mapping_rejects_timeline_shape_and_unexpected_state(self):
+    def test_ordered_overlay_target_mapping_rejects_timeline_shape_and_unexpected_state(
+        self,
+    ):
         contract = compact_phone_contract()
         provenance = {
             "states_per_phone": 2,
             "state_count": 22,
-            "wake_phrase": {"phrase_id": "kizz-control", "phones": list(KIZZ_CONTROL.phones)},
+            "wake_phrase": {
+                "phrase_id": "kizz-control",
+                "phones": list(KIZZ_CONTROL.phones),
+            },
             "target_frame_times_seconds": (0.015 + 0.030 * np.arange(87)).tolist(),
         }
         values = np.zeros((1, 87), dtype=np.int32)
         with self.assertRaisesRegex(ValueError, "timeline"):
-            map_ordered_targets(values, {**provenance, "target_frame_times_seconds": [0.0]}, contract)
+            map_ordered_targets(
+                values, {**provenance, "target_frame_times_seconds": [0.0]}, contract
+            )
         values[0, 0] = 22
         with self.assertRaisesRegex(ValueError, "unexpected"):
             map_ordered_targets(values, provenance, contract)
@@ -329,11 +471,19 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
             binding = checkpoint_binding(root, 25, (0.9, 1.2))
             self.assertEqual(binding["selected_checkpoint"], "best")
             self.assertEqual(binding["best_step"], 25)
-            self.assertEqual(binding["weights_sha256"], sha256_file(root / "best.weights.h5"))
-            self.assertEqual(binding["best_weights"]["sha256"], sha256_file(root / "best.weights.h5"))
-            self.assertEqual(binding["last_weights"]["sha256"], sha256_file(root / "last.weights.h5"))
+            self.assertEqual(
+                binding["weights_sha256"], sha256_file(root / "best.weights.h5")
+            )
+            self.assertEqual(
+                binding["best_weights"]["sha256"], sha256_file(root / "best.weights.h5")
+            )
+            self.assertEqual(
+                binding["last_weights"]["sha256"], sha256_file(root / "last.weights.h5")
+            )
             (root / "best.weights.h5").write_bytes(b"changed")
-            self.assertNotEqual(binding["best_weights"]["sha256"], sha256_file(root / "best.weights.h5"))
+            self.assertNotEqual(
+                binding["best_weights"]["sha256"], sha256_file(root / "best.weights.h5")
+            )
 
     def test_checkpoint_binding_requires_both_emitted_files(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -346,14 +496,28 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(sum(first[0].values()), 7 * 8)
         self.assertEqual(sum(first[1].values()), 7 * 8)
-        self.assertEqual(set(first[0]), {"assemblyai", "deepgram", "elevenlabs", "kokoro"})
-        self.assertEqual(set(first[1]), {"public_speech", "kizz_control_phonetic_collision", "device_collision", "no_speech"})
+        self.assertEqual(
+            set(first[0]), {"assemblyai", "deepgram", "elevenlabs", "kokoro"}
+        )
+        self.assertEqual(
+            set(first[1]),
+            {
+                "public_speech",
+                "kizz_control_phonetic_collision",
+                "device_collision",
+                "no_speech",
+            },
+        )
         variant_counts = first[2]
         self.assertEqual(len(variant_counts), 12)
-        self.assertLessEqual(max(variant_counts.values()) - min(variant_counts.values()), 1)
+        self.assertLessEqual(
+            max(variant_counts.values()) - min(variant_counts.values()), 1
+        )
         self.assertEqual(sum(variant_counts.values()), 7 * 8)
         provider_counts = first[0]
-        self.assertLessEqual(max(provider_counts.values()) - min(provider_counts.values()), 1)
+        self.assertLessEqual(
+            max(provider_counts.values()) - min(provider_counts.values()), 1
+        )
 
     def test_directory_provenance_hash_changes_when_member_changes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -373,7 +537,9 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
             qualification.write_text('{"qualified": true}\n')
             cache = {
                 "manifest_sha256": "m" * 64,
-                "provenance": {"teacher_qualification": {"sha256": sha256_file(qualification)}},
+                "provenance": {
+                    "teacher_qualification": {"sha256": sha256_file(qualification)}
+                },
             }
             require_cache_binding(cache, qualification, "m" * 64)
             cache["provenance"]["teacher_qualification"]["sha256"] = "x" * 64
@@ -400,9 +566,7 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
             cache = {
                 "manifest_sha256": "m" * 64,
                 "model": {"revision": "r", "weights_sha256": "w"},
-                "provenance": {
-                    "teacher_qualification": {"sha256": source_hash}
-                },
+                "provenance": {"teacher_qualification": {"sha256": source_hash}},
             }
             require_cache_binding(cache, qualification, "m" * 64)
             cache["model"]["weights_sha256"] = "different"
@@ -421,7 +585,9 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
                 self.seen_shape = np.asarray(features).shape
                 return read_only_logits
 
-        score = _student_scores(FakeModel(), np.zeros((1, 260, 40), dtype=np.float32), contract, 1)[0]
+        score = _student_scores(
+            FakeModel(), np.zeros((1, 260, 40), dtype=np.float32), contract, 1
+        )[0]
         decoder = student_decoder_contract(contract)
         expected = exhaustive_suffix_score(
             logits[0],
@@ -438,12 +604,23 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         contract = compact_phone_contract()
         decoder = student_decoder_contract(contract)
         self.assertEqual(decoder["algorithm"], "max_add_ctc_viterbi")
-        self.assertEqual(decoder["implementation"], "microwakeword.kizz_viterbi_decoder.exhaustive_suffix_score")
-        self.assertEqual(student_decoder_contract_hash(contract), student_decoder_contract_hash(dict(contract)))
+        self.assertEqual(
+            decoder["implementation"],
+            "microwakeword.kizz_viterbi_decoder.exhaustive_suffix_score",
+        )
+        self.assertEqual(
+            student_decoder_contract_hash(contract),
+            student_decoder_contract_hash(dict(contract)),
+        )
 
     def test_device_channel_positives_are_partitioned_from_clean(self):
         rows = [
-            {"split": "train", "label": 1, "provider": provider, "source_group": source_group}
+            {
+                "split": "train",
+                "label": 1,
+                "provider": provider,
+                "source_group": source_group,
+            }
             for provider in ("assemblyai", "deepgram", "elevenlabs", "kokoro")
             for source_group in ("synthetic_clean", "device_channel_positive")
         ]
@@ -456,13 +633,32 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
 
     def test_overlay_parents_must_exactly_match_active_clean_train_inventory(self):
         corpus = [
-            {"split": "train", "label": 1, "source_group": "clean", "provider": "assemblyai", "source_audio_sha256": "a" * 64},
-            {"split": "train", "label": 1, "source_group": "device_channel_positive", "provider": "assemblyai", "source_audio_sha256": "d" * 64},
+            {
+                "split": "train",
+                "label": 1,
+                "source_group": "clean",
+                "provider": "assemblyai",
+                "source_audio_sha256": "a" * 64,
+            },
+            {
+                "split": "train",
+                "label": 1,
+                "source_group": "device_channel_positive",
+                "provider": "assemblyai",
+                "source_audio_sha256": "d" * 64,
+            },
         ]
-        provenance = {"examples": [
-            {"split": "train", "variant": variant, "provider": "assemblyai", "source_audio_sha256": "a" * 64}
-            for variant in ("overlay-0", "overlay-1", "overlay-2", "overlay-3")
-        ]}
+        provenance = {
+            "examples": [
+                {
+                    "split": "train",
+                    "variant": variant,
+                    "provider": "assemblyai",
+                    "source_audio_sha256": "a" * 64,
+                }
+                for variant in ("overlay-0", "overlay-1", "overlay-2", "overlay-3")
+            ]
+        }
         binding = require_overlay_parent_binding(corpus, provenance)
         self.assertEqual(binding["parents"], 1)
         bad = json.loads(json.dumps(provenance))
@@ -477,6 +673,25 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         self.assertEqual(architecture["output_frames"], 66)
         self.assertEqual(architecture["output_count"], len(contract["tokens"]))
         self.assertEqual(architecture["stride"], 3)
+
+    def test_temporal_residual_architecture_is_distinct_and_shape_compatible(self):
+        from microwakeword.ordered_state_model import model as build_student
+
+        contract = compact_phone_contract()
+        control = student_architecture_contract(contract)
+        residual = student_architecture_contract(contract, "temporal_residual")
+        self.assertNotEqual(residual, control)
+        self.assertEqual(residual["architecture_id"], "temporal_residual")
+        self.assertEqual(residual["residual_connection"], [1, 1, 1, 1, 1])
+        model = build_student(
+            student_flags_for_architecture(
+                "temporal_residual", len(contract["tokens"])
+            ),
+            (260, 40),
+            None,
+        )
+        self.assertEqual(model.output_shape, (None, 66, len(contract["tokens"])))
+        self.assertIsNotNone(model.get_layer("encoder_hidden"))
 
 
 if __name__ == "__main__":
