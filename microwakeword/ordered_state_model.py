@@ -140,10 +140,8 @@ def model(flags, shape, batch_size):
     }
     if len(lengths) != 1:
         raise ValueError("all ordered-state block parameter lists must match")
-    if flags.num_states != KIZZ_TOPOLOGY.state_count:
-        raise ValueError(
-            f"Kizz ordered-state model requires {KIZZ_TOPOLOGY.state_count} states"
-        )
+    if flags.num_states < 3:
+        raise ValueError("ordered-state model needs background, silence, and a path")
 
     input_audio = tf.keras.layers.Input(shape=shape, batch_size=batch_size)
     net = tf.keras.ops.expand_dims(input_audio, axis=2)

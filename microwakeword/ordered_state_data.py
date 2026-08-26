@@ -51,6 +51,7 @@ class OrderedStateExample:
     text: str | None = None
     phrase_span: TimeSpan | None = None
     phone_spans: tuple[PhoneSpan, ...] = ()
+    expected_phones: tuple[str, ...] = CANONICAL_KIZZ_PHONES
 
     def __post_init__(self):
         if not self.source_id:
@@ -67,9 +68,9 @@ class OrderedStateExample:
             )
         if self.phone_spans:
             phones = tuple(span.phone for span in self.phone_spans)
-            if phones != CANONICAL_KIZZ_PHONES:
+            if phones != self.expected_phones:
                 raise ValueError(
-                    "positive phone sequence must exactly match canonical Hi-Fi Kizz"
+                    "positive phone sequence must exactly match canonical selected phrase"
                 )
             previous_end = -1.0
             for span in self.phone_spans:
@@ -83,7 +84,11 @@ class OrderedStateExample:
                 previous_end = span.end_s
 
 
-def example_from_mapping(record: Mapping) -> OrderedStateExample:
+def example_from_mapping(
+    record: Mapping,
+    *,
+    expected_phones: Sequence[str] = CANONICAL_KIZZ_PHONES,
+) -> OrderedStateExample:
     """Parse and validate a JSON-compatible example record."""
 
     def time_span(value):
@@ -106,6 +111,7 @@ def example_from_mapping(record: Mapping) -> OrderedStateExample:
         text=record.get("text"),
         phrase_span=time_span(record.get("phrase_span")),
         phone_spans=phone_spans,
+        expected_phones=tuple(expected_phones),
     )
 
 
@@ -156,10 +162,16 @@ def frame_state_targets(
 
 
 def validate_examples(
-    records: Iterable[Mapping], require_phone_alignment: bool = False
+    records: Iterable[Mapping],
+    require_phone_alignment: bool = False,
+    *,
+    expected_phones: Sequence[str] = CANONICAL_KIZZ_PHONES,
 ) -> list[OrderedStateExample]:
     """Validate a collection and require both product error directions."""
-    examples = [example_from_mapping(record) for record in records]
+    examples = [
+        example_from_mapping(record, expected_phones=expected_phones)
+        for record in records
+    ]
     if not examples:
         raise ValueError("ordered-state dataset is empty")
     truths = {example.truth for example in examples}

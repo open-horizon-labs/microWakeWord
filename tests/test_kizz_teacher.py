@@ -119,6 +119,51 @@ class KizzTeacherTest(unittest.TestCase):
             self.assertEqual(batch["states"].shape, (2, 66))
             self.assertEqual(np.sum(batch["label"]), 1)
 
+    def test_batch_sequence_realizes_uniform_positive_provider_sampling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            features = np.stack(
+                [np.full((260, 40), index, dtype=np.float32) for index in range(8)]
+            )
+            np.save(base / "features.npy", features)
+            np.save(base / "targets.npy", np.ones((8, 66), dtype=np.int32))
+            np.save(base / "negative.npy", np.zeros((2, 260, 40), dtype=np.float32))
+            families = ["assemblyai"] * 2 + ["deepgram"] * 2 + ["elevenlabs"] * 2 + ["kokoro"] * 2
+            sequence = TeacherBatchSequence(
+                base / "features.npy",
+                base / "targets.npy",
+                [NegativeSource("negative", base / "negative.npy")],
+                batch_size=8,
+                steps_per_epoch=4,
+                seed=19,
+                positive_source_families=families,
+            )
+            for step in range(4):
+                sequence[step]
+            self.assertEqual(
+                sequence.positive_source_sample_counts,
+                {
+                    "assemblyai": 4,
+                    "deepgram": 4,
+                    "elevenlabs": 4,
+                    "kokoro": 4,
+                },
+            )
+
+    def test_batch_sequence_rejects_misaligned_provider_vector(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            np.save(base / "features.npy", np.zeros((2, 260, 40), dtype=np.float32))
+            np.save(base / "targets.npy", np.ones((2, 66), dtype=np.int32))
+            np.save(base / "negative.npy", np.zeros((2, 260, 40), dtype=np.float32))
+            with self.assertRaisesRegex(ValueError, "must match positive feature rows"):
+                TeacherBatchSequence(
+                    base / "features.npy",
+                    base / "targets.npy",
+                    [NegativeSource("negative", base / "negative.npy")],
+                    positive_source_families=["assemblyai"],
+                )
+
     def test_batch_sequence_rejects_labels_outside_topology(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

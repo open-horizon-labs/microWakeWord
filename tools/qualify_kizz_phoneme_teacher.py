@@ -25,8 +25,6 @@ from microwakeword.kizz_evaluation_contract import (
     validate_audio_rows,
 )
 from microwakeword.kizz_phoneme_teacher import (
-    CANONICAL_PHONES,
-    COLLISION_PHONES,
     MODEL_ID,
     MODEL_REVISION,
     TARGET_SAMPLE_RATE,
@@ -34,9 +32,11 @@ from microwakeword.kizz_phoneme_teacher import (
     choose_validation_threshold,
     load_hf_teacher,
     resolve_phone_ids,
+    resolve_hf_weights_path,
     sha256_file,
     sha256_text,
 )
+from microwakeword.wake_phrase import HI_FI_KIZZ, WAKE_PHRASES, get_wake_phrase
 
 
 def _payload(path: Path) -> object:
@@ -348,7 +348,56 @@ def _sha_json(path: Path) -> str:
     return sha256_file(path)
 
 
+def _validated_adaptation_metadata(
+    report_path: Path,
+    *,
+    model_directory: Path,
+    weights_path: Path,
+    weights_sha256: str,
+    phrase_id: str,
+) -> dict:
+    report = json.loads(report_path.read_text())
+    if report.get("kind") != "kizz_phoneme_teacher_adaptation":
+        raise ValueError("adaptation report kind is invalid")
+    if report.get("wake_phrase", {}).get("phrase_id") != phrase_id:
+        raise ValueError("adaptation report wake phrase differs from qualification")
+    checkpoint = report.get("checkpoints", {}).get("best")
+    if not isinstance(checkpoint, dict):
+        raise ValueError("adaptation report has no best checkpoint")
+    if (
+        Path(str(checkpoint.get("path", ""))).resolve() != weights_path.resolve()
+        or checkpoint.get("file_sha256") != weights_sha256
+        or weights_path.parent.resolve() != model_directory.resolve()
+    ):
+        raise ValueError("adaptation report is not bound to the selected model weights")
+    manifest = report.get("manifest", {})
+    manifest_path = Path(str(manifest.get("path", "")))
+    if (
+        not manifest_path.is_file()
+        or manifest.get("sha256") != sha256_file(manifest_path)
+    ):
+        raise ValueError("adaptation training manifest provenance drifted")
+    return {
+        "path": str(report_path.resolve()),
+        "sha256": sha256_file(report_path),
+        "training_manifest": {
+            "path": str(manifest_path.resolve()),
+            "sha256": manifest["sha256"],
+        },
+        "checkpoint": checkpoint,
+    }
+
+
 def build_report(args: argparse.Namespace) -> dict:
+    phrase_spec = get_wake_phrase(args.phrase_id)
+    collision_phones = {
+        transcript: phones
+        for transcript, phones in zip(
+            phrase_spec.collision_transcripts,
+            phrase_spec.collision_phones,
+            strict=True,
+        )
+    }
     model, processor, tokenizer, device = load_hf_teacher(
         args.model_id,
         revision=args.revision,
@@ -356,9 +405,9 @@ def build_report(args: argparse.Namespace) -> dict:
         local_files_only=args.local_files_only,
     )
     token_ids = {
-        "canonical": resolve_phone_ids(tokenizer, CANONICAL_PHONES),
+        "canonical": resolve_phone_ids(tokenizer, phrase_spec.phones),
         "collisions": tuple(
-            resolve_phone_ids(tokenizer, phones) for phones in COLLISION_PHONES.values()
+            resolve_phone_ids(tokenizer, phones) for phones in collision_phones.values()
         ),
     }
     blank_id = int(tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0)
@@ -533,6 +582,8 @@ def build_report(args: argparse.Namespace) -> dict:
         reasons.append("aligned_test_recall_below_minimum")
     if natural_accepts < natural_required:
         reasons.append("natural_positive_recall_below_minimum")
+    if len(scored_natural) < args.minimum_natural_positives:
+        reasons.append("insufficient_natural_positive_evidence")
     if len(scored_false) != 62:
         reasons.append("false_wake_anchor_count_not_62")
     if any(
@@ -555,17 +606,25 @@ def build_report(args: argparse.Namespace) -> dict:
             versions[name] = None
     config_json = model.config.to_json_string() if hasattr(model, "config") else ""
     vocab_json = json.dumps(tokenizer.get_vocab(), ensure_ascii=False, sort_keys=True)
-    from transformers.utils import WEIGHTS_NAME
-    from transformers.utils.hub import cached_file
-
-    weights_path = Path(
-        cached_file(
-            args.model_id,
-            WEIGHTS_NAME,
-            revision=args.revision,
-            local_files_only=args.local_files_only,
-        )
+    weights_path = resolve_hf_weights_path(
+        args.model_id,
+        revision=args.revision,
+        local_files_only=args.local_files_only,
     )
+    weights_sha256 = sha256_file(weights_path)
+    adaptation = None
+    if args.adaptation_report is not None:
+        adaptation = _validated_adaptation_metadata(
+            args.adaptation_report,
+            model_directory=Path(args.model_id),
+            weights_path=weights_path,
+            weights_sha256=weights_sha256,
+            phrase_id=phrase_spec.phrase_id,
+        )
+        if args.revision != weights_sha256:
+            raise ValueError(
+                "local adapted teacher revision must equal its weights SHA-256"
+            )
     return {
         "schema_version": 1,
         "gate_scope": "teacher_clip_and_anchor_prequalification",
@@ -579,7 +638,8 @@ def build_report(args: argparse.Namespace) -> dict:
             "config_sha256": sha256_text(config_json),
             "tokenizer_vocab_sha256": sha256_text(vocab_json),
             "weights_path": str(weights_path.resolve()),
-            "weights_sha256": sha256_file(weights_path),
+            "weights_sha256": weights_sha256,
+            "adaptation_report": adaptation,
         },
         "dependencies": versions,
         "runtime": {"device": str(device), "platform": platform.platform()},
@@ -606,8 +666,12 @@ def build_report(args: argparse.Namespace) -> dict:
             },
         },
         "phones": {
-            "canonical": list(CANONICAL_PHONES),
-            "collisions": {key: list(value) for key, value in COLLISION_PHONES.items()},
+            "phrase_id": phrase_spec.phrase_id,
+            "text": phrase_spec.text,
+            "canonical": list(phrase_spec.phones),
+            "collisions": {
+                key: list(value) for key, value in collision_phones.items()
+            },
             "token_ids": {
                 "canonical": list(token_ids["canonical"]),
                 "collisions": [list(value) for value in token_ids["collisions"]],
@@ -618,10 +682,19 @@ def build_report(args: argparse.Namespace) -> dict:
             "window_lengths_seconds": args.window_length,
             "hop_seconds": args.hop,
             "collision_margin_beta": args.beta,
+            # Freeze the validation-selected operating point next to the
+            # decoder settings.  Continuous qualification consumes this
+            # immutable value; it must never re-select a threshold on the
+            # untouched 100-hour corpus.
+            "threshold": threshold,
             "threshold_selection": "validation_only",
             "false_wake_context_seconds": args.wake_context_seconds,
         },
-        "limits": {"min_recall": args.min_recall, "max_faph": args.max_faph},
+        "limits": {
+            "min_recall": args.min_recall,
+            "max_faph": args.max_faph,
+            "minimum_natural_positives": args.minimum_natural_positives,
+        },
         "validation_operating_point": point,
         "counts": {
             "aligned_validation_positive": len(validation_positive),
@@ -664,6 +737,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model-id", default=MODEL_ID)
     parser.add_argument("--revision", default=MODEL_REVISION)
+    parser.add_argument("--adaptation-report", type=Path)
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--device", choices=("cpu", "mps"), default="cpu")
     parser.add_argument("--window-length", type=float, action="append")
@@ -673,7 +747,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-validation-negatives", type=int, default=1024)
     parser.add_argument("--min-recall", type=float, default=0.90)
     parser.add_argument("--max-faph", type=float, default=0.10)
+    parser.add_argument(
+        "--phrase-id",
+        choices=tuple(sorted(WAKE_PHRASES)),
+        default=HI_FI_KIZZ.phrase_id,
+    )
+    parser.add_argument("--minimum-natural-positives", type=int, default=1)
     args = parser.parse_args(argv)
+    if Path(args.model_id).is_dir() and args.adaptation_report is None:
+        parser.error("a local adapted teacher requires --adaptation-report")
+    if args.adaptation_report is not None and not args.adaptation_report.is_file():
+        parser.error("--adaptation-report must be an existing file")
     args.window_length = args.window_length or [
         0.56,
         0.68,
@@ -690,6 +774,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         or args.max_validation_negatives < 1
         or not 0 < args.min_recall <= 1
         or args.max_faph < 0
+        or args.minimum_natural_positives < 0
     ):
         parser.error("invalid scoring or qualification limits")
     if args.device == "mps":

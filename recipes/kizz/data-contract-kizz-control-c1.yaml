@@ -1,0 +1,72 @@
+schema_version: 2
+training_split: train
+splits: [train, validation, test]
+require_each_split: [positive, negative]
+required_metadata:
+  - speaker_id
+  - session_id
+  - semantic_label
+  - source_id
+  - provenance_id
+  - parent_id
+  - ancestry_id
+  - duration_seconds
+  - audio_sha256
+
+semantic_labels:
+  enabled: true
+  field: semantic_label
+  canonical_labels: [canonical_exact]
+  prohibited_labels: [phonetic_collision]
+
+provenance:
+  enabled: true
+  required_fields: [source_id, provenance_id, parent_id, ancestry_id]
+
+duration:
+  enabled: true
+  min_seconds: 0.20
+  max_seconds: 1200.0
+
+overall:
+  min_positive_fraction: 0.002
+  max_positive_fraction: 0.05
+
+classes:
+  positive:
+    # This inventory gate must describe the providers that survive acoustic
+    # pronunciation qualification and can actually reach training batches.
+    # macOS say remains auditable source evidence, but it is not an accepted
+    # Kizz Control positive provider and therefore cannot satisfy diversity.
+    min_source_groups: 4
+    required_source_groups:
+      - assemblyai_synthetic
+      - deepgram_synthetic
+      - elevenlabs_synthetic
+      - kokoro_synthetic
+    max_source_fraction: 0.35
+    # Positive training is parent-uniform after fixed-context extraction; raw
+    # clip duration is inventory evidence, not sampling pressure. Keep this
+    # diagnostic bounded without deleting naturally slower provider renders.
+    max_source_duration_fraction: 0.40
+  negative:
+    min_source_groups: 5
+    required_source_groups:
+      - kizz_control_phonetic_collision
+      - public_speech
+      - music
+      - background_noise
+      - device_collision
+    # The inventory preserves the full public pool. Exact negative pressure is
+    # enforced separately by batch-mixture-kizz-control-c1.yaml.
+    max_source_fraction: 0.94
+    max_source_duration_fraction: 0.85
+
+split_disjoint:
+  speaker_id: true
+  session_id: true
+  source_id: true
+  provenance_id: true
+  parent_id: true
+  ancestry_id: true
+  source_group: false

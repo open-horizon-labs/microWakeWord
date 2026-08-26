@@ -12,6 +12,7 @@ from microwakeword.layers import modes
 from microwakeword.model_train_eval import load_config
 from microwakeword.ordered_state import OrderedStateDecoder
 from microwakeword.ordered_state_tflite import tflite_output_logits
+from microwakeword.phoneme_student import student_stream_phase_offset_frames
 from microwakeword.train import configured_training_loss
 
 
@@ -70,6 +71,25 @@ class OrderedStateModelTest(unittest.TestCase):
         output = streaming(np.zeros((1, 3, 40), dtype=np.float32))
         self.assertEqual(tuple(output.shape), (1, 1, 23))
 
+    def test_streaming_phase_reproduces_non_streaming_logits(self):
+        flags = self.flags()
+        features = np.random.default_rng(231).normal(size=(1, 260, 40)).astype(np.float32)
+        non_streaming = ordered_state_model.model(flags, (260, 40), batch_size=1)
+        expected = np.asarray(non_streaming(features, training=False))[0]
+        streaming = utils.to_streaming_inference(
+            non_streaming,
+            {"spectrogram_length": 260, "stride": flags.stride},
+            modes.Modes.STREAM_INTERNAL_STATE_INFERENCE,
+        )
+        phase = student_stream_phase_offset_frames(flags)
+        primer = np.zeros((1, flags.stride, 40), dtype=np.float32)
+        primer[:, -phase:] = features[:, :phase]
+        emitted = [np.asarray(streaming(primer, training=False))[0, 0]]
+        for offset in range(phase, 260 - flags.stride + 1, flags.stride):
+            emitted.append(np.asarray(streaming(features[:, offset:offset + flags.stride], training=False))[0, 0])
+        actual = np.asarray(emitted)[-len(expected):]
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
+
     def test_training_wrapper_runs_the_sequence_endpoint_loss(self):
         flags = self.flags()
         acoustic = ordered_state_model.model(flags, (128, 40), batch_size=2)
@@ -117,10 +137,10 @@ class OrderedStateModelTest(unittest.TestCase):
                 (1, 22, 23),
             )
 
-    def test_rejects_a_state_count_incompatible_with_the_decoder(self):
+    def test_rejects_too_few_acoustic_states(self):
         flags = self.flags()
-        flags.num_states = 22
-        with self.assertRaisesRegex(ValueError, "requires 23 states"):
+        flags.num_states = 2
+        with self.assertRaisesRegex(ValueError, "needs background, silence, and a path"):
             ordered_state_model.model(flags, (96, 40), batch_size=1)
 
     def test_decoder_contract_binds_training_score_settings(self):

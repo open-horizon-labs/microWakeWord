@@ -185,6 +185,7 @@ class TeacherBatchSequence(tf.keras.utils.Sequence):
         steps_per_epoch: int = 250,
         negative_state: int = 1,
         negative_source_weights: Sequence[float] | None = None,
+        positive_source_families: Sequence[str] | None = None,
         topology: OrderedStateTopology = KIZZ_TOPOLOGY,
     ) -> None:
         self.positive_features = np.load(positive_features, mmap_mode="r")
@@ -258,6 +259,20 @@ class TeacherBatchSequence(tf.keras.utils.Sequence):
                 raise ValueError("negative_source_weights must have positive mass")
             self._negative_probabilities = probabilities / total
         self.positive_sample_count = 0
+        self.positive_source_sample_counts: Counter[str] = Counter()
+        self._positive_family_indices: dict[str, np.ndarray] | None = None
+        if positive_source_families is not None:
+            families = np.asarray(tuple(positive_source_families), dtype=object)
+            if families.shape != (len(self.positive_features),):
+                raise ValueError(
+                    "positive_source_families must match positive feature rows"
+                )
+            if any(not str(value) for value in families):
+                raise ValueError("positive source families must not be empty")
+            self._positive_family_indices = {
+                family: np.flatnonzero(families == family)
+                for family in sorted({str(value) for value in families})
+            }
         self.negative_source_sample_counts: Counter[str] = Counter()
 
     def __len__(self):
@@ -278,7 +293,24 @@ class TeacherBatchSequence(tf.keras.utils.Sequence):
     def __getitem__(self, batch_index):
         rng = self._rng(batch_index)
         half = self.batch_size // 2
-        positive_indices = rng.integers(0, len(self.positive_features), size=half)
+        if self._positive_family_indices is None:
+            positive_indices = rng.integers(
+                0, len(self.positive_features), size=half
+            )
+        else:
+            families = tuple(self._positive_family_indices)
+            offset = (int(batch_index) * half) % len(families)
+            selected_families = [
+                families[(offset + index) % len(families)] for index in range(half)
+            ]
+            positive_indices = np.asarray(
+                [
+                    int(rng.choice(self._positive_family_indices[family]))
+                    for family in selected_families
+                ],
+                dtype=np.int64,
+            )
+            self.positive_source_sample_counts.update(selected_families)
         self.positive_sample_count += half
         x_positive = np.asarray(
             self.positive_features[positive_indices], dtype=np.float32

@@ -1,0 +1,60 @@
+schema_version: 1
+name: kizz_control_c1_teacher_batch_mixture
+
+# Count only unique direct parent recordings. A provider mentioned in a recipe
+# but absent after acoustic pronunciation qualification does not count.
+positive_source_guard:
+  splits:
+    train:
+      minimum_families: 4
+      maximum_family_share: 0.35
+    validation:
+      minimum_families: 4
+      maximum_family_share: 0.35
+    test:
+      minimum_families: 4
+      maximum_family_share: 0.35
+
+# Inventory balance is not enough: every training step samples the surviving
+# post-acoustic providers uniformly. This catches the prior failure where
+# configured providers disappeared or became negligible after filtering.
+positive_sampling_guard:
+  mode: uniform_family
+  minimum_families: 4
+  minimum_family_share: 0.24
+  maximum_family_share: 0.26
+
+mixture_guard:
+  schema_version: 1
+  require_all_active_groups: true
+  minimum_realized_samples: 1000
+  tolerances:
+    sample_share: 0.02
+    weighted_pressure_share: 0.02
+  expected:
+    classes:
+      positive:
+        sample_share: 0.50
+        weighted_pressure_share: 0.50
+      negative:
+        sample_share: 0.50
+        weighted_pressure_share: 0.50
+    groups:
+      canonical_positive:
+        sample_share: 0.50
+        weighted_pressure_share: 0.50
+      phonetic_collision:
+        sample_share: 0.10
+        weighted_pressure_share: 0.10
+      far_field_speech:
+        sample_share: 0.125
+        weighted_pressure_share: 0.125
+      household_speech:
+        sample_share: 0.10
+        weighted_pressure_share: 0.10
+      music:
+        sample_share: 0.075
+        weighted_pressure_share: 0.075
+      background_noise:
+        sample_share: 0.10
+        weighted_pressure_share: 0.10

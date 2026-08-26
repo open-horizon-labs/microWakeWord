@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import tensorflow as tf
 
-from microwakeword.ordered_state import ordered_state_sequence_score
+from microwakeword.ordered_state import (
+    KIZZ_TOPOLOGY,
+    OrderedStateTopology,
+    ordered_state_sequence_score,
+)
 
 
 def teacher_kl_loss(
@@ -38,6 +42,7 @@ def distillation_loss(
     sequence_labels: tf.Tensor | None = None,
     sequence_weight: float = 0.0,
     sequence_teacher_weight: float = 0.0,
+    topology: OrderedStateTopology = KIZZ_TOPOLOGY,
 ) -> tf.Tensor:
     """Combine hard frame states with teacher soft targets."""
     hard = tf.keras.losses.sparse_categorical_crossentropy(
@@ -50,7 +55,7 @@ def distillation_loss(
         if sequence_labels is None:
             raise ValueError("sequence_labels are required when sequence_weight is set")
         if sequence_logits is None:
-            sequence_logits = ordered_state_sequence_score(student_logits)
+            sequence_logits = ordered_state_sequence_score(student_logits, topology)
         endpoint = tf.reduce_mean(
             tf.nn.sigmoid_cross_entropy_with_logits(
                 labels=sequence_labels, logits=sequence_logits
@@ -59,8 +64,10 @@ def distillation_loss(
         total += float(sequence_weight) * endpoint
     if sequence_teacher_weight:
         if sequence_logits is None:
-            sequence_logits = ordered_state_sequence_score(student_logits)
-        teacher_sequence_logits = ordered_state_sequence_score(teacher_logits)
+            sequence_logits = ordered_state_sequence_score(student_logits, topology)
+        teacher_sequence_logits = ordered_state_sequence_score(
+            teacher_logits, topology
+        )
         margin = tf.keras.losses.huber(
             teacher_sequence_logits,
             sequence_logits,

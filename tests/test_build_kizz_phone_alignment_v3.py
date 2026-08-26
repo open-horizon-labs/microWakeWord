@@ -10,6 +10,7 @@ from tools.build_kizz_phone_alignment_v3 import (
     _inherit_overlay,
     phone_spans_from_token_spans,
     pronunciation_decision,
+    select_provider_balanced,
 )
 
 
@@ -135,6 +136,53 @@ class BuildKizzPhoneAlignmentV3Test(unittest.TestCase):
         self.assertEqual(selected["phone_spans"], parent["phone_spans"])
         self.assertEqual(
             selected["alignment"]["method"], "inherited_ctc_forced_alignment"
+        )
+
+    def test_post_alignment_balance_excludes_failed_and_dominant_providers(self):
+        rows = []
+        counts = {"a": 8, "b": 4, "c": 4, "d": 4, "bad": 20}
+        for split in ("train", "validation", "test"):
+            for provider, count in counts.items():
+                for index in range(count):
+                    rows.append(
+                        {
+                            "source_id": f"{split}:{provider}:{index}",
+                            "source_group": provider,
+                            "provider": provider,
+                            "split": split,
+                        }
+                    )
+        selected, report = select_provider_balanced(
+            rows,
+            required_providers=("a", "b", "c", "d"),
+            maximum_provider_share=0.35,
+            seed=1,
+        )
+        self.assertTrue(report["qualified"])
+        self.assertNotIn("bad", {row["provider"] for row in selected})
+        for split in report["splits"].values():
+            self.assertLessEqual(max(split["selected_shares"].values()), 0.35)
+
+    def test_post_alignment_balance_fails_when_provider_disappears(self):
+        rows = [
+            {
+                "source_id": f"train:{provider}",
+                "source_group": provider,
+                "provider": provider,
+                "split": "train",
+            }
+            for provider in ("a", "b", "c")
+        ]
+        _, report = select_provider_balanced(
+            rows,
+            required_providers=("a", "b", "c", "d"),
+            maximum_provider_share=0.35,
+            seed=1,
+        )
+        self.assertFalse(report["qualified"])
+        self.assertEqual(
+            report["violations"][0]["reason"],
+            "required_provider_missing_after_acoustic_gate",
         )
 
 

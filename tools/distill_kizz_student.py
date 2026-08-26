@@ -14,6 +14,7 @@ import numpy as np
 import tensorflow as tf
 
 from microwakeword.distillation import distillation_loss
+from microwakeword.ordered_state import OrderedStateTopology
 from microwakeword.ordered_state_model import model as build_student
 
 
@@ -70,7 +71,7 @@ def require_teacher_qualification(
     return report, continuous
 
 
-def student_flags() -> SimpleNamespace:
+def student_flags(num_states: int = 23) -> SimpleNamespace:
     return SimpleNamespace(
         pointwise_filters="96,96,96,96",
         residual_connection="0,0,0,0",
@@ -79,7 +80,7 @@ def student_flags() -> SimpleNamespace:
         first_conv_filters=48,
         first_conv_kernel_size=5,
         stride=3,
-        num_states=23,
+        num_states=num_states,
     )
 
 
@@ -139,6 +140,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     targets = np.load(prefix.with_name("targets.npy"), mmap_mode="r")
     labels = np.load(prefix.with_name("labels.npy"), mmap_mode="r")
     teacher_logits = np.load(prefix.with_name("teacher_logits.npy"), mmap_mode="r")
+    topology_payload = qualification.get("topology", {})
+    try:
+        topology = OrderedStateTopology(
+            tuple(str(phone) for phone in topology_payload["phones"]),
+            int(topology_payload["states_per_phone"]),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        parser.error(f"teacher qualification has invalid topology: {error}")
+    cache_topology = cache_metadata.get("topology")
+    if cache_topology is not None and (
+        cache_topology.get("state_count") != topology.state_count
+        or tuple(cache_topology.get("phones", ())) != topology.phones
+        or cache_topology.get("states_per_phone") != topology.states_per_phone
+    ):
+        parser.error("distillation cache topology differs from teacher qualification")
     if (
         features.shape[0] != targets.shape[0]
         or features.shape[0] != labels.shape[0]
@@ -146,7 +162,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         parser.error("cache arrays must contain the same number of samples")
     tf.keras.utils.set_random_seed(args.seed)
-    student = build_student(student_flags(), (260, 40), None)
+    if teacher_logits.shape[-1] != topology.state_count:
+        parser.error("teacher logits do not match the qualified topology")
+    student = build_student(student_flags(topology.state_count), (260, 40), None)
     if args.init_weights is not None:
         student.load_weights(args.init_weights)
     optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
@@ -169,6 +187,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.sequence_teacher_weight if use_sequence else 0.0
                 ),
                 sequence_labels=sequence_labels,
+                topology=topology,
             )
         gradients = tape.gradient(loss, student.trainable_variables)
         optimizer.apply_gradients(zip(gradients, student.trainable_variables))
@@ -215,7 +234,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "schema_version": 1,
         "model": "ordered_state_causal_student_distilled",
         "input_shape": [260, 40],
-        "output_shape": [66, 23],
+        "output_shape": [66, topology.state_count],
+        "topology": {
+            "phrase_id": topology_payload.get("phrase_id"),
+            "text": topology_payload.get("text"),
+            "phones": list(topology.phones),
+            "states_per_phone": topology.states_per_phone,
+            "state_count": topology.state_count,
+        },
         "cache_prefix": str(prefix.resolve()),
         "cache_files_sha256": {
             name: sha256_file(prefix.with_name(name))

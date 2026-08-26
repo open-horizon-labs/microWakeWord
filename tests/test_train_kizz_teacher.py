@@ -13,6 +13,8 @@ from tools.train_kizz_teacher import (
     realized_mixture_ledger,
     resolve_topology,
     scheduled_sequence_weight,
+    training_positive_source_families,
+    validate_realized_positive_sampling,
 )
 
 
@@ -94,6 +96,47 @@ class TrainKizzTeacherTest(unittest.TestCase):
             "source_family_overrepresented",
             {item["reason"] for item in report["violations"]},
         )
+
+    def test_materialized_positive_families_preserve_feature_order(self):
+        provenance = {
+            "examples": [
+                {"split": "validation", "provider": "unused"},
+                {"split": "train", "provider": "deepgram"},
+                {"split": "train", "provider": "elevenlabs"},
+            ]
+        }
+        self.assertEqual(
+            training_positive_source_families(provenance),
+            ["deepgram", "elevenlabs"],
+        )
+
+    def test_realized_positive_sampling_fails_provider_tokenism(self):
+        report = validate_realized_positive_sampling(
+            {"assemblyai": 700, "deepgram": 100, "elevenlabs": 100, "kokoro": 100},
+            {
+                "mode": "uniform_family",
+                "minimum_families": 4,
+                "minimum_family_share": 0.24,
+                "maximum_family_share": 0.26,
+            },
+        )
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "realized_positive_family_overrepresented",
+            {item["reason"] for item in report["violations"]},
+        )
+
+    def test_realized_positive_sampling_accepts_uniform_mix(self):
+        report = validate_realized_positive_sampling(
+            {"assemblyai": 25, "deepgram": 25, "elevenlabs": 25, "kokoro": 25},
+            {
+                "mode": "uniform_family",
+                "minimum_families": 4,
+                "minimum_family_share": 0.24,
+                "maximum_family_share": 0.26,
+            },
+        )
+        self.assertTrue(report["qualified"])
 
     def test_sequence_schedule_supports_frame_warmup_and_every_step_training(self):
         self.assertEqual(

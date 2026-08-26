@@ -25,10 +25,10 @@ from microwakeword.kizz_evaluation_contract import (
 )
 from microwakeword.kizz_teacher import FEATURE_BINS, INPUT_FRAMES, build_teacher
 from microwakeword.ordered_state import (
-    KIZZ_PHONES,
     OrderedStateTopology,
     ordered_state_duration_score_numpy,
 )
+from microwakeword.wake_phrase import HI_FI_KIZZ, WAKE_PHRASES, get_wake_phrase
 from tools.build_kizz_aligned_teacher_features_v3 import (
     frontend,
     load_audio,
@@ -239,10 +239,10 @@ def _summary(scores: Sequence[float], threshold: float | None) -> dict[str, Any]
     return result
 
 
-def _duration_args(args: argparse.Namespace) -> tuple[int, int]:
+def _duration_args(args: argparse.Namespace, phone_count: int) -> tuple[int, int]:
     minimum = int(args.minimum_path_frames)
     maximum = int(args.maximum_path_frames)
-    topology_minimum = len(KIZZ_PHONES) * int(args.states_per_phone)
+    topology_minimum = phone_count * int(args.states_per_phone)
     if minimum < topology_minimum or maximum < minimum:
         raise ValueError("duration bounds do not fit the selected ordered topology")
     return minimum, maximum
@@ -428,6 +428,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--false-wake-anchor-manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--states-per-phone", type=int, default=2)
+    parser.add_argument(
+        "--phrase-id",
+        choices=tuple(sorted(WAKE_PHRASES)),
+        default=HI_FI_KIZZ.phrase_id,
+    )
     parser.add_argument("--minimum-path-frames", type=int, default=24)
     parser.add_argument("--maximum-path-frames", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=128)
@@ -442,7 +447,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         parser.error("invalid model, batch, or operating-point limits")
     try:
-        minimum, maximum = _duration_args(args)
+        phrase_spec = get_wake_phrase(args.phrase_id)
+        minimum, maximum = _duration_args(args, len(phrase_spec.phones))
         sources = []
         for raw in args.validation_negative_source:
             if "=" not in raw:
@@ -500,7 +506,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             include_partition_identity=True,
         )
 
-        topology = OrderedStateTopology(KIZZ_PHONES, args.states_per_phone)
+        topology = OrderedStateTopology(phrase_spec.phones, args.states_per_phone)
         model = build_teacher(topology=topology)
         model.load_weights(args.model)
         validation_positive, _validation_positive_meta = score_fixed_source(
@@ -638,7 +644,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "qualifier_tool_sha256": sha256_file(Path(__file__).resolve()),
             },
             "topology": {
-                "phones": list(KIZZ_PHONES),
+                "phrase_id": phrase_spec.phrase_id,
+                "text": phrase_spec.text,
+                "phones": list(phrase_spec.phones),
                 "states_per_phone": args.states_per_phone,
             },
             "duration_bounds": {

@@ -29,6 +29,20 @@ def aligned_positive():
 
 
 class OrderedStateDataTest(unittest.TestCase):
+    def test_parser_accepts_an_explicit_replacement_phrase_phone_contract(self):
+        record = {
+            "source_id": "replacement",
+            "truth": True,
+            "duration_s": 1.0,
+            "phrase_span": {"start_s": 0.1, "end_s": 0.8},
+            "phone_spans": [
+                {"phone": "k", "start_s": 0.1, "end_s": 0.4},
+                {"phone": "z", "start_s": 0.4, "end_s": 0.8},
+            ],
+        }
+        example = example_from_mapping(record, expected_phones=("k", "z"))
+        self.assertEqual(example.expected_phones, ("k", "z"))
+
     def test_positive_requires_exact_canonical_phone_sequence(self):
         record = {
             "source_id": "high-five-kids",

@@ -6,11 +6,33 @@ from microwakeword.kizz_phoneme_teacher import (
     best_window_score,
     choose_validation_threshold,
     ctc_log_probability,
+    ctc_log_probability_batch,
     score_window,
+    resolve_hf_weights_path,
 )
 
 
 class KizzPhonemeTeacherTests(unittest.TestCase):
+    def test_resolves_exactly_one_local_teacher_weights_file(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            weights = root / "model.safetensors"
+            weights.write_bytes(b"weights")
+            self.assertEqual(
+                resolve_hf_weights_path(
+                    str(root), revision="artifact-sha", local_files_only=True
+                ),
+                weights.resolve(),
+            )
+            (root / "pytorch_model.bin").write_bytes(b"other")
+            with self.assertRaises(ValueError):
+                resolve_hf_weights_path(
+                    str(root), revision="artifact-sha", local_files_only=True
+                )
+
     def test_ctc_accepts_blank_separated_canonical_path(self):
         # blank, h, blank, a, blank, i, blank; vocabulary is blank/h/a/i.
         logits = np.full((7, 4), -20.0)
@@ -31,6 +53,20 @@ class KizzPhonemeTeacherTests(unittest.TestCase):
         )
         log_probs = logits - np.log(np.exp(logits).sum(axis=1, keepdims=True))
         self.assertGreater(ctc_log_probability(log_probs, (1, 1), blank_id=0), -1.0)
+
+    def test_batched_ctc_is_the_scalar_reference_on_varied_paths(self):
+        rng = np.random.default_rng(231)
+        logits = rng.normal(size=(7, 19, 8))
+        log_probs = logits - np.logaddexp.reduce(logits, axis=2, keepdims=True)
+        for path in ((1, 2, 3), (1, 1, 2), (4, 5, 4, 6)):
+            expected = np.asarray(
+                [
+                    ctc_log_probability(window, path, blank_id=0)
+                    for window in log_probs
+                ]
+            )
+            actual = ctc_log_probability_batch(log_probs, path, blank_id=0)
+            np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
 
     def test_collision_margin_is_an_independent_guard(self):
         logits = np.full((7, 3), -10.0)

@@ -15,13 +15,16 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from microwakeword.wake_phrase import HI_FI_KIZZ, KIZZ_CONTROL
+
 try:  # TensorFlow is optional for NumPy-only evaluation and tests.
     import tensorflow as tf
 except ImportError:  # pragma: no cover - exercised when TensorFlow is absent.
     tf = None
 
 
-KIZZ_PHONES = ("h", "aɪ", "f", "aɪ", "k", "ɪ", "z")
+KIZZ_PHONES = HI_FI_KIZZ.phones
+KIZZ_CONTROL_PHONES = KIZZ_CONTROL.phones
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,12 @@ KIZZ_TOPOLOGY = OrderedStateTopology(KIZZ_PHONES)
 # plus the background and silence filler outputs.  Keep KIZZ_TOPOLOGY as the
 # archived three-state-per-phone contract for existing artifacts.
 KIZZ_SINGLE_STATE_TOPOLOGY = OrderedStateTopology(KIZZ_PHONES, states_per_phone=1)
+KIZZ_CONTROL_SINGLE_STATE_TOPOLOGY = OrderedStateTopology(
+    KIZZ_CONTROL_PHONES, states_per_phone=1
+)
+KIZZ_CONTROL_DOUBLE_STATE_TOPOLOGY = OrderedStateTopology(
+    KIZZ_CONTROL_PHONES, states_per_phone=2
+)
 
 
 @dataclass(frozen=True)
@@ -727,6 +736,9 @@ def ordered_state_sequence_loss(
 
 __all__ = [
     "KIZZ_PHONES",
+    "KIZZ_CONTROL_PHONES",
+    "KIZZ_CONTROL_SINGLE_STATE_TOPOLOGY",
+    "KIZZ_CONTROL_DOUBLE_STATE_TOPOLOGY",
     "KIZZ_SINGLE_STATE_TOPOLOGY",
     "KIZZ_TOPOLOGY",
     "OrderedStateDecoder",

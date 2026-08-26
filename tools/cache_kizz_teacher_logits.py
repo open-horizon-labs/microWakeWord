@@ -16,6 +16,8 @@ from microwakeword.kizz_teacher import (
     TeacherBatchSequence,
     build_teacher,
 )
+from microwakeword.ordered_state import OrderedStateTopology
+from microwakeword.wake_phrase import HI_FI_KIZZ, WAKE_PHRASES, get_wake_phrase
 
 
 def sha256_file(path: Path) -> str:
@@ -55,6 +57,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Teacher 30-ms frames to skip before the student's first output.",
     )
     parser.add_argument("--student-output-frames", type=int, default=66)
+    parser.add_argument(
+        "--phrase-id",
+        choices=tuple(sorted(WAKE_PHRASES)),
+        default=HI_FI_KIZZ.phrase_id,
+    )
+    parser.add_argument("--states-per-phone", type=int, choices=(1, 2, 3), default=3)
     args = parser.parse_args(argv)
     if args.steps < 1 or args.batch_size < 2 or args.batch_size % 2:
         parser.error("steps must be positive and batch-size must be even")
@@ -66,7 +74,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.alignment_offset + args.student_output_frames > positive_target_width
     ):
         parser.error("teacher alignment slice does not fit the teacher timeline")
-    teacher = build_teacher(output_frames=positive_target_width)
+    phrase_spec = get_wake_phrase(args.phrase_id)
+    topology = OrderedStateTopology(phrase_spec.phones, args.states_per_phone)
+    teacher = build_teacher(output_frames=positive_target_width, topology=topology)
     teacher.load_weights(args.teacher_weights)
     sequence = TeacherBatchSequence(
         args.positive_features,
@@ -80,7 +90,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     features = np.empty((total, 260, 40), dtype=np.float16)
     targets = np.empty((total, args.student_output_frames), dtype=np.int8)
     labels = np.empty((total,), dtype=np.float16)
-    logits = np.empty((total, args.student_output_frames, 23), dtype=np.float16)
+    logits = np.empty(
+        (total, args.student_output_frames, topology.state_count), dtype=np.float16
+    )
     for step in range(args.steps):
         x, batch = sequence[step]
         start = step * args.batch_size
@@ -125,6 +137,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "student_output_frames": args.student_output_frames,
         "alignment_offset_frames": args.alignment_offset,
         "alignment_basis": "student_valid_receptive_field_offset_64_frames_div_3",
+        "topology": {
+            "phrase_id": phrase_spec.phrase_id,
+            "text": phrase_spec.text,
+            "phones": list(phrase_spec.phones),
+            "states_per_phone": topology.states_per_phone,
+            "state_count": topology.state_count,
+        },
     }
     metadata["cache_sha256"] = hashlib.sha256(
         b"".join(

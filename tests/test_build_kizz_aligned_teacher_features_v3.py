@@ -65,6 +65,8 @@ class BuildKizzAlignedTeacherFeaturesV3Test(unittest.TestCase):
             sf.write(path, np.zeros(16_000, dtype=np.float32), 16_000)
             row = aligned_row(path, "source", "train")
             validate_aligned_positive(row)
+            row["alignment"]["method"] = "wav2vec2_ipa_ctc_forced_alignment"
+            validate_aligned_positive(row)
             row["alignment"]["pronunciation_decision"]["accepted"] = False
             with self.assertRaisesRegex(ValueError, "failed acoustic"):
                 validate_aligned_positive(row)
@@ -162,6 +164,135 @@ class BuildKizzAlignedTeacherFeaturesV3Test(unittest.TestCase):
             targets = np.load(root / "out" / "positive_targets-train.npy")
             self.assertEqual(report["state_count"], 16)
             self.assertLess(int(targets.max()), 16)
+
+    def test_pronunciation_audit_filters_overlay_parents_and_is_source_bound(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "positive.wav"
+            sf.write(audio, np.zeros(24_000, dtype=np.float32), 16_000)
+            rows = [
+                aligned_row(audio, "accepted-train", "train"),
+                aligned_row(audio, "rejected-train", "train"),
+                aligned_row(audio, "accepted-validation", "validation"),
+                aligned_row(audio, "accepted-test", "test"),
+            ]
+            aligned_manifest = root / "aligned.json"
+            aligned_manifest.write_text(json.dumps({"examples": rows}))
+            source_manifest = root / "source.json"
+            source_manifest.write_text(json.dumps({"examples": []}))
+            accepted = {
+                "accepted-train",
+                "accepted-validation",
+                "accepted-test",
+            }
+            audit = root / "audit.json"
+            audit.write_text(
+                json.dumps(
+                    {
+                        "gate_scope": "independent_source_pronunciation_qc",
+                        "source_manifest_sha256": hashlib.sha256(
+                            source_manifest.read_bytes()
+                        ).hexdigest(),
+                        "scope": {
+                            "gate_mode": "all",
+                            "splits": ["train", "validation", "test"],
+                        },
+                        "results": [
+                            {
+                                "source_id": row["source_id"],
+                                "accepted": row["source_id"] in accepted,
+                            }
+                            for row in rows
+                        ],
+                    }
+                )
+            )
+            fake_features = np.zeros((260, 40), dtype=np.float32)
+            with mock.patch(
+                "tools.build_kizz_aligned_teacher_features_v3.frontend",
+                return_value=fake_features,
+            ):
+                report = build(
+                    [aligned_manifest],
+                    root / "out",
+                    source_pronunciation_audit=audit,
+                    source_manifest=source_manifest,
+                    overlay_snr_db=(),
+                )
+            self.assertEqual(
+                report["positive_counts"],
+                {"train": 1, "validation": 1, "test": 1},
+            )
+            self.assertEqual(
+                report["source_pronunciation_audit"]["excluded_aligned_count"], 1
+            )
+
+            source_manifest.write_text(json.dumps({"examples": [{"drift": True}]}))
+            with self.assertRaisesRegex(ValueError, "bound all-split gate"):
+                build(
+                    [aligned_manifest],
+                    root / "drifted",
+                    source_pronunciation_audit=audit,
+                    source_manifest=source_manifest,
+                    overlay_snr_db=(),
+                )
+
+    def test_negative_materialization_uses_separate_split_aware_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "audio.wav"
+            sf.write(audio, np.zeros(24_000, dtype=np.float32), 16_000)
+            positive_manifest = root / "positives.json"
+            positive_manifest.write_text(
+                json.dumps(
+                    {
+                        "examples": [
+                            aligned_row(audio, f"positive-{split}", split)
+                            for split in ("train", "validation", "test")
+                        ]
+                    }
+                )
+            )
+            negative_manifest = root / "negatives.json"
+            negative_manifest.write_text(
+                json.dumps(
+                    {
+                        "examples": [
+                            {
+                                "path": str(audio),
+                                "label": 0,
+                                "split": split,
+                                "source_group": "collision",
+                            }
+                            for split in ("train", "validation", "test")
+                        ]
+                    }
+                )
+            )
+            fake_features = np.zeros((260, 40), dtype=np.float32)
+            with mock.patch(
+                "tools.build_kizz_aligned_teacher_features_v3.frontend",
+                return_value=fake_features,
+            ):
+                report = build(
+                    [positive_manifest],
+                    root / "out",
+                    negative_manifest=negative_manifest,
+                    negative_groups=("collision",),
+                    overlay_snr_db=(),
+                )
+            self.assertEqual(
+                report["negative_counts"],
+                {
+                    "train": {"collision": 1},
+                    "validation": {"collision": 1},
+                    "test": {"collision": 1},
+                },
+            )
+            self.assertEqual(
+                report["negative_manifest"]["path"],
+                str(negative_manifest.resolve()),
+            )
 
     def test_snr_mixer_preserves_shape_and_is_finite(self):
         foreground = np.ones(CONTEXT_SAMPLES, dtype=np.float32) * 0.1

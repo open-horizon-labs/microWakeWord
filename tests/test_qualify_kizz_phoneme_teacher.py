@@ -3,10 +3,60 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.qualify_kizz_phoneme_teacher import _wake_context_metadata
+from microwakeword.kizz_phoneme_teacher import sha256_file
+from tools.qualify_kizz_phoneme_teacher import (
+    _validated_adaptation_metadata,
+    _wake_context_metadata,
+)
 
 
 class QualifyKizzPhonemeTeacherTests(unittest.TestCase):
+    def test_adaptation_report_binds_exact_best_weights_and_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "best"
+            model.mkdir()
+            weights = model / "model.safetensors"
+            weights.write_bytes(b"weights")
+            manifest = root / "manifest.json"
+            manifest.write_text("{}")
+            report = root / "training.json"
+            report.write_text(
+                json.dumps(
+                    {
+                        "kind": "kizz_phoneme_teacher_adaptation",
+                        "wake_phrase": {"phrase_id": "kizz-control"},
+                        "manifest": {
+                            "path": str(manifest),
+                            "sha256": sha256_file(manifest),
+                        },
+                        "checkpoints": {
+                            "best": {
+                                "path": str(weights),
+                                "file_sha256": sha256_file(weights),
+                            }
+                        },
+                    }
+                )
+            )
+            result = _validated_adaptation_metadata(
+                report,
+                model_directory=model,
+                weights_path=weights,
+                weights_sha256=sha256_file(weights),
+                phrase_id="kizz-control",
+            )
+            self.assertEqual(result["checkpoint"]["file_sha256"], sha256_file(weights))
+            weights.write_bytes(b"drift")
+            with self.assertRaisesRegex(ValueError, "not bound"):
+                _validated_adaptation_metadata(
+                    report,
+                    model_directory=model,
+                    weights_path=weights,
+                    weights_sha256=sha256_file(weights),
+                    phrase_id="kizz-control",
+                )
+
     def test_wake_context_is_bound_to_audio_hash_id_and_trigger(self):
         with tempfile.TemporaryDirectory() as directory:
             metadata = Path(directory) / "wake.json"

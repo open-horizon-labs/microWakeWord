@@ -2,11 +2,10 @@
 """Acoustically qualify and CTC-align canonical-v3 Kizz positives.
 
 The text sent to a synthesizer is not evidence that the waveform contains the
-canonical pronunciation.  This tool compares the canonical CTC path against
+canonical pronunciation. This tool compares the canonical phoneme path against
 explicit collision paths, rejects ambiguous or collision-like renderings, and
-then derives seven ordered phone regions from the measured canonical token
-alignment.  No rejected waveform or descendant overlay reaches the positive
-training selection.
+derives ordered phone regions from a measured token alignment. No rejected
+waveform or descendant overlay reaches the positive training selection.
 
 Run this tool in the pinned optional alignment environment::
 
@@ -21,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import itertools
 import json
 import math
@@ -31,16 +31,17 @@ from typing import Any
 
 import numpy as np
 
-SAMPLE_RATE = 16_000
-CANONICAL_TRANSCRIPT = "hifikiz"
-CANONICAL_PHONES = ("h", "aɪ", "f", "aɪ", "k", "ɪ", "z")
-COLLISION_TRANSCRIPTS = (
-    "hifikids",
-    "hifikiss",
-    "highfivekiz",
-    "hiffykiz",
-    "hippykiz",
+from microwakeword.wake_phrase import (
+    HI_FI_KIZZ,
+    WAKE_PHRASES,
+    WakePhraseSpec,
+    get_wake_phrase,
 )
+
+SAMPLE_RATE = 16_000
+CANONICAL_TRANSCRIPT = HI_FI_KIZZ.ctc_transcript
+CANONICAL_PHONES = HI_FI_KIZZ.phones
+COLLISION_TRANSCRIPTS = HI_FI_KIZZ.collision_transcripts
 
 
 def sha256_file(path: Path) -> str:
@@ -61,11 +62,121 @@ def _finite(value: object, name: str) -> float:
     return result
 
 
+def select_provider_balanced(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    required_providers: Sequence[str],
+    maximum_provider_share: float,
+    seed: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Select the largest deterministic cohort satisfying provider contracts."""
+    required = tuple(dict.fromkeys(str(value) for value in required_providers))
+    if not required:
+        copied = [dict(row) for row in rows]
+        return copied, {
+            "enabled": False,
+            "qualified": True,
+            "selected": len(copied),
+            "excluded": 0,
+        }
+    if len(required) < 2:
+        raise ValueError("provider balance requires at least two providers")
+    maximum_provider_share = _finite(
+        maximum_provider_share, "maximum_provider_share"
+    )
+    if not 1 / len(required) <= maximum_provider_share < 1:
+        raise ValueError("maximum provider share is infeasible for required providers")
+
+    eligible = [dict(row) for row in rows if str(row.get("provider")) in required]
+    selected: list[dict[str, Any]] = []
+    split_reports = {}
+    violations = []
+    splits = sorted({str(row.get("split")) for row in rows})
+    for split in splits:
+        groups = {
+            provider: [
+                row
+                for row in eligible
+                if row.get("split") == split and row.get("provider") == provider
+            ]
+            for provider in required
+        }
+        missing = [provider for provider, items in groups.items() if not items]
+        if missing:
+            violations.append(
+                {
+                    "split": split,
+                    "reason": "required_provider_missing_after_acoustic_gate",
+                    "providers": missing,
+                }
+            )
+            continue
+        retain = {provider: len(items) for provider, items in groups.items()}
+        while True:
+            total = sum(retain.values())
+            shares = {provider: count / total for provider, count in retain.items()}
+            dominant = max(required, key=lambda provider: (shares[provider], provider))
+            if shares[dominant] <= maximum_provider_share:
+                break
+            if retain[dominant] <= 1:
+                violations.append(
+                    {
+                        "split": split,
+                        "reason": "provider_share_cannot_be_balanced",
+                        "provider": dominant,
+                    }
+                )
+                break
+            retain[dominant] -= 1
+        split_rows = []
+        for provider, items in groups.items():
+            ordered = sorted(
+                items,
+                key=lambda row: hashlib.sha256(
+                    f"{seed}:{split}:{provider}:{row['source_id']}".encode()
+                ).hexdigest(),
+            )
+            split_rows.extend(ordered[: retain[provider]])
+        selected.extend(split_rows)
+        total = len(split_rows)
+        split_reports[split] = {
+            "acoustically_accepted_counts": {
+                provider: len(groups[provider]) for provider in required
+            },
+            "selected_counts": dict(
+                sorted(Counter(row["provider"] for row in split_rows).items())
+            ),
+            "selected_shares": {
+                provider: sum(row["provider"] == provider for row in split_rows) / total
+                for provider in required
+            },
+        }
+
+    selected.sort(
+        key=lambda row: (row["split"], row["source_group"], row["source_id"])
+    )
+    return selected, {
+        "enabled": True,
+        "qualified": not violations,
+        "required_providers": list(required),
+        "maximum_provider_share": maximum_provider_share,
+        "seed": seed,
+        "acoustically_accepted": len(rows),
+        "eligible_required_provider_rows": len(eligible),
+        "selected": len(selected),
+        "excluded": len(rows) - len(selected),
+        "splits": split_reports,
+        "violations": violations,
+    }
+
+
 def pronunciation_decision(
     candidate_nll: Mapping[str, float],
     *,
     minimum_margin_per_token: float,
     maximum_canonical_nll_per_token: float,
+    phrase_spec: WakePhraseSpec = HI_FI_KIZZ,
+    token_lengths: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """Return a deterministic canonical-vs-collision decision.
 
@@ -75,7 +186,9 @@ def pronunciation_decision(
     from every declared collision.
     """
 
-    required = {CANONICAL_TRANSCRIPT, *COLLISION_TRANSCRIPTS}
+    canonical_transcript = phrase_spec.ctc_transcript
+    collision_transcripts = phrase_spec.collision_transcripts
+    required = {canonical_transcript, *collision_transcripts}
     missing = required - set(candidate_nll)
     if missing:
         raise ValueError(f"candidate losses are missing: {sorted(missing)}")
@@ -88,13 +201,17 @@ def pronunciation_decision(
     )
     if minimum_margin_per_token < 0 or maximum_canonical_nll_per_token <= 0:
         raise ValueError("pronunciation thresholds must be positive")
+    lengths = token_lengths or {transcript: len(transcript) for transcript in required}
+    if set(lengths) != required or any(int(lengths[key]) < 1 for key in required):
+        raise ValueError("token_lengths must cover every candidate with positive values")
     normalized = {
-        transcript: _finite(candidate_nll[transcript], transcript) / len(transcript)
+        transcript: _finite(candidate_nll[transcript], transcript)
+        / int(lengths[transcript])
         for transcript in sorted(required)
     }
-    canonical = normalized[CANONICAL_TRANSCRIPT]
+    canonical = normalized[canonical_transcript]
     closest_collision, collision = min(
-        ((transcript, normalized[transcript]) for transcript in COLLISION_TRANSCRIPTS),
+        ((transcript, normalized[transcript]) for transcript in collision_transcripts),
         key=lambda item: (item[1], item[0]),
     )
     margin = collision - canonical
@@ -124,11 +241,14 @@ def phone_spans_from_token_spans(
     waveform_samples: int,
     emission_frames: int,
     crop_offset_seconds: float = 0.0,
+    phones: Sequence[str] = CANONICAL_PHONES,
 ) -> tuple[dict[str, float], list[dict[str, float | str]]]:
-    """Expand seven measured CTC token centers into contiguous phone regions."""
+    """Expand measured CTC token centers into contiguous phone regions."""
 
-    if len(token_spans) != len(CANONICAL_PHONES):
-        raise ValueError("canonical alignment must contain exactly seven tokens")
+    if len(token_spans) != len(phones):
+        raise ValueError(
+            f"canonical alignment must contain exactly {len(phones)} tokens"
+        )
     if waveform_samples < 1 or emission_frames < 1:
         raise ValueError("waveform and emission lengths must be positive")
     crop_offset_seconds = _finite(crop_offset_seconds, "crop_offset_seconds")
@@ -161,7 +281,7 @@ def phone_spans_from_token_spans(
             "start_s": crop_offset_seconds + boundaries[index],
             "end_s": crop_offset_seconds + boundaries[index + 1],
         }
-        for index, phone in enumerate(CANONICAL_PHONES)
+        for index, phone in enumerate(phones)
     ]
     phrase_span = {
         "start_s": float(phone_spans[0]["start_s"]),
@@ -225,7 +345,9 @@ def _crop_for_alignment(
 class MmsAligner:
     """Bounded TorchAudio MMS CTC scorer and forced aligner."""
 
-    def __init__(self, device: str = "cpu") -> None:
+    def __init__(
+        self, device: str = "cpu", phrase_spec: WakePhraseSpec = HI_FI_KIZZ
+    ) -> None:
         try:
             import torch
             import torchaudio
@@ -238,10 +360,14 @@ class MmsAligner:
         self.torch = torch
         self.torchaudio = torchaudio
         self.device = torch.device(device)
+        self.phrase_spec = phrase_spec
         self.bundle = torchaudio.pipelines.MMS_FA
         self.model = self.bundle.get_model(with_star=False).to(self.device).eval()
         self.dictionary = self.bundle.get_dict(star=None)
-        self.transcripts = (CANONICAL_TRANSCRIPT, *COLLISION_TRANSCRIPTS)
+        self.transcripts = (
+            phrase_spec.ctc_transcript,
+            *phrase_spec.collision_transcripts,
+        )
         unknown = {
             character
             for transcript in self.transcripts
@@ -257,6 +383,17 @@ class MmsAligner:
             raise RuntimeError("MMS alignment checkpoint was not materialized")
         self.checkpoint = checkpoint.resolve()
         self.checkpoint_sha256 = sha256_file(self.checkpoint)
+        self.token_lengths = {
+            transcript: len(transcript) for transcript in self.transcripts
+        }
+        self.metadata = {
+            "backend": "mms_character_ctc",
+            "bundle": "torchaudio.pipelines.MMS_FA",
+            "torchaudio_version": torchaudio.__version__,
+            "checkpoint": str(self.checkpoint),
+            "checkpoint_sha256": self.checkpoint_sha256,
+            "device": str(self.device),
+        }
 
     def score_and_align(self, samples: np.ndarray) -> dict[str, Any]:
         torch = self.torch
@@ -285,20 +422,161 @@ class MmsAligner:
             )
             candidate_nll[transcript] = float(loss)
 
+        canonical_transcript = self.phrase_spec.ctc_transcript
         target = torch.tensor(
-            [[self.dictionary[character] for character in CANONICAL_TRANSCRIPT]],
+            [[self.dictionary[character] for character in canonical_transcript]],
             dtype=torch.int32,
         )
         alignments, scores = functional.forced_align(emissions, target, blank=0)
         merged = functional.merge_tokens(alignments[0], scores[0].exp())
-        if len(merged) != len(CANONICAL_TRANSCRIPT):
+        if len(merged) != len(canonical_transcript):
             raise ValueError("MMS canonical alignment returned the wrong token count")
         return {
             "candidate_nll": candidate_nll,
             "emission_frames": int(emissions.shape[1]),
             "token_spans": [
                 {
-                    "token": CANONICAL_TRANSCRIPT[index],
+                    "token": canonical_transcript[index],
+                    "start": int(span.start),
+                    "end": int(span.end),
+                    "score": float(span.score),
+                }
+                for index, span in enumerate(merged)
+            ],
+        }
+
+
+class IpaCtcAligner:
+    """Pinned open-weight IPA/CTC scorer and forced phone aligner."""
+
+    MODEL_ID = "facebook/wav2vec2-lv-60-espeak-cv-ft"
+    MODEL_REVISION = "ae45363bf3413b374fecd9dc8bc1df0e24c3b7f4"
+
+    def __init__(
+        self, device: str = "cpu", phrase_spec: WakePhraseSpec = HI_FI_KIZZ
+    ) -> None:
+        try:
+            import torch
+            import torchaudio
+            from transformers.utils import WEIGHTS_NAME
+            from transformers.utils.hub import cached_file
+        except ImportError as error:  # pragma: no cover - optional runtime
+            raise RuntimeError(
+                "install torch==2.8.0, torchaudio==2.8.0, transformers==4.55.4, "
+                "and phonemizer==3.3.0 for IPA alignment"
+            ) from error
+        from microwakeword.kizz_phoneme_teacher import (
+            load_hf_teacher,
+            resolve_phone_ids,
+        )
+
+        if torchaudio.__version__.split("+")[0] != "2.8.0":
+            raise RuntimeError("Kizz IPA alignment is pinned to torchaudio 2.8.0")
+        try:
+            transformers_version = importlib.metadata.version("transformers")
+        except importlib.metadata.PackageNotFoundError as error:  # pragma: no cover
+            raise RuntimeError("transformers is required for IPA alignment") from error
+        if transformers_version != "4.55.4":
+            raise RuntimeError("Kizz IPA alignment is pinned to transformers 4.55.4")
+
+        self.torch = torch
+        self.torchaudio = torchaudio
+        self.phrase_spec = phrase_spec
+        self.model, self.processor, self.tokenizer, self.device = load_hf_teacher(
+            self.MODEL_ID,
+            revision=self.MODEL_REVISION,
+            device=device,
+            local_files_only=True,
+        )
+        self.blank_id = int(
+            self.tokenizer.pad_token_id
+            if self.tokenizer.pad_token_id is not None
+            else 0
+        )
+        sequences = (phrase_spec.phones, *phrase_spec.collision_phones)
+        self.transcripts = (
+            phrase_spec.ctc_transcript,
+            *phrase_spec.collision_transcripts,
+        )
+        self.token_ids = {
+            transcript: resolve_phone_ids(self.tokenizer, phones)
+            for transcript, phones in zip(self.transcripts, sequences, strict=True)
+        }
+        self.token_lengths = {
+            transcript: len(tokens) for transcript, tokens in self.token_ids.items()
+        }
+        checkpoint = cached_file(
+            self.MODEL_ID,
+            WEIGHTS_NAME,
+            revision=self.MODEL_REVISION,
+            local_files_only=True,
+        )
+        if not checkpoint:
+            raise RuntimeError("pinned IPA model checkpoint was not materialized")
+        self.checkpoint = Path(checkpoint).resolve()
+        self.checkpoint_sha256 = sha256_file(self.checkpoint)
+        self.metadata = {
+            "backend": "wav2vec2_ipa_ctc",
+            "model_id": self.MODEL_ID,
+            "revision": self.MODEL_REVISION,
+            "transformers_version": transformers_version,
+            "torchaudio_version": torchaudio.__version__,
+            "checkpoint": str(self.checkpoint),
+            "checkpoint_sha256": self.checkpoint_sha256,
+            "device": str(self.device),
+            "canonical_phones": list(phrase_spec.phones),
+            "collision_phone_paths": {
+                transcript: list(phones)
+                for transcript, phones in zip(
+                    phrase_spec.collision_transcripts,
+                    phrase_spec.collision_phones,
+                    strict=True,
+                )
+            },
+        }
+
+    def score_and_align(self, samples: np.ndarray) -> dict[str, Any]:
+        torch = self.torch
+        functional = self.torchaudio.functional
+        inputs = self.processor(
+            samples, sampling_rate=SAMPLE_RATE, return_tensors="pt"
+        )
+        with torch.inference_mode():
+            logits = self.model(
+                input_values=inputs.input_values.to(self.device)
+            ).logits[0].cpu()
+        log_probs = torch.log_softmax(logits, dim=-1)
+        input_lengths = torch.tensor([len(log_probs)], dtype=torch.long)
+        candidate_nll = {}
+        for transcript in self.transcripts:
+            target = torch.tensor(self.token_ids[transcript], dtype=torch.long)
+            target_lengths = torch.tensor([len(target)], dtype=torch.long)
+            loss = torch.nn.functional.ctc_loss(
+                log_probs.unsqueeze(1),
+                target,
+                input_lengths,
+                target_lengths,
+                blank=self.blank_id,
+                reduction="sum",
+                zero_infinity=False,
+            )
+            candidate_nll[transcript] = float(loss)
+
+        canonical = torch.tensor(
+            [self.token_ids[self.phrase_spec.ctc_transcript]], dtype=torch.int32
+        )
+        alignments, scores = functional.forced_align(
+            log_probs.unsqueeze(0), canonical, blank=self.blank_id
+        )
+        merged = functional.merge_tokens(alignments[0], scores[0].exp())
+        if len(merged) != len(self.phrase_spec.phones):
+            raise ValueError("IPA canonical alignment returned the wrong token count")
+        return {
+            "candidate_nll": candidate_nll,
+            "emission_frames": int(len(log_probs)),
+            "token_spans": [
+                {
+                    "token": self.phrase_spec.phones[index],
                     "start": int(span.start),
                     "end": int(span.end),
                     "score": float(span.score),
@@ -310,7 +588,7 @@ class MmsAligner:
 
 def _alignment_record(
     row: Mapping[str, Any],
-    aligner: MmsAligner,
+    aligner: MmsAligner | IpaCtcAligner,
     *,
     minimum_margin_per_token: float,
     maximum_canonical_nll_per_token: float,
@@ -322,6 +600,8 @@ def _alignment_record(
         measured["candidate_nll"],
         minimum_margin_per_token=minimum_margin_per_token,
         maximum_canonical_nll_per_token=maximum_canonical_nll_per_token,
+        phrase_spec=aligner.phrase_spec,
+        token_lengths=aligner.token_lengths,
     )
     audit = {
         "source_id": row["source_id"],
@@ -341,6 +621,7 @@ def _alignment_record(
         waveform_samples=len(cropped),
         emission_frames=measured["emission_frames"],
         crop_offset_seconds=crop_offset,
+        phones=aligner.phrase_spec.phones,
     )
     selected = dict(row)
     selected.update(
@@ -348,10 +629,10 @@ def _alignment_record(
             "phrase_span": phrase_span,
             "phone_spans": phone_spans,
             "alignment": {
-                "method": "ctc_forced_alignment",
+                "method": f"{aligner.metadata['backend']}_forced_alignment",
                 "timing_source": str(aligner.checkpoint),
                 "model_sha256": aligner.checkpoint_sha256,
-                "transcript": CANONICAL_TRANSCRIPT,
+                "transcript": aligner.phrase_spec.ctc_transcript,
                 "token_spans": measured["token_spans"],
                 "pronunciation_decision": decision,
             },
@@ -421,6 +702,11 @@ def build(
     device: str,
     minimum_margin_per_token: float,
     maximum_canonical_nll_per_token: float,
+    phrase_spec: WakePhraseSpec = HI_FI_KIZZ,
+    alignment_backend: str = "auto",
+    required_providers: Sequence[str] = (),
+    maximum_provider_share: float = 0.35,
+    provider_balance_seed: int = 231,
 ) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text())
     positives = [
@@ -430,7 +716,18 @@ def build(
     ]
     if not positives:
         raise ValueError("canonical manifest has no eligible positives")
-    aligner = MmsAligner(device)
+    if alignment_backend == "auto":
+        alignment_backend = (
+            "wav2vec2_ipa_ctc"
+            if phrase_spec.phrase_id == "kizz-control"
+            else "mms_character_ctc"
+        )
+    if alignment_backend == "wav2vec2_ipa_ctc":
+        aligner: MmsAligner | IpaCtcAligner = IpaCtcAligner(device, phrase_spec)
+    elif alignment_backend == "mms_character_ctc":
+        aligner = MmsAligner(device, phrase_spec)
+    else:
+        raise ValueError(f"unknown alignment backend: {alignment_backend}")
     direct = [row for row in positives if row["source_group"] != "noisy_overlay"]
     overlays = [row for row in positives if row["source_group"] == "noisy_overlay"]
     selected = []
@@ -469,6 +766,19 @@ def build(
         if inherited is not None:
             selected.append(inherited)
 
+    acoustically_accepted_count = len(selected)
+    selected, selection_contract = select_provider_balanced(
+        selected,
+        required_providers=required_providers,
+        maximum_provider_share=maximum_provider_share,
+        seed=provider_balance_seed,
+    )
+    if not selection_contract["qualified"]:
+        raise ValueError(
+            "post-alignment provider contract failed: "
+            + json.dumps(selection_contract["violations"], sort_keys=True)
+        )
+
     counts = Counter((str(row["split"]), str(row["source_group"])) for row in selected)
     rejection_reasons = Counter(
         reason for row in audit_rows if not row["accepted"] for reason in row["reasons"]
@@ -478,26 +788,27 @@ def build(
         "source_manifest": str(manifest_path.resolve()),
         "source_manifest_sha256": sha256_file(manifest_path),
         "target": {
-            "transcript": CANONICAL_TRANSCRIPT,
-            "phones": list(CANONICAL_PHONES),
+            "phrase_id": phrase_spec.phrase_id,
+            "text": phrase_spec.text,
+            "transcript": phrase_spec.ctc_transcript,
+            "phones": list(phrase_spec.phones),
+            "collision_transcripts": list(phrase_spec.collision_transcripts),
         },
-        "aligner": {
-            "bundle": "torchaudio.pipelines.MMS_FA",
-            "torchaudio_version": aligner.torchaudio.__version__,
-            "checkpoint": str(aligner.checkpoint),
-            "checkpoint_sha256": aligner.checkpoint_sha256,
-            "device": str(aligner.device),
-        },
+        "aligner": aligner.metadata,
         "thresholds": {
             "minimum_margin_per_token": minimum_margin_per_token,
             "maximum_canonical_nll_per_token": maximum_canonical_nll_per_token,
         },
+        "selection_contract": selection_contract,
         "counts": {
             "input_positives": len(positives),
             "direct_positives": len(direct),
             "overlay_positives": len(overlays),
+            "acoustically_accepted": acoustically_accepted_count,
             "selected": len(selected),
-            "rejected": len(positives) - len(selected),
+            "rejected_acoustically": len(positives) - acoustically_accepted_count,
+            "excluded_by_provider_contract": acoustically_accepted_count
+            - len(selected),
             "selected_by_split_and_source": [
                 {"split": split, "source_group": source, "count": count}
                 for (split, source), count in sorted(counts.items())
@@ -521,6 +832,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
+        "--alignment-backend",
+        choices=("auto", "mms_character_ctc", "wav2vec2_ipa_ctc"),
+        default="auto",
+    )
+    parser.add_argument(
+        "--required-provider",
+        action="append",
+        default=[],
+        help=(
+            "Require this provider after acoustic qualification and retain the "
+            "largest cohort satisfying --maximum-provider-share; repeatable."
+        ),
+    )
+    parser.add_argument("--maximum-provider-share", type=float, default=0.35)
+    parser.add_argument("--provider-balance-seed", type=int, default=231)
+    parser.add_argument(
+        "--phrase-id",
+        choices=tuple(sorted(WAKE_PHRASES)),
+        default=HI_FI_KIZZ.phrase_id,
+    )
+    parser.add_argument(
         "--minimum-margin-per-token",
         type=float,
         default=0.0,
@@ -538,6 +870,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         device=args.device,
         minimum_margin_per_token=args.minimum_margin_per_token,
         maximum_canonical_nll_per_token=args.maximum_canonical_nll_per_token,
+        phrase_spec=get_wake_phrase(args.phrase_id),
+        alignment_backend=args.alignment_backend,
+        required_providers=args.required_provider,
+        maximum_provider_share=args.maximum_provider_share,
+        provider_balance_seed=args.provider_balance_seed,
     )
     print(json.dumps(result["counts"], indent=2, sort_keys=True))
     return 0 if result["examples"] else 2

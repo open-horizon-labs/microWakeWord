@@ -32,8 +32,13 @@ import soundfile as sf
 from scipy.signal import resample_poly
 
 from microwakeword.audio.audio_utils import MicroFrontend
-from microwakeword.ordered_state import KIZZ_PHONES
 from microwakeword.ordered_state_data import example_from_mapping, frame_state_targets
+from microwakeword.wake_phrase import (
+    HI_FI_KIZZ,
+    WAKE_PHRASES,
+    WakePhraseSpec,
+    get_wake_phrase,
+)
 
 SAMPLE_RATE = 16_000
 INPUT_FRAMES = 260
@@ -43,7 +48,11 @@ CONTEXT_SAMPLES = 41_920
 SAMPLES_PER_CALL = 160
 TARGET_FRAME_TIMES = 0.015 + 0.030 * np.arange(OUTPUT_FRAMES)
 ALLOWED_ALIGNMENT_METHODS = frozenset(
-    ("ctc_forced_alignment", "inherited_ctc_forced_alignment")
+    (
+        "ctc_forced_alignment",
+        "inherited_ctc_forced_alignment",
+        "wav2vec2_ipa_ctc_forced_alignment",
+    )
 )
 DEFAULT_OVERLAY_SNR_DB = (5.0, 10.0, 15.0, 20.0)
 
@@ -71,6 +80,34 @@ def _rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def load_pronunciation_acceptances(
+    audit_path: Path, source_manifest: Path
+) -> set[str]:
+    """Load an all-split pronunciation allowlist bound to its source manifest."""
+    payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    scope = payload.get("scope", {})
+    if (
+        payload.get("gate_scope") != "independent_source_pronunciation_qc"
+        or payload.get("source_manifest_sha256") != sha256_file(source_manifest)
+        or scope.get("gate_mode") != "all"
+        or set(scope.get("splits", [])) != {"train", "validation", "test"}
+    ):
+        raise ValueError("source pronunciation audit is not the bound all-split gate")
+    results = payload.get("results", [])
+    identities = [str(row.get("source_id", "")) for row in results]
+    if (
+        not identities
+        or any(not identity for identity in identities)
+        or len(set(identities)) != len(identities)
+    ):
+        raise ValueError("source pronunciation audit has missing/duplicate identities")
+    return {
+        str(row["source_id"])
+        for row in results
+        if row.get("accepted") is True
+    }
+
+
 def _span_seconds(value: Mapping[str, Any], name: str) -> tuple[float, float]:
     if value.get("start_s") is not None and value.get("end_s") is not None:
         start, end = float(value["start_s"]), float(value["end_s"])
@@ -83,7 +120,9 @@ def _span_seconds(value: Mapping[str, Any], name: str) -> tuple[float, float]:
     return start, end
 
 
-def validate_aligned_positive(row: Mapping[str, Any]) -> None:
+def validate_aligned_positive(
+    row: Mapping[str, Any], phrase_spec: WakePhraseSpec = HI_FI_KIZZ
+) -> None:
     """Fail closed unless a row is an accepted canonical phone alignment."""
     if int(row.get("label", -1)) != 1:
         raise ValueError("aligned positive must have label 1")
@@ -93,8 +132,8 @@ def validate_aligned_positive(row: Mapping[str, Any]) -> None:
         raise ValueError("locked deployment anchors may not enter training")
     if row.get("semantic_label") != "canonical_exact":
         raise ValueError("aligned positive must be canonical_exact")
-    if tuple(row.get("target_phones", ())) != tuple(KIZZ_PHONES):
-        raise ValueError("aligned positive must declare the canonical seven phones")
+    if tuple(row.get("target_phones", ())) != tuple(phrase_spec.phones):
+        raise ValueError("aligned positive must declare the canonical phrase phones")
     if row.get("split") not in ("train", "validation", "test"):
         raise ValueError("aligned positive must declare a supported split")
     alignment = row.get("alignment")
@@ -110,10 +149,12 @@ def validate_aligned_positive(row: Mapping[str, Any]) -> None:
     if not isinstance(phrase, Mapping) or not isinstance(phones, list):
         raise TypeError("aligned positive requires phrase and phone spans")
     phrase_start, phrase_end = _span_seconds(phrase, "phrase_span")
-    if len(phones) != len(KIZZ_PHONES):
-        raise ValueError("aligned positive requires exactly seven phone spans")
+    if len(phones) != len(phrase_spec.phones):
+        raise ValueError(
+            f"aligned positive requires exactly {len(phrase_spec.phones)} phone spans"
+        )
     previous = phrase_start
-    for expected, span in zip(KIZZ_PHONES, phones):
+    for expected, span in zip(phrase_spec.phones, phones):
         if span.get("phone") != expected:
             raise ValueError("phone spans are not the canonical ordered sequence")
         start, end = _span_seconds(span, f"phone {expected}")
@@ -210,7 +251,10 @@ def frontend(samples: np.ndarray) -> np.ndarray:
 
 
 def _translated_record(
-    row: Mapping[str, Any], translation_s: float, source_id: str
+    row: Mapping[str, Any],
+    translation_s: float,
+    source_id: str,
+    phrase_spec: WakePhraseSpec,
 ) -> dict[str, Any]:
     phrase_start, phrase_end = _span_seconds(row["phrase_span"], "phrase_span")
     phones = []
@@ -234,7 +278,7 @@ def _translated_record(
         "phone_spans": phones,
     }
     # Re-parse to enforce the ordered-state timing contract after translation.
-    example_from_mapping(record)
+    example_from_mapping(record, expected_phones=phrase_spec.phones)
     return record
 
 
@@ -280,19 +324,33 @@ def build(
     positive_manifests: Sequence[Path],
     output_dir: Path,
     *,
+    source_pronunciation_audit: Path | None = None,
+    source_manifest: Path | None = None,
     background_manifest: Path | None = None,
+    negative_manifest: Path | None = None,
     overlay_snr_db: Sequence[float] = DEFAULT_OVERLAY_SNR_DB,
     negative_groups: Sequence[str] = (),
     include_inherited_alignments: bool = False,
     states_per_phone: int = 1,
     seed: int = 24103,
+    phrase_spec: WakePhraseSpec = HI_FI_KIZZ,
 ) -> dict[str, Any]:
     if not positive_manifests:
         raise ValueError("at least one aligned positive manifest is required")
     if states_per_phone not in (1, 2, 3):
         raise ValueError("states_per_phone must be 1, 2, or 3")
-    state_count = 2 + len(KIZZ_PHONES) * states_per_phone
+    state_count = 2 + len(phrase_spec.phones) * states_per_phone
+    if (source_pronunciation_audit is None) != (source_manifest is None):
+        raise ValueError(
+            "source pronunciation audit and source manifest must be provided together"
+        )
+    pronunciation_accepted = (
+        load_pronunciation_acceptances(source_pronunciation_audit, source_manifest)
+        if source_pronunciation_audit is not None and source_manifest is not None
+        else None
+    )
     direct = []
+    pronunciation_excluded = []
     seen = set()
     for manifest in positive_manifests:
         for row in _rows(manifest):
@@ -302,8 +360,14 @@ def build(
                 and row["alignment"].get("method") == "inherited_ctc_forced_alignment"
             ):
                 continue
-            validate_aligned_positive(row)
+            validate_aligned_positive(row, phrase_spec)
             source_id = str(row["source_id"])
+            if (
+                pronunciation_accepted is not None
+                and source_id not in pronunciation_accepted
+            ):
+                pronunciation_excluded.append(source_id)
+                continue
             if source_id in seen:
                 raise ValueError(f"duplicate aligned source_id: {source_id}")
             seen.add(source_id)
@@ -373,9 +437,11 @@ def build(
                 )
         for variant, waveform, shift, augmentation in variants:
             variant_id = f"{row['source_id']}::{variant}"
-            translated = _translated_record(row, shift, variant_id)
+            translated = _translated_record(row, shift, variant_id, phrase_spec)
             targets = frame_state_targets(
-                example_from_mapping(translated),
+                example_from_mapping(
+                    translated, expected_phones=phrase_spec.phones
+                ),
                 TARGET_FRAME_TIMES,
                 states_per_phone=states_per_phone,
             )
@@ -414,14 +480,20 @@ def build(
 
     negative_counts = {}
     if negative_groups:
-        if background_manifest is None:
-            raise ValueError("negative groups require the canonical manifest")
+        materialization_manifest = negative_manifest or background_manifest
+        if materialization_manifest is None:
+            raise ValueError("negative groups require a negative manifest")
         allowed = set(negative_groups)
-        grouped: dict[str, list[np.ndarray]] = {group: [] for group in allowed}
-        for row in _rows(background_manifest):
+        grouped: dict[tuple[str, str], list[np.ndarray]] = {
+            (split, group): []
+            for split in ("train", "validation", "test")
+            for group in allowed
+        }
+        for row in _rows(materialization_manifest):
             group = str(row.get("source_group", ""))
+            split = str(row.get("split", ""))
             if (
-                row.get("split") != "train"
+                split not in ("train", "validation", "test")
                 or int(row.get("label", -1)) != 0
                 or group not in allowed
             ):
@@ -433,13 +505,16 @@ def build(
             else:
                 left = (CONTEXT_SAMPLES - len(audio)) // 2
                 context = np.pad(audio, (left, CONTEXT_SAMPLES - len(audio) - left))
-            grouped[group].append(frontend(context))
-        for group in sorted(allowed):
-            if not grouped[group]:
-                raise ValueError(f"negative group is empty: {group}")
-            values = np.stack(grouped[group]).astype(np.float32, copy=False)
-            np.save(output_dir / f"negative-train-{group}.npy", values)
-            negative_counts[group] = len(values)
+            grouped[(split, group)].append(frontend(context))
+        for split in ("train", "validation", "test"):
+            negative_counts[split] = {}
+            for group in sorted(allowed):
+                values_for_group = grouped[(split, group)]
+                if not values_for_group:
+                    raise ValueError(f"negative group is empty: {split}/{group}")
+                values = np.stack(values_for_group).astype(np.float32, copy=False)
+                np.save(output_dir / f"negative-{split}-{group}.npy", values)
+                negative_counts[split][group] = len(values)
 
     report = {
         "schema_version": 3,
@@ -448,6 +523,19 @@ def build(
             {"path": str(path.resolve()), "sha256": sha256_file(path)}
             for path in positive_manifests
         ],
+        "source_pronunciation_audit": (
+            {
+                "path": str(source_pronunciation_audit.resolve()),
+                "sha256": sha256_file(source_pronunciation_audit),
+                "source_manifest": str(source_manifest.resolve()),
+                "source_manifest_sha256": sha256_file(source_manifest),
+                "accepted_aligned_count": len(direct),
+                "excluded_aligned_count": len(pronunciation_excluded),
+            }
+            if source_pronunciation_audit is not None
+            and source_manifest is not None
+            else None
+        ),
         "background_manifest": (
             {
                 "path": str(background_manifest.resolve()),
@@ -456,10 +544,23 @@ def build(
             if background_manifest is not None
             else None
         ),
+        "negative_manifest": (
+            {
+                "path": str(negative_manifest.resolve()),
+                "sha256": sha256_file(negative_manifest),
+            }
+            if negative_manifest is not None
+            else None
+        ),
         "input_shape": [INPUT_FRAMES, FEATURE_BINS],
         "target_shape": [OUTPUT_FRAMES],
         "states_per_phone": states_per_phone,
         "state_count": state_count,
+        "wake_phrase": {
+            "phrase_id": phrase_spec.phrase_id,
+            "text": phrase_spec.text,
+            "phones": list(phrase_spec.phones),
+        },
         "target_frame_times_seconds": TARGET_FRAME_TIMES.tolist(),
         "overlay_snr_db": list(snrs),
         "include_inherited_alignments": include_inherited_alignments,
@@ -479,7 +580,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--aligned-positive-manifest", type=Path, action="append", required=True
     )
+    parser.add_argument("--source-pronunciation-audit", type=Path)
+    parser.add_argument("--source-manifest", type=Path)
     parser.add_argument("--background-manifest", type=Path)
+    parser.add_argument(
+        "--negative-manifest",
+        type=Path,
+        help=(
+            "Split-aware source for materialized negative groups. Defaults to "
+            "--background-manifest for backward compatibility."
+        ),
+    )
     parser.add_argument("--overlay-snr-db", type=float, action="append")
     parser.add_argument("--negative-group", action="append", default=[])
     parser.add_argument(
@@ -488,18 +599,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Include pre-existing augmented descendants; disabled for clean-slate runs.",
     )
     parser.add_argument("--states-per-phone", type=int, choices=(1, 2, 3), default=1)
+    parser.add_argument(
+        "--phrase-id",
+        choices=tuple(sorted(WAKE_PHRASES)),
+        default=HI_FI_KIZZ.phrase_id,
+    )
     parser.add_argument("--seed", type=int, default=24103)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     report = build(
         args.aligned_positive_manifest,
         args.output,
+        source_pronunciation_audit=args.source_pronunciation_audit,
+        source_manifest=args.source_manifest,
         background_manifest=args.background_manifest,
+        negative_manifest=args.negative_manifest,
         overlay_snr_db=args.overlay_snr_db or DEFAULT_OVERLAY_SNR_DB,
         negative_groups=args.negative_group,
         include_inherited_alignments=args.include_inherited_alignments,
         states_per_phone=args.states_per_phone,
         seed=args.seed,
+        phrase_spec=get_wake_phrase(args.phrase_id),
     )
     print(
         json.dumps(

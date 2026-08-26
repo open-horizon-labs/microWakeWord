@@ -13,7 +13,7 @@ import json
 import math
 import shutil
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -40,11 +40,14 @@ from microwakeword.ordered_state import (
     KIZZ_TOPOLOGY,
     OrderedStateTopology,
 )
+from microwakeword.wake_phrase import HI_FI_KIZZ, WAKE_PHRASES, get_wake_phrase
 
 sha256_file = balance_sha256_file
 
 
 def resolve_topology(args: argparse.Namespace) -> OrderedStateTopology:
+    phrase_id = getattr(args, "phrase_id", HI_FI_KIZZ.phrase_id)
+    phones = get_wake_phrase(phrase_id).phones
     if args.topology == "single" and args.states_per_phone not in (None, 1):
         raise ValueError("--topology single requires --states-per-phone 1 or omission")
     if args.topology == "legacy" and args.states_per_phone not in (None, 3):
@@ -52,16 +55,12 @@ def resolve_topology(args: argparse.Namespace) -> OrderedStateTopology:
     if args.topology == "double" and args.states_per_phone not in (None, 2):
         raise ValueError("--topology double requires --states-per-phone 2 or omission")
     if args.states_per_phone is not None:
-        return (
-            KIZZ_SINGLE_STATE_TOPOLOGY
-            if args.states_per_phone == 1
-            else OrderedStateTopology(KIZZ_TOPOLOGY.phones, args.states_per_phone)
-        )
+        return OrderedStateTopology(phones, args.states_per_phone)
     if args.topology == "single":
-        return KIZZ_SINGLE_STATE_TOPOLOGY
+        return OrderedStateTopology(phones, 1)
     if args.topology == "double":
-        return OrderedStateTopology(KIZZ_TOPOLOGY.phones, 2)
-    return KIZZ_TOPOLOGY
+        return OrderedStateTopology(phones, 2)
+    return OrderedStateTopology(phones, 3)
 
 
 def parse_source(value: str) -> NegativeSource:
@@ -241,6 +240,85 @@ def positive_source_balance_report(provenance: dict, guard: dict) -> dict:
     }
 
 
+def training_positive_source_families(provenance: dict) -> list[str]:
+    """Return the actual source family for every materialized train row.
+
+    The order is the feature-array order written by the materializer.  This is
+    the data-contract bridge that turns inventory diversity into realized batch
+    diversity instead of assuming uniform row sampling is representative.
+    """
+    examples = provenance.get("examples")
+    if not isinstance(examples, list):
+        raise TypeError("feature provenance examples are required")
+    families = []
+    for row in examples:
+        if row.get("split") != "train":
+            continue
+        family = row.get("provider") or row.get("source_group")
+        if not family:
+            raise ValueError(
+                f"positive feature row has no source family: {row.get('source_id')}"
+            )
+        families.append(str(family))
+    return families
+
+
+def validate_realized_positive_sampling(
+    counts: Mapping[str, int], guard: dict
+) -> dict:
+    """Fail closed when training did not actually sample provider diversity."""
+    minimum_families = int(guard.get("minimum_families", 1))
+    minimum_share = float(guard.get("minimum_family_share", 0.0))
+    maximum_share = float(guard.get("maximum_family_share", 1.0))
+    total = int(sum(int(value) for value in counts.values()))
+    violations = []
+    shares = {
+        str(family): int(count) / total
+        for family, count in sorted(counts.items())
+        if int(count) > 0 and total
+    }
+    if len(shares) < minimum_families:
+        violations.append(
+            {
+                "reason": "too_few_realized_positive_families",
+                "actual": len(shares),
+                "minimum": minimum_families,
+            }
+        )
+    for family, share in shares.items():
+        if share < minimum_share - 1e-12:
+            violations.append(
+                {
+                    "reason": "realized_positive_family_underrepresented",
+                    "family": family,
+                    "actual_share": share,
+                    "minimum_share": minimum_share,
+                }
+            )
+        if share > maximum_share + 1e-12:
+            violations.append(
+                {
+                    "reason": "realized_positive_family_overrepresented",
+                    "family": family,
+                    "actual_share": share,
+                    "maximum_share": maximum_share,
+                }
+            )
+    return {
+        "qualified": not violations,
+        "mode": guard.get("mode"),
+        "total_samples": total,
+        "family_counts": dict(sorted((str(k), int(v)) for k, v in counts.items())),
+        "family_shares": shares,
+        "limits": {
+            "minimum_families": minimum_families,
+            "minimum_family_share": minimum_share,
+            "maximum_family_share": maximum_share,
+        },
+        "violations": violations,
+    }
+
+
 def realized_mixture_ledger(
     sequence, guard: dict, source_groups: dict[str, str]
 ) -> dict:
@@ -273,6 +351,9 @@ def realized_mixture_ledger(
         "realized_groups": rows(group_counts),
         "negative_source_samples": dict(
             sorted(sequence.negative_source_sample_counts.items())
+        ),
+        "positive_source_samples": dict(
+            sorted(getattr(sequence, "positive_source_sample_counts", {}).items())
         ),
     }
 
@@ -467,6 +548,21 @@ def train(args: argparse.Namespace) -> dict:
             "positive source-balance guard rejected feature materialization; see "
             f"{positive_balance_path}"
         )
+    positive_sampling_guard = mixture_recipe.get("positive_sampling_guard")
+    if not isinstance(positive_sampling_guard, dict):
+        raise TypeError("batch mixture recipe must contain positive_sampling_guard")
+    if positive_sampling_guard.get("mode") != "uniform_family":
+        raise ValueError("positive sampling mode must be uniform_family")
+    positive_families = training_positive_source_families(feature_provenance)
+    if len(positive_families) != len(
+        np.load(args.positive_features, mmap_mode="r")
+    ):
+        raise ValueError("positive provenance does not match feature-array order")
+    declared_family_count = len(set(positive_families))
+    if declared_family_count < int(
+        positive_sampling_guard.get("minimum_families", 1)
+    ):
+        raise ValueError("too few positive families for uniform-family sampling")
     declared = declared_mixture_summary(
         args.negative_source_probabilities, args.negative_source_groups
     )
@@ -506,6 +602,7 @@ def train(args: argparse.Namespace) -> dict:
             args.negative_source_probabilities.get(source.source_id, 1.0)
             for source in args.negative_source
         ],
+        positive_source_families=positive_families,
         topology=topology,
     )
     optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
@@ -600,6 +697,15 @@ def train(args: argparse.Namespace) -> dict:
         sequence, mixture_guard, args.negative_source_groups
     )
     validate_realized_mixture(sampling_ledger, mixture_guard)
+    positive_sampling = validate_realized_positive_sampling(
+        sequence.positive_source_sample_counts, positive_sampling_guard
+    )
+    if not positive_sampling["qualified"]:
+        raise ValueError(
+            "realized positive provider sampling violated its contract: "
+            + json.dumps(positive_sampling["violations"], sort_keys=True)
+        )
+    sampling_ledger["realized_positive_sampling"] = positive_sampling
     sampling_ledger_path = output / "batch-mixture-ledger.json"
     sampling_ledger_path.write_text(
         json.dumps(sampling_ledger, indent=2, sort_keys=True) + "\n",
@@ -663,6 +769,7 @@ def train(args: argparse.Namespace) -> dict:
         "batch_mixture_recipe_sha256": sha256_file(args.batch_mixture_recipe),
         "positive_source_balance_report": str(positive_balance_path),
         "positive_source_balance_report_sha256": sha256_file(positive_balance_path),
+        "positive_sampling_guard": positive_sampling_guard,
         "batch_mixture_ledger": str(sampling_ledger_path),
         "batch_mixture_ledger_sha256": sha256_file(sampling_ledger_path),
         "checkpoint_selection": "validation_zero_fp_opportunity_recall_separation_loss",
@@ -729,7 +836,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--topology",
         choices=("legacy", "double", "single"),
         default="legacy",
-        help="ordered-state topology: 23-state legacy, 16-state double, or 9-state single",
+        help="ordered states per declared phrase phone: three, two, or one",
+    )
+    parser.add_argument(
+        "--phrase-id",
+        choices=tuple(sorted(WAKE_PHRASES)),
+        default=HI_FI_KIZZ.phrase_id,
     )
     parser.add_argument("--states-per-phone", type=int)
     parser.add_argument(

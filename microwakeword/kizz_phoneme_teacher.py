@@ -80,6 +80,57 @@ def ctc_log_probability(
     return _logaddexp(float(states[-1]), float(states[-2]))
 
 
+def ctc_log_probability_batch(
+    log_probs: np.ndarray, tokens: Sequence[int], *, blank_id: int
+) -> np.ndarray:
+    """Vectorized CTC forward probabilities for equal-length windows.
+
+    Continuous qualification evaluates thousands of overlapping windows per
+    audio chunk.  Calling the scalar reference DP for every window makes the
+    fixed 100-hour gate take days.  This implementation preserves the same
+    recurrence while vectorizing only across independent windows; the scalar
+    implementation remains the small reference contract used by tests.
+    """
+    values = np.asarray(log_probs, dtype=np.float64)
+    if values.ndim != 3 or not all(values.shape):
+        raise ValueError(
+            "log_probs must be a non-empty [windows, frames, vocabulary] array"
+        )
+    labels = tuple(int(token) for token in tokens)
+    if not labels:
+        return np.sum(values[:, :, blank_id], axis=1)
+    extended = (int(blank_id),) + sum(
+        ((token, int(blank_id)) for token in labels), ()
+    )
+    if min(extended) < 0 or max(extended) >= values.shape[2]:
+        raise ValueError("CTC token ID is outside the supplied vocabulary")
+    token_indexes = np.asarray(extended, dtype=np.int64)
+    states = np.full((len(values), len(extended)), -np.inf, dtype=np.float64)
+    states[:, 0] = values[:, 0, blank_id]
+    states[:, 1] = values[:, 0, labels[0]]
+    skip_allowed = np.asarray(
+        [
+            state > 1
+            and token != blank_id
+            and token != extended[state - 2]
+            for state, token in enumerate(extended)
+        ],
+        dtype=bool,
+    )
+    for frame_index in range(1, values.shape[1]):
+        next_states = states.copy()
+        next_states[:, 1:] = np.logaddexp(
+            next_states[:, 1:], states[:, :-1]
+        )
+        next_states[:, 2:] = np.where(
+            skip_allowed[None, 2:],
+            np.logaddexp(next_states[:, 2:], states[:, :-2]),
+            next_states[:, 2:],
+        )
+        states = next_states + values[:, frame_index, token_indexes]
+    return np.logaddexp(states[:, -1], states[:, -2])
+
+
 def ctc_fit(log_probs: np.ndarray, tokens: Sequence[int], *, blank_id: int) -> float:
     """Length-normalized CTC fit; higher is better."""
     return ctc_log_probability(log_probs, tokens, blank_id=blank_id) / max(
@@ -259,7 +310,15 @@ def load_hf_teacher(
         raise RuntimeError(
             "install torch and transformers to load the IPA teacher"
         ) from error
-    common = {"revision": revision, "local_files_only": local_files_only}
+    # A qualified adapted teacher is a complete local Hugging Face directory.
+    # ``revision`` is its immutable artifact identity in our reports, not a
+    # Hub ref, so never forward it to ``from_pretrained`` for local models.
+    local_model = Path(model_id).is_dir()
+    common = (
+        {"local_files_only": True}
+        if local_model
+        else {"revision": revision, "local_files_only": local_files_only}
+    )
     extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_id, **common)
     tokenizer = Wav2Vec2PhonemeCTCTokenizer.from_pretrained(model_id, **common)
     processor = Wav2Vec2Processor(feature_extractor=extractor, tokenizer=tokenizer)
@@ -267,6 +326,46 @@ def load_hf_teacher(
     target = torch.device(device)
     model.to(target).eval()
     return model, processor, tokenizer, target
+
+
+def resolve_hf_weights_path(
+    model_id: str,
+    *,
+    revision: str,
+    local_files_only: bool,
+) -> Path:
+    """Resolve the exact single-file weights artifact used by a teacher.
+
+    Adaptation deliberately saves one safetensors/bin file so qualification,
+    posterior caching, and continuous scoring can all bind the same bytes.
+    """
+    local = Path(model_id)
+    if local.is_dir():
+        candidates = tuple(
+            path
+            for name in ("model.safetensors", "pytorch_model.bin")
+            if (path := local / name).is_file()
+        )
+        if len(candidates) != 1:
+            raise ValueError(
+                "local teacher must contain exactly one model.safetensors or "
+                "pytorch_model.bin weights artifact"
+            )
+        return candidates[0].resolve()
+    from transformers.utils import SAFE_WEIGHTS_NAME, WEIGHTS_NAME
+    from transformers.utils.hub import cached_file
+
+    for filename in (SAFE_WEIGHTS_NAME, WEIGHTS_NAME):
+        resolved = cached_file(
+            model_id,
+            filename,
+            revision=revision,
+            local_files_only=local_files_only,
+            _raise_exceptions_for_missing_entries=False,
+        )
+        if resolved:
+            return Path(resolved).resolve()
+    raise ValueError("unable to resolve a single-file teacher weights artifact")
 
 
 __all__ = [
@@ -280,7 +379,9 @@ __all__ = [
     "choose_validation_threshold",
     "ctc_fit",
     "ctc_log_probability",
+    "ctc_log_probability_batch",
     "load_hf_teacher",
+    "resolve_hf_weights_path",
     "resolve_phone_ids",
     "score_window",
     "sha256_file",
