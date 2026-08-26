@@ -34,6 +34,14 @@ from microwakeword.phoneme_student import (
 from microwakeword.wake_phrase import KIZZ_CONTROL
 from tools.cache_kizz_phoneme_teacher_posteriors import load_cache
 from tools.cache_kizz_teacher_representations import load_representation_cache
+from tools.build_kizz_phoneme_distillation_corpus import (
+    _quantized_context,
+    frontend,
+    load_audio,
+    load_device_training_rows,
+    load_device_validation_rows,
+    place_phrase_context,
+)
 from tools.distill_kizz_student import student_flags
 
 INPUT_SHAPE = (260, 40)
@@ -127,6 +135,20 @@ def student_flags_for_architecture(architecture: str, output_count: int):
             causal_memory=True,
             warmup_output_drop=20,
             first_conv_filters=48,
+            first_conv_kernel_size=5,
+            stride=3,
+            num_states=output_count,
+        )
+    if architecture == "dilated_temporal_memory_wide":
+        return SimpleNamespace(
+            pointwise_filters="112,128,128,128,128",
+            residual_connection="1,1,1,1,1",
+            repeat_in_block="1,1,1,1,1",
+            mixconv_kernel_sizes="[3], [3], [3], [3], [3]",
+            temporal_dilations="1,2,4,8,16",
+            causal_memory=True,
+            warmup_output_drop=20,
+            first_conv_filters=64,
             first_conv_kernel_size=5,
             stride=3,
             num_states=output_count,
@@ -362,6 +384,107 @@ def checkpoint_selection_key(
         float(point.get("recall", 0.0)),
         float(separation) if separation is not None else finite_floor,
     )
+
+
+def multichannel_checkpoint_selection_key(
+    point: dict,
+    clean_zero_false_accept_recall: float,
+    device_zero_false_accept_recall: float,
+    device_accepted: int,
+    device_required: int,
+    separation: float | None,
+) -> tuple[float, ...]:
+    """Rank only checkpoints that satisfy both clean and target-channel gates."""
+
+    base = checkpoint_selection_key(point, clean_zero_false_accept_recall, separation)
+    return (
+        float(bool(point.get("qualified")) and device_accepted >= device_required),
+        min(
+            float(clean_zero_false_accept_recall),
+            float(device_zero_false_accept_recall),
+        ),
+        float(device_accepted),
+        *base,
+    )
+
+
+def device_validation_features(quality_report: Path) -> tuple[np.ndarray, list[dict]]:
+    """Materialize exact frontend tensors for held-out qualified device clips."""
+
+    rows = load_device_validation_rows(quality_report)
+    values = []
+    for row in rows:
+        audio = load_audio(Path(row["path"]))
+        phrase = row["phrase_span"]
+        context, _ = place_phrase_context(
+            audio, (float(phrase["start_s"]), float(phrase["end_s"]))
+        )
+        _, exact_float = _quantized_context(context)
+        values.append(frontend(exact_float))
+    return np.asarray(values, dtype=np.float32), rows
+
+
+def device_parent_feature_pairs(
+    corpus: dict, rows: list[dict]
+) -> dict[int, np.ndarray]:
+    """Bind every device-training row to its exact aligned clean source view."""
+
+    binding = corpus.get("manifests", {}).get("device_quality") or {}
+    quality_path = Path(str(binding.get("path", ""))).resolve()
+    if not quality_path.is_file() or binding.get("sha256") != sha256_file(quality_path):
+        raise ValueError("distillation corpus device-quality binding drifted")
+    qualified = load_device_training_rows(quality_path)
+    qualified_by_hash = {row["audio_sha256"]: row for row in qualified}
+    quality = json.loads(quality_path.read_text())
+    selection_path = Path(str(quality.get("inputs", {}).get("selection", ""))).resolve()
+    if not selection_path.is_file() or quality["inputs"].get(
+        "selection_sha256"
+    ) != sha256_file(selection_path):
+        raise ValueError("device parent selection binding drifted")
+    selected = json.loads(selection_path.read_text()).get("selected_examples", [])
+    sources = {str(row.get("audio_sha256", "")): row for row in selected}
+    pairs: dict[int, np.ndarray] = {}
+    for index, row in enumerate(rows):
+        if (
+            row.get("source_group") != DEVICE_POSITIVE_SOURCE_GROUP
+            or row.get("split") != "train"
+        ):
+            continue
+        source = sources.get(str(row.get("parent_source_audio_sha256", "")))
+        qualified_row = qualified_by_hash.get(str(row.get("source_audio_sha256", "")))
+        if source is None or qualified_row is None:
+            raise ValueError("device training row lacks its qualified clean parent")
+        audio = load_audio(Path(source["path"]))
+        phrase = source["phrase_span"]
+        context, _ = place_phrase_context(
+            audio, (float(phrase["start_s"]), float(phrase["end_s"]))
+        )
+        _, exact_float = _quantized_context(context)
+        pairs[index] = frontend(exact_float)
+    if len(pairs) != len(qualified):
+        raise ValueError("not every qualified device training row has a clean pair")
+    return pairs
+
+
+def load_temporal_representation_cache(prefix: Path) -> tuple[dict, np.ndarray]:
+    metadata = json.loads(prefix.with_suffix(".json").read_text())
+    matrix = np.load(prefix.with_suffix(".npy"), mmap_mode="r")
+    if (
+        metadata.get("schema_version") != 1
+        or metadata.get("representation")
+        != "qualified_teacher_last_hidden_frame_aligned_train_pca"
+        or list(matrix.shape) != metadata.get("shape")
+        or matrix.ndim != 3
+        or str(matrix.dtype) != metadata.get("dtype")
+    ):
+        raise ValueError("teacher temporal representation cache contract differs")
+    unsigned = {key: value for key, value in metadata.items() if key != "cache_sha256"}
+    digest = hashlib.sha256()
+    digest.update(np.asarray(matrix).tobytes(order="C"))
+    digest.update(json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode())
+    if digest.hexdigest() != metadata.get("cache_sha256"):
+        raise ValueError("teacher temporal representation cache is stale or corrupt")
+    return metadata, matrix
 
 
 def require_cache_binding(
@@ -786,7 +909,9 @@ class DistillationBatcher:
         teacher_targets: np.ndarray,
         teacher_occupation_targets: np.ndarray,
         teacher_representations: np.ndarray,
+        teacher_temporal_representations: np.ndarray,
         teacher_sequence_targets: np.ndarray,
+        teacher_sequence_supervision_mask: np.ndarray,
         collision_path_indexes: np.ndarray,
         streaming_window_targets: dict[str, np.ndarray],
         teacher_causal_targets: dict[str, np.ndarray] | None,
@@ -796,6 +921,11 @@ class DistillationBatcher:
         overlay_features: np.ndarray,
         overlay_targets: np.ndarray,
         overlay_providers: list[str],
+        overlay_teacher_targets: np.ndarray | None,
+        overlay_teacher_occupation_targets: np.ndarray | None,
+        overlay_teacher_sequence_targets: np.ndarray | None,
+        overlay_teacher_sequence_supervision_mask: np.ndarray | None,
+        device_parent_features: dict[int, np.ndarray],
         noise_sources: list[tuple[str, Path]],
         *,
         batch_size: int,
@@ -809,7 +939,9 @@ class DistillationBatcher:
         self.teacher_targets = teacher_targets
         self.teacher_occupation_targets = teacher_occupation_targets
         self.teacher_representations = teacher_representations
+        self.teacher_temporal_representations = teacher_temporal_representations
         self.teacher_sequence_targets = teacher_sequence_targets
+        self.teacher_sequence_supervision_mask = teacher_sequence_supervision_mask
         self.collision_path_indexes = collision_path_indexes
         self.streaming_window_targets = streaming_window_targets
         self.teacher_causal_targets = teacher_causal_targets
@@ -819,6 +951,13 @@ class DistillationBatcher:
         self.overlay_features = overlay_features
         self.overlay_targets = overlay_targets
         self.overlay_providers = overlay_providers
+        self.overlay_teacher_targets = overlay_teacher_targets
+        self.overlay_teacher_occupation_targets = overlay_teacher_occupation_targets
+        self.overlay_teacher_sequence_targets = overlay_teacher_sequence_targets
+        self.overlay_teacher_sequence_supervision_mask = (
+            overlay_teacher_sequence_supervision_mask
+        )
+        self.device_parent_features = device_parent_features
         self.noise = [
             (name, open_feature_archive(path)) for name, path in noise_sources
         ]
@@ -853,16 +992,54 @@ class DistillationBatcher:
             overlay_features
         ) != len(overlay_providers):
             raise ValueError("overlay feature, target, and provider counts differ")
+        if (overlay_teacher_targets is None) != (
+            overlay_teacher_occupation_targets is None
+        ):
+            raise ValueError(
+                "overlay teacher posterior and occupation caches must pair"
+            )
+        if overlay_teacher_targets is not None and (
+            overlay_teacher_targets.shape
+            != (len(overlay_features), OUTPUT_FRAMES, teacher_targets.shape[2])
+            or overlay_teacher_occupation_targets.shape != overlay_teacher_targets.shape
+        ):
+            raise ValueError("overlay teacher targets must match overlay features")
+        if overlay_teacher_sequence_targets is not None and (
+            overlay_teacher_sequence_targets.shape != (len(overlay_features), 2)
+            or not np.isfinite(overlay_teacher_sequence_targets).all()
+        ):
+            raise ValueError(
+                "overlay teacher sequence targets must match overlay features"
+            )
+        if (overlay_teacher_sequence_targets is None) != (
+            overlay_teacher_sequence_supervision_mask is None
+        ) or (
+            overlay_teacher_sequence_supervision_mask is not None
+            and overlay_teacher_sequence_supervision_mask.shape
+            != (len(overlay_features),)
+        ):
+            raise ValueError(
+                "overlay teacher sequence mask must match overlay features"
+            )
         if self.teacher_sequence_targets.shape != (len(rows), 2):
             raise ValueError(
                 "teacher sequence targets must be [corpus, canonical/margin]"
             )
+        if self.teacher_sequence_supervision_mask.shape != (len(rows),):
+            raise ValueError("teacher sequence supervision mask must match corpus")
         if self.teacher_occupation_targets.shape != self.teacher_targets.shape:
             raise ValueError("teacher occupation targets must match posterior targets")
         if self.teacher_representations.ndim != 2 or len(
             self.teacher_representations
         ) != len(rows):
             raise ValueError("teacher representations must be [corpus, dimension]")
+        if self.teacher_temporal_representations.shape[:2] != (
+            len(rows),
+            OUTPUT_FRAMES,
+        ):
+            raise ValueError(
+                "teacher temporal representations must match corpus frames"
+            )
         if self.collision_path_indexes.shape != (len(rows),):
             raise ValueError("collision path supervision must match the corpus")
         if any(
@@ -1020,12 +1197,23 @@ class DistillationBatcher:
             (self.batch_size, self.teacher_representations.shape[1]), dtype=np.float32
         )
         representation_mask = np.zeros(self.batch_size, dtype=np.float32)
+        temporal_representation = np.zeros(
+            (
+                self.batch_size,
+                OUTPUT_FRAMES,
+                self.teacher_temporal_representations.shape[2],
+            ),
+            dtype=np.float32,
+        )
+        temporal_representation_mask = np.zeros(self.batch_size, dtype=np.float32)
         teacher_sequence = np.zeros((self.batch_size, 2), dtype=np.float32)
         sequence_mask = np.zeros(self.batch_size, dtype=np.float32)
         collision_negative_mask = np.zeros(self.batch_size, dtype=np.float32)
         named_collision_path = np.full(self.batch_size, -1, dtype=np.int32)
         scoring_endpoints = np.full(self.batch_size, OUTPUT_FRAMES, dtype=np.int32)
         labels = np.zeros(self.batch_size, dtype=np.float32)
+        paired_clean = np.zeros((self.batch_size,) + INPUT_SHAPE, dtype=np.float32)
+        paired_clean_mask = np.zeros(self.batch_size, dtype=np.float32)
         half = self.batch_size // 2
         for slot in range(half):
             global_slot = step * half + slot
@@ -1038,6 +1226,18 @@ class DistillationBatcher:
                 index = int(rng.choice(self.overlay_positive[provider]))
                 x[slot] = np.asarray(self.overlay_features[index], dtype=np.float32)
                 hard[slot] = self.overlay_targets[index]
+                if self.overlay_teacher_targets is not None:
+                    soft[slot] = self.overlay_teacher_targets[index]
+                    soft_mask[slot] = 1
+                    occupation[slot] = self.overlay_teacher_occupation_targets[index]
+                    occupation_mask[slot] = 1
+                if self.overlay_teacher_sequence_targets is not None:
+                    teacher_sequence[slot] = self.overlay_teacher_sequence_targets[
+                        index
+                    ]
+                    sequence_mask[slot] = (
+                        self.overlay_teacher_sequence_supervision_mask[index]
+                    )
                 active = np.flatnonzero(hard[slot] != self.blank_id)
                 if len(active):
                     scoring_endpoints[slot] = max(
@@ -1060,6 +1260,9 @@ class DistillationBatcher:
                 if use_hard_pool:
                     self.hard_positive_counts[variant] += 1
                 x[slot] = np.asarray(self.features[index], dtype=np.float32)
+                if variant == "device" and self.device_parent_features:
+                    paired_clean[slot] = self.device_parent_features[index]
+                    paired_clean_mask[slot] = 1
                 hard[slot] = self.hard_targets[index]
                 soft[slot] = self.teacher_targets[index]
                 soft_mask[slot] = 1
@@ -1067,11 +1270,15 @@ class DistillationBatcher:
                 occupation_mask[slot] = 1
                 representation[slot] = self.teacher_representations[index]
                 representation_mask[slot] = 1
+                temporal_representation[slot] = self.teacher_temporal_representations[
+                    index
+                ]
+                temporal_representation_mask[slot] = 1
                 scoring_endpoints[slot] = self._causal_endpoint(index, global_slot, rng)
                 teacher_sequence[slot] = self._causal_teacher_target(
                     index, scoring_endpoints[slot]
                 )
-                sequence_mask[slot] = 1
+                sequence_mask[slot] = self.teacher_sequence_supervision_mask[index]
         groups = (
             "public_speech",
             "kizz_control_phonetic_collision",
@@ -1123,13 +1330,17 @@ class DistillationBatcher:
                 soft_mask[slot] = 1
                 representation[slot] = self.teacher_representations[index]
                 representation_mask[slot] = 1
+                temporal_representation[slot] = self.teacher_temporal_representations[
+                    index
+                ]
+                temporal_representation_mask[slot] = 1
                 scoring_endpoints[slot] = self._causal_endpoint(
                     index, step * half + offset, rng
                 )
                 teacher_sequence[slot] = self._causal_teacher_target(
                     index, scoring_endpoints[slot]
                 )
-                sequence_mask[slot] = 1
+                sequence_mask[slot] = self.teacher_sequence_supervision_mask[index]
                 if group == "kizz_control_phonetic_collision":
                     collision_negative_mask[slot] = 1
                     named_collision_path[slot] = self.collision_path_indexes[index]
@@ -1147,12 +1358,16 @@ class DistillationBatcher:
             occupation_mask[order],
             representation[order],
             representation_mask[order],
+            temporal_representation[order],
+            temporal_representation_mask[order],
             labels[order],
             teacher_sequence[order],
             sequence_mask[order],
             collision_negative_mask[order],
             named_collision_path[order],
             scoring_endpoints[order],
+            paired_clean[order],
+            paired_clean_mask[order],
         )
 
 
@@ -1434,6 +1649,25 @@ def utterance_representation_loss(student_vectors, teacher_vectors, mask):
     cosine = 1.0 - tf.reduce_sum(student * teacher, axis=-1)
     distance = tf.reduce_mean(tf.abs(student - teacher), axis=-1)
     return _masked_mean(cosine + distance, mask)
+
+
+def channel_consistency_loss(device_logits, clean_logits, mask):
+    """Make aligned clean/device views preserve the same phone posterior path."""
+
+    device = tf.nn.softmax(device_logits, axis=-1)
+    clean = tf.stop_gradient(tf.nn.softmax(clean_logits, axis=-1))
+    per_example = tf.reduce_mean(tf.square(device - clean), axis=(1, 2))
+    return _masked_mean(per_example, mask)
+
+
+def temporal_representation_loss(student_frames, teacher_frames, mask):
+    """Transfer time-resolved normalized teacher acoustics to student frames."""
+
+    student = tf.math.l2_normalize(student_frames, axis=-1)
+    teacher = tf.math.l2_normalize(teacher_frames, axis=-1)
+    cosine = 1.0 - tf.reduce_sum(student * teacher, axis=-1)
+    distance = tf.reduce_mean(tf.abs(student - teacher), axis=-1)
+    return _masked_mean(tf.reduce_mean(cosine + distance, axis=-1), mask)
 
 
 def teacher_sequence_ranking_loss(student_scores, teacher_scores, mask):
@@ -1737,15 +1971,24 @@ def main() -> int:
     parser.add_argument("--posterior-cache", type=Path, required=True)
     parser.add_argument("--teacher-sequence-cache", type=Path, required=True)
     parser.add_argument("--teacher-representation-cache", type=Path)
+    parser.add_argument("--teacher-temporal-representation-cache", type=Path)
     parser.add_argument("--streaming-window-cache", type=Path, required=True)
     parser.add_argument("--teacher-causal-window-cache", type=Path)
     parser.add_argument("--reference-student-causal-window-cache", type=Path)
     parser.add_argument("--expanded-public-negatives", type=Path, required=True)
     parser.add_argument("--teacher-qualification", type=Path, required=True)
     parser.add_argument("--continuous-qualification", type=Path, required=True)
+    parser.add_argument("--device-validation-quality-report", type=Path)
     parser.add_argument("--overlay-features", type=Path, required=True)
     parser.add_argument("--overlay-targets", type=Path, required=True)
     parser.add_argument("--overlay-provenance", type=Path, required=True)
+    parser.add_argument("--overlay-posterior-cache", type=Path)
+    parser.add_argument("--overlay-sequence-cache", type=Path)
+    parser.add_argument(
+        "--teacher-agreement-gate",
+        action="store_true",
+        help="Mask sequence KD where the frozen teacher disagrees with ground truth.",
+    )
     parser.add_argument(
         "--noise-source", action="append", required=True, help="ID=RaggedMmap directory"
     )
@@ -1760,6 +2003,7 @@ def main() -> int:
             "control_mixconv",
             "temporal_residual",
             "dilated_temporal_memory",
+            "dilated_temporal_memory_wide",
         ),
         default="control_mixconv",
     )
@@ -1772,6 +2016,8 @@ def main() -> int:
     parser.add_argument("--occupation-weight", type=float, default=0.0)
     parser.add_argument("--occupation-max-delay-frames", type=int, default=0)
     parser.add_argument("--representation-weight", type=float, default=0.0)
+    parser.add_argument("--temporal-representation-weight", type=float, default=0.0)
+    parser.add_argument("--channel-consistency-weight", type=float, default=0.0)
     parser.add_argument("--ctc-weight", type=float, default=0.25)
     parser.add_argument("--positive-collision-weight", type=float, default=0.25)
     parser.add_argument("--legacy-negative-weight", type=float, default=0.0)
@@ -1799,6 +2045,8 @@ def main() -> int:
         args.teacher_weight,
         args.occupation_weight,
         args.representation_weight,
+        args.temporal_representation_weight,
+        args.channel_consistency_weight,
         args.ctc_weight,
         args.positive_collision_weight,
         args.legacy_negative_weight,
@@ -1910,6 +2158,15 @@ def main() -> int:
         ),
         axis=1,
     ).astype(np.float32)
+    qualified_teacher_threshold = float(clip["validation_operating_point"]["threshold"])
+    teacher_binary_decisions = (
+        teacher_sequence_targets[:, 0] >= qualified_teacher_threshold
+    )
+    teacher_sequence_supervision_mask = (
+        (teacher_binary_decisions == (np.asarray(labels) == 1)).astype(np.float32)
+        if args.teacher_agreement_gate
+        else np.ones(len(rows), dtype=np.float32)
+    )
     representation_metadata = None
     if args.teacher_representation_cache:
         representation_metadata, cached_representations = load_representation_cache(
@@ -1933,6 +2190,36 @@ def main() -> int:
         teacher_representations = np.zeros((len(rows), 96), dtype=np.float32)
     if args.representation_weight and representation_metadata is None:
         parser.error("--representation-weight requires --teacher-representation-cache")
+    temporal_representation_metadata = None
+    if args.teacher_temporal_representation_cache:
+        (
+            temporal_representation_metadata,
+            cached_temporal_representations,
+        ) = load_temporal_representation_cache(
+            args.teacher_temporal_representation_cache
+        )
+        if (
+            temporal_representation_metadata.get("manifest_sha256")
+            != corpus["manifests"]["teacher"]["sha256"]
+            or temporal_representation_metadata.get("teacher_qualification", {}).get(
+                "sha256"
+            )
+            != sha256_file(args.teacher_qualification)
+            or temporal_representation_metadata.get("student_architecture")
+            != args.student_architecture
+        ):
+            raise ValueError("teacher temporal representation cache binding differs")
+        teacher_temporal_representations = np.asarray(
+            cached_temporal_representations, dtype=np.float32
+        )
+    else:
+        teacher_temporal_representations = np.zeros(
+            (len(rows), OUTPUT_FRAMES, 96), dtype=np.float32
+        )
+    if args.temporal_representation_weight and temporal_representation_metadata is None:
+        parser.error(
+            "--temporal-representation-weight requires --teacher-temporal-representation-cache"
+        )
     source_manifest_path = Path(corpus["manifests"]["source"]["path"])
     collision_path_indexes, collision_supervision = collision_path_supervision(
         rows, source_manifest_path, contract
@@ -2009,9 +2296,126 @@ def main() -> int:
     overlay_indexes = [
         i for i, row in enumerate(train_ledger) if row.get("variant") != "clean"
     ]
+    overlay_teacher_targets = None
+    overlay_teacher_occupation_targets = None
+    overlay_teacher_sequence_targets = None
+    overlay_teacher_sequence_supervision_mask = None
+    overlay_posterior_metadata = None
+    if args.overlay_posterior_cache:
+        overlay_posterior_metadata, overlay_posterior_arrays = load_cache(
+            args.overlay_posterior_cache,
+            expected_model_revision=clip["model"]["revision"],
+            expected_weights_sha256=clip["model"]["weights_sha256"],
+        )
+        if (
+            overlay_posterior_metadata.get("manifest_sha256")
+            != sha256_file(args.overlay_provenance)
+            or overlay_posterior_metadata.get("vocabulary", {}).get("tokens")
+            != contract["tokens"]
+        ):
+            raise ValueError("overlay teacher cache binding differs")
+        cache_examples = overlay_posterior_metadata.get("examples", [])
+        cache_by_source_id = {
+            str(row.get("source_id")): index for index, row in enumerate(cache_examples)
+        }
+        if len(cache_by_source_id) != len(cache_examples):
+            raise ValueError("overlay teacher cache has duplicate source IDs")
+        overlay_teacher_targets = np.empty(
+            (len(overlay_indexes), OUTPUT_FRAMES, len(contract["tokens"])),
+            dtype=np.float32,
+        )
+        overlay_teacher_occupation_targets = np.empty_like(overlay_teacher_targets)
+        overlay_matrix = overlay_posterior_arrays["log_posteriors"]
+        overlay_offsets = overlay_posterior_arrays["offsets"]
+        overlay_timing = overlay_posterior_metadata["timing"]
+        for output_index, ledger_index in enumerate(overlay_indexes):
+            row = train_ledger[ledger_index]
+            cache_index = cache_by_source_id.get(str(row.get("source_id")))
+            if cache_index is None:
+                raise ValueError("overlay teacher cache is missing an active view")
+            teacher_frames = overlay_matrix[
+                overlay_offsets[cache_index] : overlay_offsets[cache_index + 1]
+            ]
+            overlay_teacher_targets[output_index] = resample_log_posteriors(
+                teacher_frames,
+                teacher_frame_center_seconds=float(
+                    overlay_timing["frame_center_seconds"]
+                ),
+                teacher_frame_stride_seconds=float(
+                    overlay_timing["frame_stride_seconds"]
+                ),
+                student_times_seconds=student_times,
+            )
+            occupation_frames = ctc_state_occupation_log_probs(
+                teacher_frames,
+                contract["canonical_path"],
+                int(contract["blank_id"]),
+            )
+            overlay_teacher_occupation_targets[output_index] = resample_log_posteriors(
+                occupation_frames,
+                teacher_frame_center_seconds=float(
+                    overlay_timing["frame_center_seconds"]
+                ),
+                teacher_frame_stride_seconds=float(
+                    overlay_timing["frame_stride_seconds"]
+                ),
+                student_times_seconds=student_times,
+            )
+    overlay_sequence_metadata = None
+    if args.overlay_sequence_cache:
+        prefix = args.overlay_sequence_cache.with_suffix("")
+        overlay_sequence_metadata = json.loads(prefix.with_suffix(".json").read_text())
+        if (
+            overlay_sequence_metadata.get("schema_version") != 1
+            or overlay_sequence_metadata.get("representation")
+            != "qualified_teacher_original_resolution_clip_decisions"
+            or overlay_sequence_metadata.get("manifest", {}).get("sha256")
+            != sha256_file(args.overlay_provenance)
+        ):
+            raise ValueError("overlay sequence cache binding differs")
+        if not args.overlay_posterior_cache:
+            parser.error("--overlay-sequence-cache requires --overlay-posterior-cache")
+        posterior_ref = overlay_sequence_metadata.get("posterior_cache", {})
+        posterior_prefix = args.overlay_posterior_cache.with_suffix("")
+        if posterior_ref.get("json_sha256") != sha256_file(
+            posterior_prefix.with_suffix(".json")
+        ) or posterior_ref.get("npz_sha256") != sha256_file(
+            posterior_prefix.with_suffix(".npz")
+        ):
+            raise ValueError("overlay sequence cache uses different posteriors")
+        with np.load(prefix.with_suffix(".npz"), allow_pickle=False) as loaded:
+            all_overlay_sequence = np.stack(
+                (loaded["decision_score"], loaded["raw_collision_margin"]), axis=1
+            ).astype(np.float32)
+        cache_source_ids = [
+            str(row.get("source_id"))
+            for row in overlay_posterior_metadata.get("examples", [])
+        ]
+        sequence_by_source_id = {
+            source_id: all_overlay_sequence[index]
+            for index, source_id in enumerate(cache_source_ids)
+        }
+        overlay_teacher_sequence_targets = np.stack(
+            [
+                sequence_by_source_id[str(train_ledger[index].get("source_id"))]
+                for index in overlay_indexes
+            ]
+        )
+        overlay_teacher_sequence_supervision_mask = (
+            (
+                overlay_teacher_sequence_targets[:, 0] >= qualified_teacher_threshold
+            ).astype(np.float32)
+            if args.teacher_agreement_gate
+            else np.ones(len(overlay_teacher_sequence_targets), dtype=np.float32)
+        )
     overlay_features = np.asarray(overlay_features[overlay_indexes])
     mapped_overlay_targets = mapped_overlay_targets[overlay_indexes]
     overlay_providers = [str(train_ledger[i]["provider"]) for i in overlay_indexes]
+    device_parent_features = (
+        device_parent_feature_pairs(corpus, rows)
+        if args.channel_consistency_weight
+        else {}
+    )
     noise_sources = []
     noise_names = set()
     for value in args.noise_source:
@@ -2029,7 +2433,9 @@ def main() -> int:
         teacher_targets,
         teacher_occupation_targets,
         teacher_representations,
+        teacher_temporal_representations,
         teacher_sequence_targets,
+        teacher_sequence_supervision_mask,
         collision_path_indexes,
         streaming_window_targets,
         teacher_causal_targets,
@@ -2039,6 +2445,11 @@ def main() -> int:
         overlay_features,
         mapped_overlay_targets,
         overlay_providers,
+        overlay_teacher_targets,
+        overlay_teacher_occupation_targets,
+        overlay_teacher_sequence_targets,
+        overlay_teacher_sequence_supervision_mask,
+        device_parent_features,
         noise_sources,
         batch_size=args.batch_size,
         seed=args.seed,
@@ -2058,9 +2469,17 @@ def main() -> int:
         if args.representation_weight
         else pooled_hidden
     )
+    temporal_hidden = tf.keras.layers.Reshape(
+        (OUTPUT_FRAMES, int(model.get_layer("encoder_hidden").output.shape[-1])),
+        name="training_only_temporal_squeeze",
+    )(model.get_layer("encoder_hidden").output)
+    if args.temporal_representation_weight and temporal_hidden.shape[-1] != 96:
+        temporal_hidden = tf.keras.layers.Dense(
+            96, use_bias=True, name="training_only_temporal_projection"
+        )(temporal_hidden)
     training_model = tf.keras.Model(
         model.input,
-        [model.output, projected_hidden],
+        [model.output, projected_hidden, temporal_hidden],
         name="phoneme_student_distillation_training",
     )
     optimizer = tf.keras.optimizers.Adam(args.learning_rate)
@@ -2075,15 +2494,19 @@ def main() -> int:
         occupation_mask,
         representation,
         representation_mask,
+        temporal_representation,
+        temporal_representation_mask,
         label,
         teacher_sequence,
         sequence_mask,
         collision_negative_mask,
         named_collision_path,
         scoring_endpoints,
+        paired_clean,
+        paired_clean_mask,
     ):
         with tf.GradientTape() as tape:
-            logits, student_hidden = training_model(x, training=True)
+            logits, student_hidden, student_temporal = training_model(x, training=True)
             loss, parts = distillation_loss(
                 logits,
                 hard,
@@ -2096,7 +2519,7 @@ def main() -> int:
                 teacher_temperature=args.teacher_temperature,
                 occupation_weight=args.occupation_weight,
                 occupation_max_delay_frames=args.occupation_max_delay_frames,
-                student_hidden=student_hidden,
+                student_hidden=(student_hidden if args.representation_weight else None),
                 teacher_representations=representation,
                 teacher_representation_mask=representation_mask,
                 representation_weight=args.representation_weight,
@@ -2123,6 +2546,25 @@ def main() -> int:
                 negative_collision_weight=args.negative_collision_weight,
                 negative_collision_margin=args.negative_collision_margin,
             )
+            if args.temporal_representation_weight:
+                temporal_loss = temporal_representation_loss(
+                    student_temporal,
+                    temporal_representation,
+                    temporal_representation_mask,
+                )
+                loss = loss + args.temporal_representation_weight * temporal_loss
+                parts = (*parts, temporal_loss)
+            else:
+                parts = (*parts, tf.cast(0.0, loss.dtype))
+            if args.channel_consistency_weight:
+                paired_logits, _, _ = training_model(paired_clean, training=True)
+                channel_loss = channel_consistency_loss(
+                    logits, paired_logits, paired_clean_mask
+                )
+                loss = loss + args.channel_consistency_weight * channel_loss
+                parts = (*parts, channel_loss)
+            else:
+                parts = (*parts, tf.cast(0.0, loss.dtype))
         gradients = tape.gradient(loss, training_model.trainable_variables)
         optimizer.apply_gradients(zip(gradients, training_model.trainable_variables))
         return loss, parts
@@ -2148,12 +2590,24 @@ def main() -> int:
     validation_seconds = sum(
         float(rows[i]["duration_seconds"]) for i in validation_negative_indexes
     )
+    device_validation = None
+    device_validation_rows = []
+    device_validation_required = 0
+    if args.device_validation_quality_report:
+        device_validation, device_validation_rows = device_validation_features(
+            args.device_validation_quality_report
+        )
+        device_validation_required = math.ceil(0.90 * len(device_validation_rows))
     args.output.mkdir(parents=True, exist_ok=True)
     checkpoint_directory = args.output / "checkpoints"
     checkpoint_directory.mkdir(exist_ok=True)
     ledger = []
     finite_floor = -np.finfo(np.float64).max
-    best_key = (-1.0, -1.0, finite_floor, -1.0, finite_floor)
+    best_key = (
+        (-1.0, -1.0, -1.0, -1.0, -1.0, finite_floor, -1.0, finite_floor)
+        if device_validation is not None
+        else (-1.0, -1.0, finite_floor, -1.0, finite_floor)
+    )
     best_step = None
     for step in range(args.steps):
         batch = batcher.batch(step)
@@ -2188,6 +2642,32 @@ def main() -> int:
                 if np.isfinite(positive_floor) and np.isfinite(negative_ceiling)
                 else None
             )
+            device_report = None
+            if device_validation is not None:
+                device_scores = _student_scores(
+                    model,
+                    device_validation,
+                    contract,
+                    args.batch_size,
+                    decoder_algorithm=args.decoder_algorithm,
+                )
+                threshold = point.get("threshold")
+                device_accepted = (
+                    int(np.sum(device_scores > float(threshold)))
+                    if threshold is not None
+                    else 0
+                )
+                device_zero_fp_accepted = int(np.sum(device_scores > negative_ceiling))
+                device_report = {
+                    "accepted_at_clean_operating_point": device_accepted,
+                    "required_at_clean_operating_point": device_validation_required,
+                    "recall_at_clean_operating_point": device_accepted
+                    / len(device_scores),
+                    "zero_false_accept_accepted": device_zero_fp_accepted,
+                    "zero_false_accept_recall": device_zero_fp_accepted
+                    / len(device_scores),
+                    "total": len(device_scores),
+                }
             item = {
                 "step": step + 1,
                 "loss": float(loss),
@@ -2195,6 +2675,7 @@ def main() -> int:
                 "operating_point": point,
                 "zero_false_accept_recall": zero_fp_recall,
                 "separation": separation,
+                "device_validation": device_report,
             }
             step_checkpoint = checkpoint_directory / f"step-{step + 1:04d}.weights.h5"
             model.save_weights(step_checkpoint)
@@ -2203,7 +2684,18 @@ def main() -> int:
                 "sha256": sha256_file(step_checkpoint),
             }
             ledger.append(item)
-            key = checkpoint_selection_key(point, zero_fp_recall, separation)
+            key = (
+                multichannel_checkpoint_selection_key(
+                    point,
+                    zero_fp_recall,
+                    float(device_report["zero_false_accept_recall"]),
+                    int(device_report["accepted_at_clean_operating_point"]),
+                    device_validation_required,
+                    separation,
+                )
+                if device_report is not None
+                else checkpoint_selection_key(point, zero_fp_recall, separation)
+            )
             if key > best_key:
                 best_key = key
                 best_step = step + 1
@@ -2266,6 +2758,18 @@ def main() -> int:
             "path": str(args.continuous_qualification.resolve()),
             "sha256": sha256_file(args.continuous_qualification),
         },
+        "device_validation_quality": (
+            {
+                "path": str(args.device_validation_quality_report.resolve()),
+                "sha256": sha256_file(args.device_validation_quality_report),
+                "accepted_rows": len(device_validation_rows),
+                "required_at_clean_operating_point": device_validation_required,
+                "selection_role": "checkpoint_selection_only",
+                "training_eligible": False,
+            }
+            if args.device_validation_quality_report
+            else None
+        ),
         "teacher_model": clip["model"],
         "initialization": (
             provenance_ref(args.init_weights) if args.init_weights else None
@@ -2288,6 +2792,20 @@ def main() -> int:
                 "contract": representation_metadata,
             }
             if args.teacher_representation_cache
+            else None
+        ),
+        "teacher_temporal_representation_cache": (
+            {
+                "prefix": str(args.teacher_temporal_representation_cache.resolve()),
+                "json": provenance_ref(
+                    args.teacher_temporal_representation_cache.with_suffix(".json")
+                ),
+                "npy": provenance_ref(
+                    args.teacher_temporal_representation_cache.with_suffix(".npy")
+                ),
+                "contract": temporal_representation_metadata,
+            }
+            if args.teacher_temporal_representation_cache
             else None
         ),
         "teacher_sequence_cache": {
@@ -2358,6 +2876,34 @@ def main() -> int:
             "targets": provenance_ref(args.overlay_targets),
             "provenance": provenance_ref(args.overlay_provenance),
             "parent_binding": overlay_parent_binding,
+            "teacher_posterior_cache": (
+                {
+                    "prefix": str(args.overlay_posterior_cache.resolve()),
+                    "json": provenance_ref(
+                        args.overlay_posterior_cache.with_suffix(".json")
+                    ),
+                    "npz": provenance_ref(
+                        args.overlay_posterior_cache.with_suffix(".npz")
+                    ),
+                    "contract": overlay_posterior_metadata,
+                }
+                if args.overlay_posterior_cache
+                else None
+            ),
+            "teacher_sequence_cache": (
+                {
+                    "prefix": str(args.overlay_sequence_cache.resolve()),
+                    "json": provenance_ref(
+                        args.overlay_sequence_cache.with_suffix(".json")
+                    ),
+                    "npz": provenance_ref(
+                        args.overlay_sequence_cache.with_suffix(".npz")
+                    ),
+                    "contract": overlay_sequence_metadata,
+                }
+                if args.overlay_sequence_cache
+                else None
+            ),
         },
         "noise_sources": [
             {"id": name, "artifact": provenance_ref(path)}
@@ -2386,6 +2932,18 @@ def main() -> int:
             "sequence_occupation_max_delay_frames": args.occupation_max_delay_frames,
             "sequence_occupation_target": "teacher_ctc_forward_backward_conditioned_on_canonical_path",
             "utterance_representation_weight": args.representation_weight,
+            "temporal_representation_weight": args.temporal_representation_weight,
+            "temporal_representation_target": (
+                "qualified_teacher_hidden_sequence_train_pca_aligned_to_student_timeline"
+                if args.temporal_representation_weight
+                else None
+            ),
+            "temporal_representation_adapter": (
+                "training_only_per_frame_dense_96_discarded_before_runtime"
+                if args.temporal_representation_weight
+                else None
+            ),
+            "paired_clean_device_channel_consistency_weight": args.channel_consistency_weight,
             "utterance_representation_target": "qualified_teacher_last_hidden_time_mean_train_pca",
             "utterance_representation_adapter": (
                 "training_only_global_mean_dense_96_discarded_before_runtime"
@@ -2413,6 +2971,23 @@ def main() -> int:
                 "raw_collision_margin",
             ],
             "teacher_sequence_transfer": "cross_label_pairwise_rank",
+            "teacher_sequence_agreement_guardrail": {
+                "enabled": args.teacher_agreement_gate,
+                "rule": "transfer_only_when_frozen_teacher_binary_decision_matches_ground_truth",
+                "threshold": qualified_teacher_threshold,
+                "corpus_supervised": int(teacher_sequence_supervision_mask.sum()),
+                "corpus_total": len(teacher_sequence_supervision_mask),
+                "overlay_supervised": (
+                    int(overlay_teacher_sequence_supervision_mask.sum())
+                    if overlay_teacher_sequence_supervision_mask is not None
+                    else 0
+                ),
+                "overlay_total": (
+                    len(overlay_teacher_sequence_supervision_mask)
+                    if overlay_teacher_sequence_supervision_mask is not None
+                    else 0
+                ),
+            },
             "teacher_causal_window_transfer": (
                 "random_disagreement_or_teacher_hard_terminal_endpoints"
                 if args.teacher_causal_window_cache

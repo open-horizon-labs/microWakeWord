@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ from tools.distill_kizz_phoneme_student import (
     _student_scores,
     checkpoint_binding,
     checkpoint_selection_key,
+    channel_consistency_loss,
     collision_path_supervision,
     deployment_path_scores,
     delayed_occupation_loss,
@@ -24,6 +26,7 @@ from tools.distill_kizz_phoneme_student import (
     distillation_loss,
     expected_schedule_counts,
     map_ordered_targets,
+    multichannel_checkpoint_selection_key,
     positive_indices_by_provider,
     provenance_ref,
     require_cache_binding,
@@ -39,6 +42,8 @@ from tools.distill_kizz_phoneme_student import (
     strict_collision_negative_loss,
     teacher_sequence_ranking_loss,
     teacher_sequence_listwise_loss,
+    temporal_representation_loss,
+    load_temporal_representation_cache,
     utterance_representation_loss,
     validate_causal_loss_contract,
     validate_reference_causal_contract,
@@ -125,6 +130,32 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
             None,
         )
         self.assertTrue(np.isfinite(key).all())
+
+    def test_multichannel_selection_cannot_hide_device_failure_behind_clean_score(self):
+        point = {
+            "qualified": True,
+            "recall": 0.95,
+            "false_accepts_at_recall_floor": 0,
+        }
+        device_pass = multichannel_checkpoint_selection_key(
+            point, 0.92, 0.91, 10, 10, -0.2
+        )
+        tempting_clean_only_checkpoint = multichannel_checkpoint_selection_key(
+            point, 1.0, 0.55, 6, 10, 0.5
+        )
+        self.assertGreater(device_pass, tempting_clean_only_checkpoint)
+
+    def test_channel_consistency_ignores_unpaired_rows_and_penalizes_drift(self):
+        import tensorflow as tf
+
+        clean = tf.zeros((2, 4, 3), dtype=tf.float32)
+        identical = channel_consistency_loss(clean, clean, tf.constant([1.0, 0.0]))
+        device = tf.tensor_scatter_nd_update(clean, [[0, 0, 0]], [4.0])
+        drift = channel_consistency_loss(device, clean, tf.constant([1.0, 0.0]))
+        ignored = channel_consistency_loss(device, clean, tf.constant([0.0, 0.0]))
+        self.assertEqual(float(identical), 0.0)
+        self.assertGreater(float(drift), 0.0)
+        self.assertEqual(float(ignored), 0.0)
 
     def test_checkpoint_forward_sum_scores_match_deployment_normalization(self):
         contract = compact_phone_contract()
@@ -781,6 +812,55 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         self.assertEqual(architecture["warmup_output_drop"], 20)
         self.assertGreaterEqual(receptive_field_ms(flags), 1900)
         self.assertAlmostEqual(student_output_times_seconds(flags, 66)[0], 0.635)
+
+    def test_wide_temporal_memory_is_shape_compatible_and_larger(self):
+        from microwakeword.ordered_state_model import model as build_student
+
+        contract = compact_phone_contract()
+        narrow = build_student(
+            student_flags_for_architecture(
+                "dilated_temporal_memory", len(contract["tokens"])
+            ),
+            (260, 40),
+            None,
+        )
+        wide = build_student(
+            student_flags_for_architecture(
+                "dilated_temporal_memory_wide", len(contract["tokens"])
+            ),
+            (260, 40),
+            None,
+        )
+        self.assertEqual(wide.output_shape, narrow.output_shape)
+        self.assertGreater(wide.count_params(), narrow.count_params())
+
+    def test_temporal_representation_loss_and_cache_are_bounded(self):
+        student = np.ones((2, 3, 4), dtype=np.float32)
+        teacher = np.ones((2, 3, 4), dtype=np.float32)
+        mask = np.asarray([1.0, 0.0], dtype=np.float32)
+        self.assertAlmostEqual(
+            float(temporal_representation_loss(student, teacher, mask)), 0.0
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory) / "cache"
+            matrix = np.zeros((2, 3, 4), dtype=np.float16)
+            metadata = {
+                "schema_version": 1,
+                "representation": "qualified_teacher_last_hidden_frame_aligned_train_pca",
+                "shape": list(matrix.shape),
+                "dtype": str(matrix.dtype),
+            }
+            digest = hashlib.sha256()
+            digest.update(matrix.tobytes(order="C"))
+            digest.update(
+                json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode()
+            )
+            metadata["cache_sha256"] = digest.hexdigest()
+            np.save(prefix.with_suffix(".npy"), matrix)
+            prefix.with_suffix(".json").write_text(json.dumps(metadata))
+            loaded_metadata, loaded = load_temporal_representation_cache(prefix)
+            self.assertEqual(loaded_metadata["cache_sha256"], digest.hexdigest())
+            self.assertEqual(loaded.shape, matrix.shape)
 
 
 if __name__ == "__main__":

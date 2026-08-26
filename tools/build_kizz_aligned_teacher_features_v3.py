@@ -80,9 +80,7 @@ def _rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def load_pronunciation_acceptances(
-    audit_path: Path, source_manifest: Path
-) -> set[str]:
+def load_pronunciation_acceptances(audit_path: Path, source_manifest: Path) -> set[str]:
     """Load an all-split pronunciation allowlist bound to its source manifest."""
     payload = json.loads(audit_path.read_text(encoding="utf-8"))
     scope = payload.get("scope", {})
@@ -101,11 +99,7 @@ def load_pronunciation_acceptances(
         or len(set(identities)) != len(identities)
     ):
         raise ValueError("source pronunciation audit has missing/duplicate identities")
-    return {
-        str(row["source_id"])
-        for row in results
-        if row.get("accepted") is True
-    }
+    return {str(row["source_id"]) for row in results if row.get("accepted") is True}
 
 
 def _span_seconds(value: Mapping[str, Any], name: str) -> tuple[float, float]:
@@ -210,9 +204,10 @@ def place_phrase_context(
         crop_start_s = min(max(ideal_start_s, minimum_start_s), maximum_start_s)
         crop_start = round(crop_start_s * SAMPLE_RATE)
         crop_start = min(max(crop_start, 0), len(values) - CONTEXT_SAMPLES)
-        return values[
-            crop_start : crop_start + CONTEXT_SAMPLES
-        ], -crop_start / SAMPLE_RATE
+        return (
+            values[crop_start : crop_start + CONTEXT_SAMPLES],
+            -crop_start / SAMPLE_RATE,
+        )
 
     ideal_left = round((desired - phrase_center) * SAMPLE_RATE)
     left = min(max(ideal_left, 0), CONTEXT_SAMPLES - len(values))
@@ -334,6 +329,7 @@ def build(
     states_per_phone: int = 1,
     seed: int = 24103,
     phrase_spec: WakePhraseSpec = HI_FI_KIZZ,
+    waveform_output_dir: Path | None = None,
 ) -> dict[str, Any]:
     if not positive_manifests:
         raise ValueError("at least one aligned positive manifest is required")
@@ -439,9 +435,7 @@ def build(
             variant_id = f"{row['source_id']}::{variant}"
             translated = _translated_record(row, shift, variant_id, phrase_spec)
             targets = frame_state_targets(
-                example_from_mapping(
-                    translated, expected_phones=phrase_spec.phones
-                ),
+                example_from_mapping(translated, expected_phones=phrase_spec.phones),
                 TARGET_FRAME_TIMES,
                 states_per_phone=states_per_phone,
             )
@@ -449,6 +443,17 @@ def build(
                 raise ValueError(f"{variant_id}: invalid ordered-state target grid")
             feature_rows[split].append(frontend(waveform))
             target_rows[split].append(targets)
+            waveform_path = None
+            waveform_sha256 = None
+            if waveform_output_dir is not None:
+                waveform_path = (
+                    waveform_output_dir
+                    / split
+                    / f"{hashlib.sha256(variant_id.encode()).hexdigest()[:24]}.wav"
+                )
+                waveform_path.parent.mkdir(parents=True, exist_ok=True)
+                sf.write(waveform_path, waveform, SAMPLE_RATE, subtype="FLOAT")
+                waveform_sha256 = sha256_file(waveform_path)
             ledger.append(
                 {
                     "source_id": variant_id,
@@ -465,6 +470,14 @@ def build(
                     "speaker_id": row.get("speaker_id"),
                     "voice_id": row.get("voice_id"),
                     "ancestry_id": row.get("ancestry_id"),
+                    **(
+                        {
+                            "path": str(waveform_path.resolve()),
+                            "audio_sha256": waveform_sha256,
+                        }
+                        if waveform_path
+                        else {}
+                    ),
                 }
             )
 
@@ -532,8 +545,7 @@ def build(
                 "accepted_aligned_count": len(direct),
                 "excluded_aligned_count": len(pronunciation_excluded),
             }
-            if source_pronunciation_audit is not None
-            and source_manifest is not None
+            if source_pronunciation_audit is not None and source_manifest is not None
             else None
         ),
         "background_manifest": (
@@ -565,6 +577,11 @@ def build(
         "overlay_snr_db": list(snrs),
         "include_inherited_alignments": include_inherited_alignments,
         "seed": seed,
+        **(
+            {"waveform_output_dir": str(waveform_output_dir.resolve())}
+            if waveform_output_dir
+            else {}
+        ),
         "positive_counts": split_counts,
         "negative_counts": negative_counts,
         "examples": ledger,
@@ -606,6 +623,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--seed", type=int, default=24103)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--waveform-output-dir",
+        type=Path,
+        help="Optionally persist the exact generated views for teacher scoring.",
+    )
     args = parser.parse_args(argv)
     report = build(
         args.aligned_positive_manifest,
@@ -620,6 +642,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         states_per_phone=args.states_per_phone,
         seed=args.seed,
         phrase_spec=get_wake_phrase(args.phrase_id),
+        waveform_output_dir=args.waveform_output_dir,
     )
     print(
         json.dumps(

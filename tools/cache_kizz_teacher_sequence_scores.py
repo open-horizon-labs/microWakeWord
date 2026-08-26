@@ -36,6 +36,16 @@ def _canonical_hash(value: object) -> str:
     ).hexdigest()
 
 
+def _manifest_rows(path: Path) -> list[dict]:
+    payload = json.loads(path.read_text())
+    if isinstance(payload, list):
+        return [dict(row) for row in payload]
+    for key in ("examples", "records", "items"):
+        if isinstance(payload.get(key), list):
+            return [dict(row) for row in payload[key]]
+    raise ValueError("manifest has no examples/records/items list")
+
+
 def _path_fits(windows: np.ndarray, path: list[int], blank_id: int) -> np.ndarray:
     count, length, _ = windows.shape
     targets = tf.tile(tf.constant([path], dtype=tf.int32), [count, 1])
@@ -84,7 +94,9 @@ def forward_sum_sliding_scores(
         "raw_canonical_fit": np.full(len(values), -math.inf, dtype=np.float64),
         "raw_collision_margin": np.full(len(values), -math.inf, dtype=np.float64),
         "deployment_canonical_fit": np.full(len(values), -math.inf, dtype=np.float64),
-        "deployment_collision_margin": np.full(len(values), -math.inf, dtype=np.float64),
+        "deployment_collision_margin": np.full(
+            len(values), -math.inf, dtype=np.float64
+        ),
         "raw_start_frame": np.full(len(values), -1, dtype=np.int32),
         "raw_end_frame": np.full(len(values), -1, dtype=np.int32),
         "deployment_start_frame": np.full(len(values), -1, dtype=np.int32),
@@ -137,18 +149,13 @@ def forward_sum_sliding_scores(
             candidate_fit = eligible_fit[np.arange(len(batch)), deployed_index]
             candidate_margin = margin[np.arange(len(batch)), deployed_index]
             improve = (candidate_fit > deployed_fit) | (
-                (candidate_fit == deployed_fit)
-                & (candidate_margin > deployed_margin)
+                (candidate_fit == deployed_fit) & (candidate_margin > deployed_margin)
             )
             deployed_fit[improve] = candidate_fit[improve]
             deployed_margin[improve] = candidate_margin[improve]
-            deployed_start_values = np.asarray(starts, dtype=np.int32)[
-                deployed_index
-            ]
+            deployed_start_values = np.asarray(starts, dtype=np.int32)[deployed_index]
             deployed_start_frame[improve] = deployed_start_values[improve]
-            deployed_end_frame[improve] = (
-                deployed_start_values[improve] + length
-            )
+            deployed_end_frame[improve] = deployed_start_values[improve] + length
         destination = slice(batch_start, batch_start + len(batch))
         result["raw_canonical_fit"][destination] = raw_fit
         result["raw_collision_margin"][destination] = raw_margin
@@ -162,11 +169,14 @@ def forward_sum_sliding_scores(
     result["decision_score"] = result["raw_canonical_fit"] + np.minimum(
         result["raw_collision_margin"], 0.0
     )
-    if any(np.any(~np.isfinite(result[key])) for key in (
-        "raw_canonical_fit",
-        "raw_collision_margin",
-        "decision_score",
-    )):
+    if any(
+        np.any(~np.isfinite(result[key]))
+        for key in (
+            "raw_canonical_fit",
+            "raw_collision_margin",
+            "decision_score",
+        )
+    ):
         raise ValueError("raw teacher sequence targets must be finite")
     return result
 
@@ -174,7 +184,11 @@ def forward_sum_sliding_scores(
 def _split_report(rows: list[dict], scores: dict[str, np.ndarray], split: str) -> dict:
     indexes = [index for index, row in enumerate(rows) if row["split"] == split]
     positive = np.asarray(
-        [scores["deployment_canonical_fit"][i] for i in indexes if rows[i]["label"] == 1],
+        [
+            scores["deployment_canonical_fit"][i]
+            for i in indexes
+            if rows[i]["label"] == 1
+        ],
         dtype=np.float64,
     )
     negative_indexes = [i for i in indexes if rows[i]["label"] == 0]
@@ -205,14 +219,17 @@ def _split_report(rows: list[dict], scores: dict[str, np.ndarray], split: str) -
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--corpus", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--corpus", type=Path)
+    source.add_argument("--manifest", type=Path)
     parser.add_argument("--posterior-cache", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--batch-size", type=int, default=128)
     args = parser.parse_args()
-    corpus_path = args.corpus / "corpus.json"
-    corpus = json.loads(corpus_path.read_text())
-    rows = corpus["examples"]
+    corpus_path = args.corpus / "corpus.json" if args.corpus else None
+    corpus = json.loads(corpus_path.read_text()) if corpus_path else None
+    manifest_path = corpus_path if corpus_path else args.manifest
+    rows = corpus["examples"] if corpus else _manifest_rows(manifest_path)
     prefix = args.posterior_cache.with_suffix("")
     raw_cache = json.loads(prefix.with_suffix(".json").read_text())
     cache, arrays = load_cache(
@@ -220,14 +237,24 @@ def main() -> int:
         expected_model_revision=raw_cache["model"]["revision"],
         expected_weights_sha256=raw_cache["model"]["weights_sha256"],
     )
-    if cache.get("manifest_sha256") != corpus["manifests"]["teacher"]["sha256"]:
+    expected_manifest_sha256 = (
+        corpus["manifests"]["teacher"]["sha256"]
+        if corpus
+        else _sha256_file(manifest_path)
+    )
+    if cache.get("manifest_sha256") != expected_manifest_sha256:
         raise ValueError("posterior cache is not bound to the active corpus")
     offsets = arrays["offsets"]
     lengths = np.diff(offsets)
     if len(lengths) != len(rows) or not len(lengths) or np.any(lengths != lengths[0]):
-        raise ValueError("sequence-score cache requires equal fixed-context teacher clips")
+        raise ValueError(
+            "sequence-score cache requires equal fixed-context teacher clips"
+        )
     values = np.stack(
-        [arrays["log_posteriors"][offsets[i] : offsets[i + 1]] for i in range(len(rows))]
+        [
+            arrays["log_posteriors"][offsets[i] : offsets[i + 1]]
+            for i in range(len(rows))
+        ]
     )
     contract = compact_phone_contract()
     if cache.get("vocabulary", {}).get("tokens") != contract["tokens"]:
@@ -238,11 +265,23 @@ def main() -> int:
     metadata = {
         "schema_version": SCHEMA_VERSION,
         "representation": "qualified_teacher_original_resolution_clip_decisions",
-        "corpus": {
-            "path": str(corpus_path.resolve()),
-            "sha256": _sha256_file(corpus_path),
-            "teacher_manifest_sha256": corpus["manifests"]["teacher"]["sha256"],
-        },
+        "corpus": (
+            {
+                "path": str(corpus_path.resolve()),
+                "sha256": _sha256_file(corpus_path),
+                "teacher_manifest_sha256": expected_manifest_sha256,
+            }
+            if corpus
+            else None
+        ),
+        "manifest": (
+            {
+                "path": str(manifest_path.resolve()),
+                "sha256": expected_manifest_sha256,
+            }
+            if not corpus
+            else None
+        ),
         "posterior_cache": {
             "prefix": str(prefix.resolve()),
             "json_sha256": _sha256_file(prefix.with_suffix(".json")),
@@ -261,10 +300,14 @@ def main() -> int:
             "decision_score": "raw_canonical_fit + min(raw_collision_margin, 0)",
         },
         "counts": {"examples": len(rows), "teacher_frames": int(lengths[0])},
-        "split_reports": {
-            split: _split_report(rows, scores, split)
-            for split in ("train", "validation", "test")
-        },
+        "split_reports": (
+            {
+                split: _split_report(rows, scores, split)
+                for split in ("train", "validation", "test")
+            }
+            if corpus
+            else None
+        ),
     }
     args.output.with_suffix(".json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True, allow_nan=False) + "\n"

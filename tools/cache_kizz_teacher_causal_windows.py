@@ -117,7 +117,12 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--student-architecture",
-        choices=("control_mixconv", "temporal_residual", "dilated_temporal_memory"),
+        choices=(
+            "control_mixconv",
+            "temporal_residual",
+            "dilated_temporal_memory",
+            "dilated_temporal_memory_wide",
+        ),
         default="temporal_residual",
     )
     args = parser.parse_args()
