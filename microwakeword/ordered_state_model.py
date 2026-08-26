@@ -50,6 +50,10 @@ def model_parameters(parser_nn):
 
 def spectrogram_slices_dropped(flags):
     """Return input slices consumed by valid temporal convolutions."""
+    if getattr(flags, "causal_memory", False):
+        return int(getattr(flags, "warmup_output_drop", 0)) * int(flags.stride) + (
+            int(flags.stride) - 1
+        )
     dropped = 0
     if flags.first_conv_filters > 0:
         dropped += flags.first_conv_kernel_size - 1
@@ -72,6 +76,9 @@ def training_spectrogram_length(flags, output_frames):
     output_frames = int(output_frames)
     if output_frames < 1:
         raise ValueError("ordered-state training requires at least one output frame")
+    if getattr(flags, "causal_memory", False):
+        emitted = output_frames + int(getattr(flags, "warmup_output_drop", 0))
+        return (emitted - 1) * int(flags.stride) + int(flags.first_conv_kernel_size)
     receptive_field_frames = spectrogram_slices_dropped(flags) + 1
     return (output_frames - 1) * int(flags.stride) + receptive_field_frames
 
@@ -132,6 +139,8 @@ def model(flags, shape, batch_size):
     repeat_in_block = parse(flags.repeat_in_block)
     mixconv_kernel_sizes = parse(flags.mixconv_kernel_sizes)
     residual_connections = parse(flags.residual_connection)
+    causal_memory = bool(getattr(flags, "causal_memory", False))
+    temporal_dilations = parse(getattr(flags, "temporal_dilations", ""))
     lengths = {
         len(pointwise_filters),
         len(repeat_in_block),
@@ -140,6 +149,8 @@ def model(flags, shape, batch_size):
     }
     if len(lengths) != 1:
         raise ValueError("all ordered-state block parameter lists must match")
+    if causal_memory and len(temporal_dilations) != len(pointwise_filters):
+        raise ValueError("causal-memory dilations must match temporal blocks")
     if flags.num_states < 3:
         raise ValueError("ordered-state model needs background, silence, and a path")
 
@@ -156,7 +167,7 @@ def model(flags, shape, batch_size):
                 use_bias=False,
             ),
             use_one_step=False,
-            pad_time_dim=None,
+            pad_time_dim="causal" if causal_memory else None,
             pad_freq_dim="valid",
         )(net)
         net = tf.keras.layers.Activation("relu")(net)
@@ -179,7 +190,19 @@ def model(flags, shape, batch_size):
             residual = tf.keras.layers.BatchNormalization()(residual)
 
         for repeat_index in range(repeat):
-            if max(kernel_sizes) > 1:
+            if causal_memory:
+                net = stream.Stream(
+                    cell=tf.keras.layers.DepthwiseConv2D(
+                        kernel_size=(3, 1),
+                        dilation_rate=(int(temporal_dilations[block_index]), 1),
+                        padding="valid",
+                        use_bias=False,
+                    ),
+                    use_one_step=True,
+                    pad_time_dim="causal",
+                    pad_freq_dim="valid",
+                )(net)
+            elif max(kernel_sizes) > 1:
                 net = MixConv(kernel_size=kernel_sizes)(net)
             net = tf.keras.layers.Conv2D(
                 filters=filters, kernel_size=1, use_bias=False, padding="same"
@@ -192,10 +215,19 @@ def model(flags, shape, batch_size):
                 net = net + residual
             activation_name = (
                 "encoder_hidden"
-                if block_index == len(blocks) - 1 and repeat_index == repeat - 1
+                if not causal_memory
+                and block_index == len(blocks) - 1
+                and repeat_index == repeat - 1
                 else None
             )
             net = tf.keras.layers.Activation("relu", name=activation_name)(net)
+
+    if causal_memory:
+        warmup = int(getattr(flags, "warmup_output_drop", 0))
+        if warmup < 0 or net.shape[1] is None or warmup >= int(net.shape[1]):
+            raise ValueError("invalid causal-memory warm-up output drop")
+        net = strided_drop.StridedDrop(warmup, name="causal_memory_warmup_drop")(net)
+        net = tf.keras.layers.Activation("linear", name="encoder_hidden")(net)
 
     logits = tf.keras.layers.Conv2D(
         filters=flags.num_states,
@@ -263,6 +295,13 @@ def write_decoder_contract(path, contract):
 
 def receptive_field_ms(flags, feature_step_ms=10, frontend_window_ms=30):
     """Report the maximum acoustic receptive field of one emitted state vector."""
+    if getattr(flags, "causal_memory", False):
+        dilations = parse(getattr(flags, "temporal_dilations", ""))
+        first_context = max(0, int(flags.first_conv_kernel_size) - 1)
+        temporal_context = (
+            2 * sum(int(value) for value in dilations) * int(flags.stride)
+        )
+        return frontend_window_ms + (first_context + temporal_context) * feature_step_ms
     slices = 1
     if flags.first_conv_filters > 0:
         slices += flags.first_conv_kernel_size - 1

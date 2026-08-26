@@ -20,6 +20,7 @@ from tools.distill_kizz_phoneme_student import (
     collision_path_supervision,
     deployment_path_scores,
     delayed_occupation_loss,
+    deployable_causal_mask,
     distillation_loss,
     expected_schedule_counts,
     map_ordered_targets,
@@ -37,7 +38,10 @@ from tools.distill_kizz_phoneme_student import (
     teacher_sequence_score_targets,
     strict_collision_negative_loss,
     teacher_sequence_ranking_loss,
+    teacher_sequence_listwise_loss,
     utterance_representation_loss,
+    validate_causal_loss_contract,
+    validate_reference_causal_contract,
 )
 from tools.package_kizz_phoneme_student_firmware import EXPECTED_WINDOWS
 from tools.qualify_kizz_phoneme_student import WINDOW_LENGTHS as QUALIFICATION_WINDOWS
@@ -45,6 +49,61 @@ from tools.qualify_kizz_phoneme_student import score_features
 
 
 class DistillKizzPhonemeStudentTests(unittest.TestCase):
+    def test_causal_teacher_sampling_excludes_undeployable_prefixes(self):
+        scores = np.zeros((2, 66), dtype=np.float32)
+        valid = deployable_causal_mask(scores)
+        self.assertFalse(valid[:, : min(WINDOW_LENGTHS_FRAMES) - 1].any())
+        self.assertTrue(valid[:, min(WINDOW_LENGTHS_FRAMES) - 1 :].all())
+
+    def test_causal_transfer_rejects_clip_label_ranking_losses(self):
+        with self.assertRaisesRegex(ValueError, "clip-label ranking"):
+            validate_causal_loss_contract(
+                teacher_causal_window_cache=Path("teacher-cache"),
+                ranking_weight=0.0,
+                tail_ranking_weight=1.0,
+            )
+        validate_causal_loss_contract(
+            teacher_causal_window_cache=Path("teacher-cache"),
+            ranking_weight=0.0,
+            tail_ranking_weight=0.0,
+        )
+
+    def test_reference_causal_cache_binds_architecture_and_features(self):
+        metadata = {
+            "source_student": {"architecture": {"architecture_id": "memory"}},
+            "corpus": {"features_sha256": "features"},
+        }
+        validate_reference_causal_contract(
+            metadata,
+            architecture={"architecture_id": "memory"},
+            features_sha256="features",
+        )
+        with self.assertRaisesRegex(ValueError, "different inputs"):
+            validate_reference_causal_contract(
+                metadata,
+                architecture={"architecture_id": "control"},
+                features_sha256="features",
+            )
+
+    def test_listwise_teacher_loss_prefers_teacher_order(self):
+        import tensorflow as tf
+
+        teacher = tf.constant([2.0, 0.5, -1.0, 99.0])
+        mask = tf.constant([1.0, 1.0, 1.0, 0.0])
+        aligned = teacher_sequence_listwise_loss(
+            tf.constant([2.0, 0.5, -1.0, -99.0]),
+            teacher,
+            mask,
+            temperature=0.5,
+        )
+        reversed_order = teacher_sequence_listwise_loss(
+            tf.constant([-1.0, 0.5, 2.0, 99.0]),
+            teacher,
+            mask,
+            temperature=0.5,
+        )
+        self.assertLess(float(aligned), float(reversed_order))
+
     def test_checkpoint_selection_prefers_fewer_false_accepts_at_recall_floor(self):
         common = {"qualified": False, "recall": 0.90}
         fewer_false_accepts = checkpoint_selection_key(
@@ -54,6 +113,18 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
             {**common, "false_accepts_at_recall_floor": 8}, 0.75, 0.5
         )
         self.assertGreater(fewer_false_accepts, more_false_accepts)
+
+    def test_checkpoint_selection_handles_unreached_recall_floor(self):
+        key = checkpoint_selection_key(
+            {
+                "qualified": False,
+                "recall": 0.0,
+                "false_accepts_at_recall_floor": None,
+            },
+            0.0,
+            None,
+        )
+        self.assertTrue(np.isfinite(key).all())
 
     def test_checkpoint_forward_sum_scores_match_deployment_normalization(self):
         contract = compact_phone_contract()
@@ -692,6 +763,24 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         )
         self.assertEqual(model.output_shape, (None, 66, len(contract["tokens"])))
         self.assertIsNotNone(model.get_layer("encoder_hidden"))
+
+    def test_dilated_temporal_memory_preserves_output_and_extends_context(self):
+        from microwakeword.ordered_state_model import model as build_student
+        from microwakeword.ordered_state_model import receptive_field_ms
+
+        contract = compact_phone_contract()
+        flags = student_flags_for_architecture(
+            "dilated_temporal_memory", len(contract["tokens"])
+        )
+        architecture = student_architecture_contract(
+            contract, "dilated_temporal_memory"
+        )
+        model = build_student(flags, (260, 40), None)
+        self.assertEqual(model.output_shape, (None, 66, len(contract["tokens"])))
+        self.assertEqual(architecture["temporal_dilations"], [1, 2, 4, 8, 16])
+        self.assertEqual(architecture["warmup_output_drop"], 20)
+        self.assertGreaterEqual(receptive_field_ms(flags), 1900)
+        self.assertAlmostEqual(student_output_times_seconds(flags, 66)[0], 0.635)
 
 
 if __name__ == "__main__":

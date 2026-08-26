@@ -73,7 +73,9 @@ class OrderedStateModelTest(unittest.TestCase):
 
     def test_streaming_phase_reproduces_non_streaming_logits(self):
         flags = self.flags()
-        features = np.random.default_rng(231).normal(size=(1, 260, 40)).astype(np.float32)
+        features = (
+            np.random.default_rng(231).normal(size=(1, 260, 40)).astype(np.float32)
+        )
         non_streaming = ordered_state_model.model(flags, (260, 40), batch_size=1)
         expected = np.asarray(non_streaming(features, training=False))[0]
         streaming = utils.to_streaming_inference(
@@ -86,8 +88,44 @@ class OrderedStateModelTest(unittest.TestCase):
         primer[:, -phase:] = features[:, :phase]
         emitted = [np.asarray(streaming(primer, training=False))[0, 0]]
         for offset in range(phase, 260 - flags.stride + 1, flags.stride):
-            emitted.append(np.asarray(streaming(features[:, offset:offset + flags.stride], training=False))[0, 0])
-        actual = np.asarray(emitted)[-len(expected):]
+            emitted.append(
+                np.asarray(
+                    streaming(
+                        features[:, offset : offset + flags.stride], training=False
+                    )
+                )[0, 0]
+            )
+        actual = np.asarray(emitted)[-len(expected) :]
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
+
+    def test_dilated_temporal_memory_stream_matches_non_streaming_tail(self):
+        from microwakeword.phoneme_student import compact_phone_contract
+        from tools.distill_kizz_phoneme_student import student_flags_for_architecture
+
+        flags = student_flags_for_architecture(
+            "dilated_temporal_memory",
+            len(compact_phone_contract()["tokens"]),
+        )
+        features = (
+            np.random.default_rng(238).normal(size=(1, 260, 40)).astype(np.float32)
+        )
+        non_streaming = ordered_state_model.model(flags, (260, 40), batch_size=1)
+        expected = np.asarray(non_streaming(features, training=False))[0]
+        streaming = utils.to_streaming_inference(
+            non_streaming,
+            {"spectrogram_length": 260, "stride": flags.stride},
+            modes.Modes.STREAM_INTERNAL_STATE_INFERENCE,
+        )
+        emitted = []
+        for offset in range(0, 258, flags.stride):
+            emitted.extend(
+                np.asarray(
+                    streaming(
+                        features[:, offset : offset + flags.stride], training=False
+                    )
+                )[0]
+            )
+        actual = np.asarray(emitted)[-len(expected) :]
         np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
 
     def test_training_wrapper_runs_the_sequence_endpoint_loss(self):
@@ -140,7 +178,9 @@ class OrderedStateModelTest(unittest.TestCase):
     def test_rejects_too_few_acoustic_states(self):
         flags = self.flags()
         flags.num_states = 2
-        with self.assertRaisesRegex(ValueError, "needs background, silence, and a path"):
+        with self.assertRaisesRegex(
+            ValueError, "needs background, silence, and a path"
+        ):
             ordered_state_model.model(flags, (96, 40), batch_size=1)
 
     def test_decoder_contract_binds_training_score_settings(self):

@@ -18,7 +18,6 @@ from microwakeword.kizz_phoneme_teacher import WindowScore, score_window
 from microwakeword.ordered_state_model import spectrogram_slices_dropped
 from microwakeword.wake_phrase import KIZZ_CONTROL, WakePhraseSpec
 
-
 BLANK = "<blank>"
 OTHER = "OTHER"
 FRONTEND_STEP_SECONDS = 0.010
@@ -78,6 +77,8 @@ def student_stream_phase_offset_frames(flags) -> int:
     stride = int(flags.stride)
     if stride < 1:
         raise ValueError("student stride must be positive")
+    if getattr(flags, "causal_memory", False):
+        return 0
     receptive_field_frames = spectrogram_slices_dropped(flags) + 1
     return receptive_field_frames % stride
 
@@ -98,8 +99,9 @@ def resample_log_posteriors(
         raise ValueError("invalid teacher/student timing")
     probabilities = np.exp(values)
     probabilities /= probabilities.sum(axis=1, keepdims=True)
-    source_times = teacher_frame_center_seconds + teacher_frame_stride_seconds * np.arange(
-        len(values), dtype=np.float64
+    source_times = (
+        teacher_frame_center_seconds
+        + teacher_frame_stride_seconds * np.arange(len(values), dtype=np.float64)
     )
     result = np.column_stack(
         [
@@ -188,7 +190,9 @@ class StreamingPhonemeDecoder:
         self._index = 0
         self._cooldown = 0
 
-    def step(self, frame: Sequence[float], *, from_logits: bool = True) -> PhonemeDetection | None:
+    def step(
+        self, frame: Sequence[float], *, from_logits: bool = True
+    ) -> PhonemeDetection | None:
         values = np.asarray(frame, dtype=np.float64)
         if values.shape != (len(self.contract["tokens"]),):
             raise ValueError("student frame has the wrong compact vocabulary size")
@@ -198,7 +202,9 @@ class StreamingPhonemeDecoder:
         else:
             if np.any(values < 0) or not np.isfinite(values).all() or values.sum() <= 0:
                 raise ValueError("probability frame is invalid")
-            values = np.log(np.maximum(values / values.sum(), np.finfo(np.float64).tiny))
+            values = np.log(
+                np.maximum(values / values.sum(), np.finfo(np.float64).tiny)
+            )
         self._frames.append(values)
         maximum = max(self.window_lengths)
         if len(self._frames) > maximum:

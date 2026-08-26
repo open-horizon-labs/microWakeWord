@@ -14,3 +14,8 @@ Quantization can alter ranking but cannot legitimize a float checkpoint that
 already failed recall. The 100-hour continuous corpus is consulted only after
 the float clip gate, and firmware packaging/flash only after the INT8 artifact
 passes its own bound qualification. Diagnostic progress is not promotion.
+
+When endpoint-specific causal teacher targets are active, clip-level ranking
+and tail-ranking losses are prohibited. They assign the final clip label to
+prefixes that may not yet contain the wake phrase and can destroy the
+validation boundary while reducing training loss.

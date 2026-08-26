@@ -117,6 +117,20 @@ def student_flags_for_architecture(architecture: str, output_count: int):
             stride=3,
             num_states=output_count,
         )
+    if architecture == "dilated_temporal_memory":
+        return SimpleNamespace(
+            pointwise_filters="80,96,96,96,96",
+            residual_connection="1,1,1,1,1",
+            repeat_in_block="1,1,1,1,1",
+            mixconv_kernel_sizes="[3], [3], [3], [3], [3]",
+            temporal_dilations="1,2,4,8,16",
+            causal_memory=True,
+            warmup_output_drop=20,
+            first_conv_filters=48,
+            first_conv_kernel_size=5,
+            stride=3,
+            num_states=output_count,
+        )
     raise ValueError(f"unsupported student architecture: {architecture}")
 
 
@@ -139,6 +153,14 @@ def student_architecture_contract(
     }
     if architecture != "control_mixconv":
         result["architecture_id"] = architecture
+    if getattr(flags, "causal_memory", False):
+        result.update(
+            {
+                "causal_memory": True,
+                "temporal_dilations": list(parse(flags.temporal_dilations)),
+                "warmup_output_drop": int(flags.warmup_output_drop),
+            }
+        )
     return result
 
 
@@ -332,10 +354,11 @@ def checkpoint_selection_key(
     """Rank validation checkpoints using only deployment-equivalent evidence."""
 
     finite_floor = -np.finfo(np.float64).max
+    false_accepts = point.get("false_accepts_at_recall_floor")
     return (
         float(bool(point.get("qualified"))),
         float(zero_false_accept_recall),
-        -float(point.get("false_accepts_at_recall_floor", np.inf)),
+        -float(false_accepts) if false_accepts is not None else finite_floor,
         float(point.get("recall", 0.0)),
         float(separation) if separation is not None else finite_floor,
     )
@@ -481,6 +504,99 @@ def load_student_window_cache(
     if np.any(~np.isfinite(arrays["decision_score"])):
         raise ValueError("student window decision scores must be finite")
     return metadata, arrays
+
+
+def load_causal_decision_cache(
+    cache_prefix: Path,
+    *,
+    representation: str,
+    corpus_json: Path,
+    contract: dict,
+    expected_examples: int,
+) -> tuple[dict, dict[str, np.ndarray]]:
+    """Load endpoint-level decision targets with exact corpus bindings."""
+
+    prefix = cache_prefix.with_suffix("")
+    metadata = json.loads(prefix.with_suffix(".json").read_text())
+    if (
+        metadata.get("schema_version") != 1
+        or metadata.get("representation") != representation
+        or metadata.get("corpus", {}).get("sha256") != sha256_file(corpus_json)
+        or metadata.get("compact_phone_contract_sha256") != _canonical_hash(contract)
+    ):
+        raise ValueError("causal decision cache contract differs")
+    required = (
+        "raw_canonical_fit",
+        "raw_collision_margin",
+        "decision_score",
+        "eligible",
+    )
+    with np.load(prefix.with_suffix(".npz"), allow_pickle=False) as loaded:
+        if any(key not in loaded for key in required):
+            raise ValueError("causal decision cache is incomplete")
+        arrays = {key: np.asarray(loaded[key]) for key in required}
+    expected_shape = (expected_examples, OUTPUT_FRAMES)
+    if any(values.shape != expected_shape for values in arrays.values()):
+        raise ValueError("causal decision cache tensor geometry differs")
+    valid = np.isfinite(arrays["decision_score"])
+    if representation.startswith("qualified_teacher"):
+        if not np.all(valid):
+            raise ValueError("teacher causal decision targets must be complete")
+    elif np.any(valid[:, : min(WINDOW_LENGTHS_FRAMES) - 1]):
+        raise ValueError("student cache exposes prefixes shorter than deployment")
+    return metadata, arrays
+
+
+def _rank_percentiles(values: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """Return deterministic global percentile ranks for valid matrix entries."""
+
+    matrix = np.asarray(values, dtype=np.float64)
+    mask = np.asarray(valid, dtype=bool)
+    if matrix.shape != mask.shape or not np.any(mask):
+        raise ValueError("rank-percentile inputs differ or are empty")
+    flat = matrix[mask]
+    order = np.argsort(flat, kind="mergesort")
+    ranks = np.empty(len(flat), dtype=np.float64)
+    ranks[order] = np.arange(len(flat), dtype=np.float64)
+    ranks /= max(1, len(flat) - 1)
+    result = np.full(matrix.shape, np.nan, dtype=np.float64)
+    result[mask] = ranks
+    return result
+
+
+def deployable_causal_mask(decision_scores: np.ndarray) -> np.ndarray:
+    """Mask teacher endpoints the student suffix decoder can actually score."""
+
+    values = np.asarray(decision_scores)
+    if values.ndim != 2 or values.shape[1] != OUTPUT_FRAMES:
+        raise ValueError("causal decision scores differ from student output")
+    valid = np.isfinite(values)
+    valid[:, : min(WINDOW_LENGTHS_FRAMES) - 1] = False
+    return valid
+
+
+def validate_causal_loss_contract(
+    *,
+    teacher_causal_window_cache: Path | None,
+    ranking_weight: float,
+    tail_ranking_weight: float,
+) -> None:
+    """Reject clip-label ranking losses on randomly sampled causal prefixes."""
+
+    if teacher_causal_window_cache and (ranking_weight or tail_ranking_weight):
+        raise ValueError("causal-window transfer cannot use clip-label ranking losses")
+
+
+def validate_reference_causal_contract(
+    metadata: dict, *, architecture: dict, features_sha256: str
+) -> None:
+    """Bind disagreement mining to the current student timeline and features."""
+
+    if (
+        metadata.get("source_student", {}).get("architecture") != architecture
+        or metadata.get("corpus", {}).get("features_sha256") != features_sha256
+    ):
+        raise ValueError("reference student causal cache uses different inputs")
 
 
 def load_expanded_public_negatives(
@@ -673,6 +789,8 @@ class DistillationBatcher:
         teacher_sequence_targets: np.ndarray,
         collision_path_indexes: np.ndarray,
         streaming_window_targets: dict[str, np.ndarray],
+        teacher_causal_targets: dict[str, np.ndarray] | None,
+        reference_student_causal_targets: dict[str, np.ndarray] | None,
         expanded_public_negative_features: np.ndarray,
         rows: list[dict],
         overlay_features: np.ndarray,
@@ -694,6 +812,8 @@ class DistillationBatcher:
         self.teacher_sequence_targets = teacher_sequence_targets
         self.collision_path_indexes = collision_path_indexes
         self.streaming_window_targets = streaming_window_targets
+        self.teacher_causal_targets = teacher_causal_targets
+        self.reference_student_causal_targets = reference_student_causal_targets
         self.expanded_public_negative_features = expanded_public_negative_features
         self.rows = rows
         self.overlay_features = overlay_features
@@ -749,6 +869,40 @@ class DistillationBatcher:
             values.shape != (len(rows),) for values in streaming_window_targets.values()
         ):
             raise ValueError("streaming-window targets must match the corpus")
+        self.causal_valid = None
+        self.causal_disagreement = None
+        if teacher_causal_targets is not None:
+            expected = (len(rows), OUTPUT_FRAMES)
+            if any(
+                values.shape != expected for values in teacher_causal_targets.values()
+            ):
+                raise ValueError("teacher causal targets must match corpus endpoints")
+            complete = np.isfinite(teacher_causal_targets["decision_score"])
+            if not np.all(complete):
+                raise ValueError("teacher causal targets must cover every endpoint")
+            self.causal_valid = deployable_causal_mask(
+                teacher_causal_targets["decision_score"]
+            )
+            if reference_student_causal_targets is not None:
+                if any(
+                    values.shape != expected
+                    for values in reference_student_causal_targets.values()
+                ):
+                    raise ValueError("reference student causal targets differ")
+                train_rows = np.asarray(
+                    [row.get("split") == "train" for row in rows], dtype=bool
+                )[:, None]
+                reference_valid = np.isfinite(
+                    reference_student_causal_targets["decision_score"]
+                )
+                valid = self.causal_valid & reference_valid & train_rows
+                teacher_rank = _rank_percentiles(
+                    teacher_causal_targets["decision_score"], valid
+                )
+                student_rank = _rank_percentiles(
+                    reference_student_causal_targets["decision_score"], valid
+                )
+                self.causal_disagreement = np.abs(teacher_rank - student_rank)
         if any(provider not in APPROVED_PROVIDERS for provider in overlay_providers):
             raise ValueError("overlay provenance contains an unapproved provider")
         if any(
@@ -802,6 +956,43 @@ class DistillationBatcher:
             )
             hard_count = max(1, math.ceil(len(order) / 2))
             self.hard_negative[group] = np.asarray(order[:hard_count], dtype=np.int64)
+
+    def _causal_endpoint(self, index: int, global_slot: int, rng) -> int:
+        """Choose random, disagreement/hard, and terminal endpoints in rotation."""
+
+        if self.teacher_causal_targets is None:
+            deployed_end = int(
+                self.streaming_window_targets["deployment_end_frame"][index]
+            )
+            raw_end = int(self.streaming_window_targets["raw_end_frame"][index])
+            return (
+                deployed_end if deployed_end >= min(WINDOW_LENGTHS_FRAMES) else raw_end
+            )
+        valid = np.flatnonzero(self.causal_valid[index])
+        mode = global_slot % 3
+        if mode == 0:
+            endpoint_index = int(rng.choice(valid))
+        elif mode == 1 and self.causal_disagreement is not None:
+            values = self.causal_disagreement[index, valid]
+            endpoint_index = int(valid[int(np.nanargmax(values))])
+        elif mode == 1:
+            values = self.teacher_causal_targets["decision_score"][index, valid]
+            endpoint_index = int(valid[int(np.argmax(values))])
+        else:
+            endpoint_index = int(valid[-1])
+        return endpoint_index + 1
+
+    def _causal_teacher_target(self, index: int, endpoint: int) -> np.ndarray:
+        if self.teacher_causal_targets is None:
+            return self.teacher_sequence_targets[index]
+        column = int(endpoint) - 1
+        return np.asarray(
+            [
+                self.teacher_causal_targets["decision_score"][index, column],
+                self.teacher_causal_targets["raw_collision_margin"][index, column],
+            ],
+            dtype=np.float32,
+        )
 
     @staticmethod
     def _window(values, rng):
@@ -876,17 +1067,11 @@ class DistillationBatcher:
                 occupation_mask[slot] = 1
                 representation[slot] = self.teacher_representations[index]
                 representation_mask[slot] = 1
-                teacher_sequence[slot] = self.teacher_sequence_targets[index]
+                scoring_endpoints[slot] = self._causal_endpoint(index, global_slot, rng)
+                teacher_sequence[slot] = self._causal_teacher_target(
+                    index, scoring_endpoints[slot]
+                )
                 sequence_mask[slot] = 1
-                deployed_end = int(
-                    self.streaming_window_targets["deployment_end_frame"][index]
-                )
-                raw_end = int(self.streaming_window_targets["raw_end_frame"][index])
-                scoring_endpoints[slot] = (
-                    deployed_end
-                    if deployed_end >= min(WINDOW_LENGTHS_FRAMES)
-                    else raw_end
-                )
         groups = (
             "public_speech",
             "kizz_control_phonetic_collision",
@@ -938,21 +1123,16 @@ class DistillationBatcher:
                 soft_mask[slot] = 1
                 representation[slot] = self.teacher_representations[index]
                 representation_mask[slot] = 1
-                teacher_sequence[slot] = self.teacher_sequence_targets[index]
+                scoring_endpoints[slot] = self._causal_endpoint(
+                    index, step * half + offset, rng
+                )
+                teacher_sequence[slot] = self._causal_teacher_target(
+                    index, scoring_endpoints[slot]
+                )
+                sequence_mask[slot] = 1
                 if group == "kizz_control_phonetic_collision":
                     collision_negative_mask[slot] = 1
                     named_collision_path[slot] = self.collision_path_indexes[index]
-                else:
-                    sequence_mask[slot] = 1
-                deployed_end = int(
-                    self.streaming_window_targets["deployment_end_frame"][index]
-                )
-                raw_end = int(self.streaming_window_targets["raw_end_frame"][index])
-                scoring_endpoints[slot] = (
-                    deployed_end
-                    if deployed_end >= min(WINDOW_LENGTHS_FRAMES)
-                    else raw_end
-                )
         if np.any(scoring_endpoints < min(WINDOW_LENGTHS_FRAMES)) or np.any(
             scoring_endpoints > OUTPUT_FRAMES
         ):
@@ -1270,6 +1450,40 @@ def teacher_sequence_ranking_loss(student_scores, teacher_scores, mask):
     )
 
 
+def teacher_sequence_listwise_loss(
+    student_scores, teacher_scores, mask, *, temperature: float
+):
+    """Transfer the teacher's complete ordering over sampled causal windows."""
+
+    if not math.isfinite(float(temperature)) or temperature <= 0:
+        raise ValueError("listwise temperature must be positive and finite")
+    valid = tf.cast(mask > 0.5, student_scores.dtype)
+
+    def standardize(values):
+        count = tf.reduce_sum(valid)
+        mean = tf.math.divide_no_nan(tf.reduce_sum(values * valid), count)
+        variance = tf.math.divide_no_nan(
+            tf.reduce_sum(tf.square(values - mean) * valid), count
+        )
+        return (values - mean) * tf.math.rsqrt(variance + 1e-4)
+
+    teacher = standardize(tf.cast(teacher_scores, student_scores.dtype))
+    student = standardize(student_scores)
+    floor = tf.cast(-1e4, student_scores.dtype)
+    teacher_logits = tf.where(
+        valid > 0,
+        teacher / tf.cast(temperature, student_scores.dtype),
+        floor,
+    )
+    student_logits = tf.where(
+        valid > 0,
+        student / tf.cast(temperature, student_scores.dtype),
+        floor,
+    )
+    target = tf.stop_gradient(tf.nn.softmax(teacher_logits))
+    return -tf.reduce_sum(target * tf.nn.log_softmax(student_logits))
+
+
 def distillation_loss(
     logits,
     hard_targets,
@@ -1300,6 +1514,8 @@ def distillation_loss(
     named_collision_path=None,
     decoder_algorithm: str = "max_add_ctc_viterbi",
     sequence_teacher_weight: float = 0.0,
+    sequence_listwise_weight: float = 0.0,
+    sequence_listwise_temperature: float = 1.0,
     ranking_weight: float = 0.0,
     tail_ranking_weight: float = 0.0,
     ranking_margin: float = 0.5,
@@ -1419,6 +1635,12 @@ def distillation_loss(
     sequence_teacher_loss = teacher_sequence_ranking_loss(
         canonical, teacher_decision, sequence_teacher_mask
     )
+    sequence_listwise_loss = teacher_sequence_listwise_loss(
+        canonical,
+        teacher_decision,
+        sequence_teacher_mask,
+        temperature=sequence_listwise_temperature,
+    )
 
     total = (
         hard_weight * hard_loss
@@ -1429,6 +1651,7 @@ def distillation_loss(
         + collision_weight * collision_loss
         + negative_weight * negative_loss
         + sequence_teacher_weight * sequence_teacher_loss
+        + sequence_listwise_weight * sequence_listwise_loss
         + ranking_weight * pairwise_ranking_loss
         + tail_ranking_weight * tail_ranking_loss
         + negative_collision_weight * negative_collision_loss
@@ -1442,6 +1665,7 @@ def distillation_loss(
         collision_loss,
         negative_loss,
         sequence_teacher_loss,
+        sequence_listwise_loss,
         pairwise_ranking_loss,
         tail_ranking_loss,
         negative_collision_loss,
@@ -1514,6 +1738,8 @@ def main() -> int:
     parser.add_argument("--teacher-sequence-cache", type=Path, required=True)
     parser.add_argument("--teacher-representation-cache", type=Path)
     parser.add_argument("--streaming-window-cache", type=Path, required=True)
+    parser.add_argument("--teacher-causal-window-cache", type=Path)
+    parser.add_argument("--reference-student-causal-window-cache", type=Path)
     parser.add_argument("--expanded-public-negatives", type=Path, required=True)
     parser.add_argument("--teacher-qualification", type=Path, required=True)
     parser.add_argument("--continuous-qualification", type=Path, required=True)
@@ -1530,7 +1756,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--student-architecture",
-        choices=("control_mixconv", "temporal_residual"),
+        choices=(
+            "control_mixconv",
+            "temporal_residual",
+            "dilated_temporal_memory",
+        ),
         default="control_mixconv",
     )
     parser.add_argument("--steps", type=int, default=3000)
@@ -1546,6 +1776,8 @@ def main() -> int:
     parser.add_argument("--positive-collision-weight", type=float, default=0.25)
     parser.add_argument("--legacy-negative-weight", type=float, default=0.0)
     parser.add_argument("--sequence-teacher-weight", type=float, default=0.25)
+    parser.add_argument("--sequence-listwise-weight", type=float, default=0.0)
+    parser.add_argument("--sequence-listwise-temperature", type=float, default=1.0)
     parser.add_argument("--ranking-weight", type=float, default=0.75)
     parser.add_argument("--tail-ranking-weight", type=float, default=0.75)
     parser.add_argument("--ranking-margin", type=float, default=0.35)
@@ -1571,6 +1803,7 @@ def main() -> int:
         args.positive_collision_weight,
         args.legacy_negative_weight,
         args.sequence_teacher_weight,
+        args.sequence_listwise_weight,
         args.ranking_weight,
         args.tail_ranking_weight,
         args.ranking_margin,
@@ -1581,6 +1814,30 @@ def main() -> int:
         parser.error("loss weights and margins must be finite and non-negative")
     if not np.isfinite(args.teacher_temperature) or args.teacher_temperature <= 0:
         parser.error("--teacher-temperature must be positive and finite")
+    if (
+        not np.isfinite(args.sequence_listwise_temperature)
+        or args.sequence_listwise_temperature <= 0
+    ):
+        parser.error("--sequence-listwise-temperature must be positive and finite")
+    if args.sequence_listwise_weight and not args.teacher_causal_window_cache:
+        parser.error(
+            "--sequence-listwise-weight requires --teacher-causal-window-cache"
+        )
+    if (
+        args.reference_student_causal_window_cache
+        and not args.teacher_causal_window_cache
+    ):
+        parser.error(
+            "--reference-student-causal-window-cache requires teacher causal targets"
+        )
+    try:
+        validate_causal_loss_contract(
+            teacher_causal_window_cache=args.teacher_causal_window_cache,
+            ranking_weight=args.ranking_weight,
+            tail_ranking_weight=args.tail_ranking_weight,
+        )
+    except ValueError as error:
+        parser.error(str(error))
     if not 0 <= args.occupation_max_delay_frames < OUTPUT_FRAMES:
         parser.error("--occupation-max-delay-frames is outside student output")
     clip, continuous = require_teacher_gates(
@@ -1688,6 +1945,48 @@ def main() -> int:
     )
     if int(window_cache_meta.get("counts", {}).get("examples", -1)) != len(rows):
         raise ValueError("student window cache corpus length differs")
+    teacher_causal_metadata = None
+    teacher_causal_targets = None
+    if args.teacher_causal_window_cache:
+        teacher_causal_metadata, teacher_causal_targets = load_causal_decision_cache(
+            args.teacher_causal_window_cache,
+            representation="qualified_teacher_causal_student_endpoint_decisions",
+            corpus_json=args.corpus / "corpus.json",
+            contract=contract,
+            expected_examples=len(rows),
+        )
+        if teacher_causal_metadata.get("student_timeline", {}).get(
+            "architecture"
+        ) != student_architecture_contract(contract, args.student_architecture):
+            raise ValueError("teacher causal cache uses a different student timeline")
+        posterior = teacher_causal_metadata.get("posterior_cache", {})
+        posterior_prefix = args.posterior_cache.with_suffix("")
+        if posterior.get("json_sha256") != sha256_file(
+            posterior_prefix.with_suffix(".json")
+        ) or posterior.get("npz_sha256") != sha256_file(
+            posterior_prefix.with_suffix(".npz")
+        ):
+            raise ValueError("teacher causal cache uses different posteriors")
+    reference_causal_metadata = None
+    reference_student_causal_targets = None
+    if args.reference_student_causal_window_cache:
+        (
+            reference_causal_metadata,
+            reference_student_causal_targets,
+        ) = load_causal_decision_cache(
+            args.reference_student_causal_window_cache,
+            representation="frozen_student_causal_endpoint_decisions",
+            corpus_json=args.corpus / "corpus.json",
+            contract=contract,
+            expected_examples=len(rows),
+        )
+        validate_reference_causal_contract(
+            reference_causal_metadata,
+            architecture=student_architecture_contract(
+                contract, args.student_architecture
+            ),
+            features_sha256=sha256_file(args.corpus / "features.npy"),
+        )
     expanded_meta, expanded_public_negative_features = load_expanded_public_negatives(
         args.expanded_public_negatives,
         source_manifest=Path(corpus["manifests"]["source"]["path"]),
@@ -1733,6 +2032,8 @@ def main() -> int:
         teacher_sequence_targets,
         collision_path_indexes,
         streaming_window_targets,
+        teacher_causal_targets,
+        reference_student_causal_targets,
         expanded_public_negative_features,
         rows,
         overlay_features,
@@ -1814,6 +2115,8 @@ def main() -> int:
                 named_collision_path=named_collision_path,
                 decoder_algorithm=args.decoder_algorithm,
                 sequence_teacher_weight=args.sequence_teacher_weight,
+                sequence_listwise_weight=args.sequence_listwise_weight,
+                sequence_listwise_temperature=args.sequence_listwise_temperature,
                 ranking_weight=args.ranking_weight,
                 tail_ranking_weight=args.tail_ranking_weight,
                 ranking_margin=args.ranking_margin,
@@ -2002,6 +2305,34 @@ def main() -> int:
             "scorer": window_cache_meta["scorer"],
             "split_reports": window_cache_meta["split_reports"],
         },
+        "teacher_causal_window_cache": (
+            {
+                "prefix": str(args.teacher_causal_window_cache.resolve()),
+                "json": provenance_ref(
+                    args.teacher_causal_window_cache.with_suffix(".json")
+                ),
+                "npz": provenance_ref(
+                    args.teacher_causal_window_cache.with_suffix(".npz")
+                ),
+                "contract": teacher_causal_metadata,
+            }
+            if args.teacher_causal_window_cache
+            else None
+        ),
+        "reference_student_causal_window_cache": (
+            {
+                "prefix": str(args.reference_student_causal_window_cache.resolve()),
+                "json": provenance_ref(
+                    args.reference_student_causal_window_cache.with_suffix(".json")
+                ),
+                "npz": provenance_ref(
+                    args.reference_student_causal_window_cache.with_suffix(".npz")
+                ),
+                "contract": reference_causal_metadata,
+            }
+            if args.reference_student_causal_window_cache
+            else None
+        ),
         "expanded_public_negatives": {
             "root": provenance_ref(args.expanded_public_negatives),
             "metadata": provenance_ref(
@@ -2068,6 +2399,8 @@ def main() -> int:
                 clip["validation_operating_point"]["threshold"]
             ),
             "sequence_teacher_weight": args.sequence_teacher_weight,
+            "sequence_listwise_weight": args.sequence_listwise_weight,
+            "sequence_listwise_temperature": args.sequence_listwise_temperature,
             "ranking_weight": args.ranking_weight,
             "tail_ranking_weight": args.tail_ranking_weight,
             "ranking_margin": args.ranking_margin,
@@ -2080,6 +2413,11 @@ def main() -> int:
                 "raw_collision_margin",
             ],
             "teacher_sequence_transfer": "cross_label_pairwise_rank",
+            "teacher_causal_window_transfer": (
+                "random_disagreement_or_teacher_hard_terminal_endpoints"
+                if args.teacher_causal_window_cache
+                else None
+            ),
             "ranking": "all_pairs_plus_top_quartile_negative_vs_bottom_quartile_positive",
             "collision_negative_rejection": "strict_collision_path_margin",
             "collision_negative_scope": "kizz_control_phonetic_collision",

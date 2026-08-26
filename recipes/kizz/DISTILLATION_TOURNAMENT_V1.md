@@ -109,6 +109,8 @@ for diagnostic comparison only.
 | D | Representation KD, temporal-residual | 46.34% | 13 | 11/26 | 9/24 | 0/62 | No |
 | D2 | D plus sequence/negative boundaries | 73.17% | 2 | 13/26 | 13/24 | 0/62 | No |
 | D3 | D2 plus tail separation | **78.05%** | **2** | **14/26** | **15/24** | **0/62** | **No** |
+| E1 | Causal endpoint/listwise KD, temporal-residual | 78.05% | 2 | Not consumed | Not consumed | Not consumed | No |
+| E2 | Causal endpoint/listwise KD, dilated causal memory | **82.93%** | **1** | **16/26** | **12/24** | **0/62** | **No** |
 
 D4's best checkpoint was its initialization at 73.17% zero-FP recall and one
 validation false accept at the 90% recall floor. Later checkpoints regressed,
@@ -125,6 +127,48 @@ The complete local reports remain under
 `/private/tmp/kizz-training/kizz-control-c1/tournament-*`. The private audio,
 caches, and model weights are intentionally not committed.
 
+## Causal-window distillation extension
+
+E1 and E2 address a mismatch left by the original tournament: the teacher had
+been reduced to one clip-level target even though firmware makes a causal
+decision at every student endpoint. The extension caches the qualified
+teacher's raw canonical fit, collision margin, eligibility, and decision score
+at all 66 student endpoints. Training rotates among random, teacher-hard or
+teacher/student-disagreement, and terminal endpoints. A standardized listwise
+loss transfers ordering within each sampled batch.
+
+The cache scorer is the Numba-compiled suffix forward-sum decoder. Tests compare
+its accepted and raw fits, collision margins, eligibility, and decision scores
+against the portable reference. A 3,473-example by 66-endpoint teacher cache
+now builds in roughly 34 seconds on the M4 Pro, rather than spending minutes in
+TensorFlow dispatch without completing.
+
+E1 kept D3's 96,212-parameter temporal-residual architecture and fine-tuned it
+for 1,000 steps. No trained checkpoint beat the initialization; the selector
+retained step 1 at 78.05% zero-FP validation recall. Locked evidence was not
+consumed for E1.
+
+E2 uses five causal dilated depthwise blocks with dilations 1, 2, 4, 8, and 16,
+a 1.93-second receptive field, 94,836 parameters, and exact float
+streaming/non-streaming tail equivalence. Its selected step 2,800 reached 82.93%
+zero-FP validation recall with one validation false accept at the 90% recall
+floor. At the validation-selected zero-FP threshold it accepted 16/26 aligned
+positives, 12/24 target-channel positives, and 0/62 false wakes. It therefore
+failed three float gates and was not quantized or flashed.
+
+The immutable E2 diagnostic weights are:
+
+```text
+/private/tmp/kizz-training/kizz-control-c1/distill-e2-dilated-listwise-v1/best.weights.h5
+SHA-256: 6f2f0a8820373fc04c8175a46661405e63f10f539590d923f02def5e640aaf4a
+```
+
+A low-rate tail-separation continuation was stopped after 175 steps. It raised
+validation false accepts at the 90% recall floor from 1 to 72 by step 100.
+Clip-label ranking is invalid at randomly sampled causal prefixes: an early
+prefix from a positive clip need not yet contain a wake. The trainer now rejects
+causal-window transfer combined with clip-level ranking or tail-ranking losses.
+
 ## Decision and learning
 
 D2/D3 show that the student can recover substantial teacher separation when
@@ -132,9 +176,9 @@ trained on the actual sequence decision boundary. A, B, C, and B+C do not show
 that frame-level or representation transfer alone is sufficient. The +30 ms
 ablation makes broad temporal misalignment less likely as the dominant failure.
 
-However, D3 still misses 9 aligned and 5 target-channel positives relative to
-the hard gates. Quantization cannot repair an already-unqualified float model,
-and flashing it would turn a controlled experiment into threshold tuning on
-hardware. The next experiment must explain the remaining teacher-to-student
-ranking loss or revise the student/decoder formulation; it must not continue
-fine-tuning D3 against locked evidence.
+E2 shows that longer causal memory and endpoint-specific teacher transfer can
+improve the validation boundary and aligned recall, but target-channel recall
+regressed. Quantization cannot repair an already-unqualified float model, and
+flashing it would turn a controlled experiment into threshold tuning on
+hardware. The next experiment must improve target-channel invariance using
+training/validation evidence only; it must not fine-tune against locked evidence.
