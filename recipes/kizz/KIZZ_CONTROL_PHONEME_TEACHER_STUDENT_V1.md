@@ -221,14 +221,15 @@ The runtime retains its frontend and TFLite allocations across the shared-I2S
 pause/re-arm cycle. This avoids the allocator fragmentation that previously
 ended in `ESP_ERR_NO_MEM` during Wi-Fi PHY work.
 
-The exact hardware-evaluation firmware flashed on August 26, 2026 has ELF
-SHA-256 `f949477bdac348ab85d4b9773c1067923d633260e3f2f1da4daa5c1fdc73e5ab`
+The exact hardware-evaluation firmware flashed on August 26, 2026 was built
+from firmware commit `ad642f55e34345762fdda7585d2e7eb6b36d8f6e` and has ELF
+SHA-256 `079a8bb761fa1d36be64eb3710985ac6d3856338e3231b0d5cd336196fdb53f1`
 and application binary SHA-256
-`e45db8c0fad11dd94f895930c4bf759b908936a0042582ac848bfdb0ecb92d44`.
+`b67f35953a62f341da14adbacef6944485b78f3f61d6cc24b47d77d2354c7e6c`.
 It booted at 240 MHz with the WebRTC VAD frontend and reported the packaged
 model hash and threshold above. An accepted held-out target-channel positive
 was played from the Mac speaker and captured by the StackChan microphone. The
-exact final image crossed the `0.700` display cutoff at `0.707`, entered the
+exact final image crossed the `0.700` display cutoff at `0.717`, entered the
 existing UHC voice session, quarantined the observation, received the expected
 single-prompt non-command response, and re-armed without reconstructing the
 tensor arena. This replay also exercised the server-terminal-before-local-
