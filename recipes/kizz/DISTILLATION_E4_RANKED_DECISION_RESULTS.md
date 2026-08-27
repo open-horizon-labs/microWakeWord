@@ -71,3 +71,24 @@ continue weight sweeps or flash this model.  The next recipe needs sequence
 structure that directly distinguishes the canonical phone path from collision
 paths while retaining the successful E4 device-channel schedule and selection
 gate.
+
+## E5 follow-up: transfer the E4 encoder into CTC
+
+E5 tested the immediate hybrid suggested by the E4 result: initialize the
+20-logit canonical/collision CTC student from the device-capable E4 binary
+encoder, while replacing only the incompatible output head.
+
+Two bounded schedules failed:
+
+1. **All layers trainable.** The random CTC head began learning and briefly
+   reached 7/11 device replays at step 400. By steps 600–1100, device acceptance
+   collapsed to 0–1/11 while clean false accepts fell to 3–5. This is direct
+   catastrophic-forgetting evidence.
+2. **Encoder frozen; output head only.** Clean false accepts briefly reached 2
+   at step 400, but device acceptance remained 0/11 (maximum 2/11 by step 800).
+   The binary encoder's representation is therefore not linearly decodable as
+   the required compact phone paths by a replacement head.
+
+E5 was stopped at step 1100 for the all-layer run and completed its planned
+800-step frozen-head bound. Neither schedule approached the 10/11 device gate,
+so no unfreeze continuation, INT8 conversion, or firmware work was justified.

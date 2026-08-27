@@ -1995,6 +1995,16 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--init-weights", type=Path)
     parser.add_argument(
+        "--init-encoder-weights",
+        type=Path,
+        help="Load matching encoder tensors while allowing an output-head mismatch.",
+    )
+    parser.add_argument(
+        "--freeze-encoder",
+        action="store_true",
+        help="Train only the output head; intended for staged head initialization.",
+    )
+    parser.add_argument(
         "--recipe-id", default="kizz_control_compact_ctc_distillation_v7"
     )
     parser.add_argument(
@@ -2038,6 +2048,8 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=24106)
     parser.add_argument("--allow-partial-expanded-public-coverage", action="store_true")
     args = parser.parse_args()
+    if args.init_weights and args.init_encoder_weights:
+        parser.error("--init-weights and --init-encoder-weights are mutually exclusive")
     if args.steps < 1 or args.eval_every < 1:
         parser.error("--steps and --eval-every must be positive")
     loss_values = (
@@ -2459,6 +2471,11 @@ def main() -> int:
     model = build_student(architecture_flags, INPUT_SHAPE, None)
     if args.init_weights:
         model.load_weights(args.init_weights)
+    elif args.init_encoder_weights:
+        model.load_weights(args.init_encoder_weights, skip_mismatch=True)
+    if args.freeze_encoder:
+        for layer in model.layers:
+            layer.trainable = layer.name == "state_logits"
     pooled_hidden = tf.keras.layers.GlobalAveragePooling2D(name="representation_pool")(
         model.get_layer("encoder_hidden").output
     )
@@ -2772,8 +2789,18 @@ def main() -> int:
         ),
         "teacher_model": clip["model"],
         "initialization": (
-            provenance_ref(args.init_weights) if args.init_weights else None
+            provenance_ref(args.init_weights)
+            if args.init_weights
+            else (
+                {
+                    "mode": "matching_encoder_tensors_skip_output_head",
+                    **provenance_ref(args.init_encoder_weights),
+                }
+                if args.init_encoder_weights
+                else None
+            )
         ),
+        "encoder_trainable": not args.freeze_encoder,
         "posterior_cache": {
             "prefix": str(args.posterior_cache.resolve()),
             "cache_sha256": cache_meta["cache_sha256"],
