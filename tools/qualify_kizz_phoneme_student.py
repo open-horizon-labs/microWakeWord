@@ -29,7 +29,7 @@ from microwakeword.phoneme_student import (
     student_stream_phase_offset_frames,
 )
 from tools.convert_distilled_student import load_distillation_contract, sha256_file
-from tools.distill_kizz_student import student_flags
+from tools.distill_kizz_phoneme_student import student_flags_for_architecture
 
 TARGET_RATE = 16_000
 FEATURE_BINS = 40
@@ -226,15 +226,19 @@ class DeployedStudent:
         *,
         output_frames: int = 66,
         stream_phase_offset_frames: int = 0,
+        flags: Any | None = None,
     ) -> None:
         self.artifact = artifact
         self.output_frames = int(output_frames)
         self.stream_phase_offset_frames = int(stream_phase_offset_frames)
+        self.flags = flags
         if self.stream_phase_offset_frames < 0:
             raise ValueError("stream phase offset must be non-negative")
 
     def stream_logits(self, features: np.ndarray, contract: dict) -> np.ndarray:
-        flags = student_flags(len(contract["tokens"]))
+        flags = self.flags or student_flags_for_architecture(
+            "control_mixconv", len(contract["tokens"])
+        )
         interpreter = tf.lite.Interpreter(model_path=str(self.artifact))
         interpreter.allocate_tensors()
         inputs, outputs = interpreter.get_input_details(), interpreter.get_output_details()
@@ -316,7 +320,9 @@ def _stream_window_scores(model: Any, features: np.ndarray, contract: dict, *, b
         values = padded
     if hasattr(model, "stream_logits"):
         logits = model.stream_logits(values, contract)
-        flags = student_flags(len(contract["tokens"]))
+        flags = getattr(model, "flags", None) or student_flags_for_architecture(
+            "control_mixconv", len(contract["tokens"])
+        )
         phase_offset = int(getattr(model, "stream_phase_offset_frames", 0))
         warmup = int(phase_offset > 0) + (WINDOW_FRAMES - phase_offset) // flags.stride - model.output_frames
         if warmup < 0:
@@ -589,9 +595,11 @@ def _validate_artifact(args: argparse.Namespace, contract: dict, metadata: dict,
     }:
         raise ValueError("artifact equivalence limits are missing or drifted")
     timeline = artifact.get("timeline") or {}
-    expected_phase = student_stream_phase_offset_frames(
-        student_flags(len(contract["tokens"]))
+    architecture_id = (metadata.get("architecture") or {}).get(
+        "architecture_id", "control_mixconv"
     )
+    flags = student_flags_for_architecture(architecture_id, len(contract["tokens"]))
+    expected_phase = student_stream_phase_offset_frames(flags)
     if timeline.get("stream_phase_offset_frames") != expected_phase:
         raise ValueError("artifact streaming phase offset is missing or drifted")
     if timeline.get("stream_phase_priming") != "zero_prefix_then_observed_prefix":
@@ -614,10 +622,15 @@ def qualify(args: argparse.Namespace) -> dict:
         manifest_paths["continuous"] = args.continuous_manifest
     groups, evidence_contracts = _validate_evidence(manifest_paths)
     timeline = artifact.get("timeline") or {}
+    architecture_id = (metadata.get("architecture") or {}).get(
+        "architecture_id", "control_mixconv"
+    )
+    flags = student_flags_for_architecture(architecture_id, len(contract["tokens"]))
     model = DeployedStudent(
         artifact_path,
         output_frames=int(timeline.get("output_frames", 66)),
         stream_phase_offset_frames=int(timeline["stream_phase_offset_frames"]),
+        flags=flags,
     )
     validation, valid_exposure, attempted_exposure = score_rows(groups["validation"], model, contract, beta=args.beta, decoder_algorithm=decoder_algorithm)
     point = choose_validation_threshold(validation, min_recall=args.min_recall, max_faph=args.max_faph)
