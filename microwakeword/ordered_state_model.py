@@ -151,7 +151,7 @@ def model(flags, shape, batch_size):
         raise ValueError("all ordered-state block parameter lists must match")
     if causal_memory and len(temporal_dilations) != len(pointwise_filters):
         raise ValueError("causal-memory dilations must match temporal blocks")
-    if flags.num_states < 3:
+    if flags.num_states < 3 and not bool(getattr(flags, "allow_scalar_output", False)):
         raise ValueError("ordered-state model needs background, silence, and a path")
 
     input_audio = tf.keras.layers.Input(shape=shape, batch_size=batch_size)
