@@ -25,7 +25,11 @@ from microwakeword.ctc_occupancy import ctc_state_occupation_log_probs
 from microwakeword.kizz_phoneme_teacher import choose_validation_threshold
 from microwakeword.kizz_viterbi_decoder import exhaustive_suffix_score
 from microwakeword.ordered_state import OrderedStateTopology
-from microwakeword.ordered_state_model import model as build_student, parse
+from microwakeword.ordered_state_model import (
+    SqueezeFrequency,
+    model as build_student,
+    parse,
+)
 from microwakeword.phoneme_student import (
     compact_phone_contract,
     resample_log_posteriors,
@@ -1392,6 +1396,10 @@ def deployment_path_scores(
         raise ValueError("student logits must have shape [batch, time, token]")
     if algorithm not in ("max_add_ctc_viterbi", "forward_sum_ctc"):
         raise ValueError("unsupported student path-scoring algorithm")
+    # Joint students append one causal binary decision channel after the
+    # compact CTC vocabulary.  The decoder must never normalize that channel
+    # into the phonetic posterior distribution.
+    values = values[:, :, : len(contract["tokens"])]
     paths = [contract["canonical_path"], *contract["collision_paths"].values()]
     max_path_length = max(len(path) for path in paths)
     path_lengths = tf.constant([len(path) for path in paths], dtype=tf.int32)
@@ -1680,6 +1688,19 @@ def paired_path_consistency_loss(
     target = tf.stack((clean_fit, clean_margin), axis=-1)
     observed = tf.stack((device_fit, device_margin), axis=-1)
     per_example = tf.reduce_mean(tf.square(observed - target), axis=-1)
+    return _masked_mean(per_example, mask)
+
+
+def paired_clean_path_supervision_loss(
+    clean_logits, endpoints, mask, contract, *, algorithm, margin=0.10
+):
+    """Supervise the clean member of every aligned device/clean pair."""
+    canonical, collision_margin = deployment_path_scores(
+        clean_logits, contract, algorithm=algorithm, endpoints=endpoints
+    )
+    per_example = -canonical + tf.nn.relu(
+        tf.cast(margin, canonical.dtype) - collision_margin
+    )
     return _masked_mean(per_example, mask)
 
 
@@ -1988,6 +2009,107 @@ def _student_scores(
     return np.asarray(scores, dtype=np.float64)
 
 
+def rolling_mean_scores(logits, frames: int = 2):
+    """Return the strongest adjacent-frame mean from causal logits."""
+    values = tf.convert_to_tensor(logits)
+    if values.shape.rank == 3 and values.shape[-1] == 1:
+        values = tf.squeeze(values, axis=-1)
+    if values.shape.rank != 2 or frames < 1:
+        raise ValueError("logits must be [batch,time] and frames must be positive")
+    if values.shape[1] is not None and frames > int(values.shape[1]):
+        raise ValueError("rolling window exceeds output frames")
+    windows = tf.signal.frame(values, frames, 1, axis=1)
+    return tf.reduce_max(tf.reduce_mean(windows, axis=-1), axis=1)
+
+
+def _joint_student_scores(
+    model,
+    features: np.ndarray,
+    contract: dict,
+    batch_size: int,
+    *,
+    decoder_algorithm: str,
+    path_weight: float,
+) -> np.ndarray:
+    """Score a joint CTC/binary student using both deployed signals."""
+    scores = []
+    for start in range(0, len(features), batch_size):
+        logits = model(
+            np.asarray(features[start : start + batch_size], np.float32),
+            training=False,
+        )
+        values = tf.convert_to_tensor(logits)
+        if values.shape[-1] != len(contract["tokens"]) + 4:
+            raise ValueError("joint student must append four decision channels")
+        path, _ = deployment_path_scores(
+            values[:, :, : len(contract["tokens"])],
+            contract,
+            algorithm=decoder_algorithm,
+        )
+        decision_frame = values[:, :, -4]
+        decision_aux = values[:, :, -3:]
+        decision_frame = decision_frame + 0.5 * (
+            decision_aux[:, :, 0]
+            - tf.reduce_max(decision_aux[:, :, 1:], axis=-1)
+        )
+        decision = rolling_mean_scores(decision_frame)
+        scores.extend((decision + float(path_weight) * path).numpy().tolist())
+    return np.asarray(scores, dtype=np.float64)
+
+
+def initialize_joint_from_decision_model(model, decision_weights: Path):
+    """Copy E4's encoder and four-channel deployed decision head."""
+    flags = student_flags_for_architecture("dilated_temporal_memory", 1)
+    flags.allow_scalar_output = True
+    source_base = build_student(flags, INPUT_SHAPE, None)
+    auxiliary = tf.keras.layers.Conv2D(
+        3, 1, padding="same", name="phonetic_rejection_logits"
+    )(source_base.get_layer("encoder_hidden").output)
+    auxiliary = SqueezeFrequency(name="phonetic_rejection_sequence")(auxiliary)
+    source = tf.keras.Model(
+        source_base.input,
+        tf.keras.layers.Concatenate(axis=-1)([source_base.output, auxiliary]),
+    )
+    source.load_weights(decision_weights)
+    source_state_layer = next(
+        layer
+        for layer in reversed(source_base.layers)
+        if layer.weights and layer.name.startswith("state_logits")
+    )
+    source_layers = [
+        layer for layer in source_base.layers if layer.weights and layer is not source_state_layer
+    ]
+    target_state_layer = next(
+        layer
+        for layer in reversed(model.layers)
+        if layer.weights and layer.name.startswith("state_logits")
+    )
+    target_layers = [
+        layer for layer in model.layers if layer.weights and layer is not target_state_layer
+    ]
+    if len(source_layers) != len(target_layers):
+        raise ValueError("joint decision initialization encoder topology differs")
+    for source_layer, target_layer in zip(source_layers, target_layers):
+        source_weights = source_layer.get_weights()
+        target_weights = target_layer.get_weights()
+        if [value.shape for value in source_weights] != [
+            value.shape for value in target_weights
+        ]:
+            raise ValueError("joint decision initialization encoder tensors differ")
+        target_layer.set_weights(source_weights)
+    source_kernel, source_bias = source_state_layer.get_weights()
+    source_aux_kernel, source_aux_bias = source.get_layer(
+        "phonetic_rejection_logits"
+    ).get_weights()
+    target_layer = target_state_layer
+    target_kernel, target_bias = target_layer.get_weights()
+    target_kernel[:, :, :, -3:] = source_aux_kernel
+    target_kernel[:, :, :, -4:-3] = source_kernel
+    target_bias[-4:-1] = source_aux_bias
+    target_bias[-4:-3] = source_bias
+    target_layer.set_weights((target_kernel, target_bias))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, required=True)
@@ -2017,6 +2139,11 @@ def main() -> int:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--init-weights", type=Path)
+    parser.add_argument(
+        "--init-decision-weights",
+        type=Path,
+        help="Seed a joint student from a scalar ranked-decision checkpoint.",
+    )
     parser.add_argument(
         "--init-encoder-weights",
         type=Path,
@@ -2057,6 +2184,26 @@ def main() -> int:
         default=0.0,
         help="Match aligned clean/device canonical fit and collision margin.",
     )
+    parser.add_argument(
+        "--paired-clean-supervision-weight",
+        type=float,
+        default=0.0,
+        help="Supervise canonical fit and collision margin on aligned clean views.",
+    )
+    parser.add_argument(
+        "--joint-decision-weight",
+        type=float,
+        default=0.0,
+        help="Train four appended causal decision channels with the CTC path.",
+    )
+    parser.add_argument(
+        "--joint-decision-path-weight",
+        type=float,
+        default=0.0,
+        help="Weight the CTC canonical fit when selecting joint-student scores.",
+    )
+    parser.add_argument("--joint-decision-teacher-weight", type=float, default=0.0)
+    parser.add_argument("--joint-decision-negative-frame-weight", type=float, default=0.0)
     parser.add_argument("--ctc-weight", type=float, default=0.25)
     parser.add_argument("--positive-collision-weight", type=float, default=0.25)
     parser.add_argument("--legacy-negative-weight", type=float, default=0.0)
@@ -2077,8 +2224,8 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=24106)
     parser.add_argument("--allow-partial-expanded-public-coverage", action="store_true")
     args = parser.parse_args()
-    if args.init_weights and args.init_encoder_weights:
-        parser.error("--init-weights and --init-encoder-weights are mutually exclusive")
+    if sum(bool(value) for value in (args.init_weights, args.init_encoder_weights, args.init_decision_weights)) > 1:
+        parser.error("student initialization modes are mutually exclusive")
     if args.steps < 1 or args.eval_every < 1:
         parser.error("--steps and --eval-every must be positive")
     loss_values = (
@@ -2089,6 +2236,11 @@ def main() -> int:
         args.temporal_representation_weight,
         args.channel_consistency_weight,
         args.paired_path_consistency_weight,
+        args.paired_clean_supervision_weight,
+        args.joint_decision_weight,
+        args.joint_decision_path_weight,
+        args.joint_decision_teacher_weight,
+        args.joint_decision_negative_frame_weight,
         args.ctc_weight,
         args.positive_collision_weight,
         args.legacy_negative_weight,
@@ -2155,8 +2307,9 @@ def main() -> int:
     labels = np.load(args.corpus / "labels.npy", mmap_mode="r")
     if not (len(rows) == len(features) == len(hard_targets) == len(labels)):
         raise ValueError("distillation corpus metadata and tensor lengths differ")
+    output_count = len(contract["tokens"]) + (4 if args.joint_decision_weight else 0)
     architecture_flags = student_flags_for_architecture(
-        args.student_architecture, len(contract["tokens"])
+        args.student_architecture, output_count
     )
     student_times = student_output_times_seconds(architecture_flags, OUTPUT_FRAMES)
     teacher_targets = np.empty(
@@ -2455,7 +2608,11 @@ def main() -> int:
     overlay_providers = [str(train_ledger[i]["provider"]) for i in overlay_indexes]
     device_parent_features = (
         device_parent_feature_pairs(corpus, rows)
-        if args.channel_consistency_weight or args.paired_path_consistency_weight
+        if (
+            args.channel_consistency_weight
+            or args.paired_path_consistency_weight
+            or args.paired_clean_supervision_weight
+        )
         else {}
     )
     noise_sources = []
@@ -2501,6 +2658,10 @@ def main() -> int:
     model = build_student(architecture_flags, INPUT_SHAPE, None)
     if args.init_weights:
         model.load_weights(args.init_weights)
+    elif args.init_decision_weights:
+        if output_count != len(contract["tokens"]) + 4:
+            parser.error("--init-decision-weights requires --joint-decision-weight")
+        initialize_joint_from_decision_model(model, args.init_decision_weights)
     elif args.init_encoder_weights:
         model.load_weights(args.init_encoder_weights, skip_mismatch=True)
     if args.freeze_encoder:
@@ -2554,8 +2715,9 @@ def main() -> int:
     ):
         with tf.GradientTape() as tape:
             logits, student_hidden, student_temporal = training_model(x, training=True)
+            ctc_logits = logits[:, :, : len(contract["tokens"])]
             loss, parts = distillation_loss(
-                logits,
+                ctc_logits,
                 hard,
                 soft,
                 soft_mask,
@@ -2603,8 +2765,60 @@ def main() -> int:
                 parts = (*parts, temporal_loss)
             else:
                 parts = (*parts, tf.cast(0.0, loss.dtype))
+            if args.joint_decision_weight:
+                decision_frame = logits[:, :, -4]
+                decision_aux = logits[:, :, -3:]
+                decision_frame = decision_frame + 0.5 * (
+                    decision_aux[:, :, 0]
+                    - tf.reduce_max(decision_aux[:, :, 1:], axis=-1)
+                )
+                decision_score = rolling_mean_scores(decision_frame)
+                decision_loss = tf.reduce_mean(
+                    tf.nn.sigmoid_cross_entropy_with_logits(
+                        labels=label, logits=decision_score
+                    )
+                )
+                loss = loss + args.joint_decision_weight * decision_loss
+                parts = (*parts, decision_loss)
+                if args.joint_decision_teacher_weight:
+                    decision_teacher_loss = teacher_sequence_ranking_loss(
+                        decision_score,
+                        teacher_sequence[:, 0],
+                        sequence_mask,
+                    )
+                    loss = (
+                        loss
+                        + args.joint_decision_teacher_weight
+                        * decision_teacher_loss
+                    )
+                    parts = (*parts, decision_teacher_loss)
+                else:
+                    parts = (*parts, tf.cast(0.0, loss.dtype))
+                if args.joint_decision_negative_frame_weight:
+                    negative_frames = tf.boolean_mask(
+                        logits[:, :, -1], label < 0.5
+                    )
+                    decision_negative_loss = tf.reduce_mean(
+                        tf.nn.softplus(negative_frames)
+                    )
+                    loss = (
+                        loss
+                        + args.joint_decision_negative_frame_weight
+                        * decision_negative_loss
+                    )
+                    parts = (*parts, decision_negative_loss)
+                else:
+                    parts = (*parts, tf.cast(0.0, loss.dtype))
+            else:
+                parts = (*parts, tf.cast(0.0, loss.dtype))
+                parts = (*parts, tf.cast(0.0, loss.dtype))
+                parts = (*parts, tf.cast(0.0, loss.dtype))
             paired_logits = None
-            if args.channel_consistency_weight or args.paired_path_consistency_weight:
+            if (
+                args.channel_consistency_weight
+                or args.paired_path_consistency_weight
+                or args.paired_clean_supervision_weight
+            ):
                 paired_logits, _, _ = training_model(paired_clean, training=True)
             if args.channel_consistency_weight:
                 channel_loss = channel_consistency_loss(
@@ -2612,6 +2826,22 @@ def main() -> int:
                 )
                 loss = loss + args.channel_consistency_weight * channel_loss
                 parts = (*parts, channel_loss)
+            else:
+                parts = (*parts, tf.cast(0.0, loss.dtype))
+            if args.paired_clean_supervision_weight:
+                clean_supervision_loss = paired_clean_path_supervision_loss(
+                    paired_logits,
+                    scoring_endpoints,
+                    paired_clean_mask,
+                    contract,
+                    algorithm=args.decoder_algorithm,
+                )
+                loss = (
+                    loss
+                    + args.paired_clean_supervision_weight
+                    * clean_supervision_loss
+                )
+                parts = (*parts, clean_supervision_loss)
             else:
                 parts = (*parts, tf.cast(0.0, loss.dtype))
             if args.paired_path_consistency_weight:
@@ -2675,19 +2905,31 @@ def main() -> int:
         batch = batcher.batch(step)
         loss, parts = train_batch(*(tf.convert_to_tensor(value) for value in batch))
         if (step + 1) % args.eval_every == 0 or step == 0:
-            positive_scores = _student_scores(
+            score_function = (
+                _joint_student_scores if args.joint_decision_weight else _student_scores
+            )
+            score_kwargs = (
+                {
+                    "path_weight": args.joint_decision_path_weight,
+                }
+                if args.joint_decision_weight
+                else {}
+            )
+            positive_scores = score_function(
                 model,
                 validation_positive,
                 contract,
                 args.batch_size,
                 decoder_algorithm=args.decoder_algorithm,
+                **score_kwargs,
             )
-            negative_scores = _student_scores(
+            negative_scores = score_function(
                 model,
                 validation_negative,
                 contract,
                 args.batch_size,
                 decoder_algorithm=args.decoder_algorithm,
+                **score_kwargs,
             )
             point = choose_validation_threshold(
                 positive_scores,
@@ -2706,12 +2948,13 @@ def main() -> int:
             )
             device_report = None
             if device_validation is not None:
-                device_scores = _student_scores(
+                device_scores = score_function(
                     model,
                     device_validation,
                     contract,
                     args.batch_size,
                     decoder_algorithm=args.decoder_algorithm,
+                    **score_kwargs,
                 )
                 threshold = point.get("threshold")
                 device_accepted = (
@@ -2809,6 +3052,10 @@ def main() -> int:
         raise ValueError(
             f"realized positive provider balance failed: {provider_shares}"
         )
+    architecture_metadata = student_architecture_contract(
+        contract, args.student_architecture
+    )
+    architecture_metadata["output_count"] = output_count
     metadata = {
         "schema_version": 1,
         "recipe": args.recipe_id,
@@ -2837,12 +3084,16 @@ def main() -> int:
             provenance_ref(args.init_weights)
             if args.init_weights
             else (
-                {
-                    "mode": "matching_encoder_tensors_skip_output_head",
-                    **provenance_ref(args.init_encoder_weights),
-                }
-                if args.init_encoder_weights
-                else None
+                provenance_ref(args.init_decision_weights)
+                if args.init_decision_weights
+                else (
+                    {
+                        "mode": "matching_encoder_tensors_skip_output_head",
+                        **provenance_ref(args.init_encoder_weights),
+                    }
+                    if args.init_encoder_weights
+                    else None
+                )
             )
         ),
         "encoder_trainable": not args.freeze_encoder,
@@ -2982,9 +3233,7 @@ def main() -> int:
             for name, path in noise_sources
         ],
         "compact_phone_contract": contract,
-        "architecture": student_architecture_contract(
-            contract, args.student_architecture
-        ),
+        "architecture": architecture_metadata,
         "student_output_frames": OUTPUT_FRAMES,
         "decoder": {
             "contract": decoder,
@@ -3017,6 +3266,21 @@ def main() -> int:
             ),
             "paired_clean_device_channel_consistency_weight": args.channel_consistency_weight,
             "paired_clean_device_path_consistency_weight": args.paired_path_consistency_weight,
+            "paired_clean_path_supervision_weight": args.paired_clean_supervision_weight,
+            "paired_clean_path_supervision_target": (
+                "canonical_fit_plus_collision_margin"
+                if args.paired_clean_supervision_weight
+                else None
+            ),
+            "joint_decision_weight": args.joint_decision_weight,
+            "joint_decision_path_weight": args.joint_decision_path_weight,
+            "joint_decision_teacher_weight": args.joint_decision_teacher_weight,
+            "joint_decision_negative_frame_weight": args.joint_decision_negative_frame_weight,
+            "joint_decision_output": (
+                "appended_four_channel_causal_decision_head"
+                if args.joint_decision_weight
+                else None
+            ),
             "paired_path_consistency_target": (
                 "symmetric_canonical_fit_and_collision_margin"
                 if args.paired_path_consistency_weight

@@ -19,6 +19,7 @@ from tools.distill_kizz_phoneme_student import (
     checkpoint_binding,
     checkpoint_selection_key,
     channel_consistency_loss,
+    paired_clean_path_supervision_loss,
     paired_path_consistency_loss,
     collision_path_supervision,
     deployment_path_scores,
@@ -36,6 +37,7 @@ from tools.distill_kizz_phoneme_student import (
     student_decoder_contract_hash,
     student_flags,
     require_teacher_gates,
+    rolling_mean_scores,
     sha256_file,
     student_architecture_contract,
     student_flags_for_architecture,
@@ -55,6 +57,12 @@ from tools.qualify_kizz_phoneme_student import score_features
 
 
 class DistillKizzPhonemeStudentTests(unittest.TestCase):
+    def test_rolling_mean_scores_uses_adjacent_causal_frames(self):
+        import tensorflow as tf
+
+        values = tf.constant([[[1.0], [3.0], [2.0], [0.0]]])
+        self.assertAlmostEqual(float(rolling_mean_scores(values)[0]), 2.5)
+
     def test_paired_path_consistency_anchors_deployed_fit_and_margin(self):
         import tensorflow as tf
 
@@ -82,6 +90,24 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         )
         self.assertAlmostEqual(float(equal), 0.0, places=6)
         self.assertGreater(float(different), 0.0)
+
+    def test_paired_clean_path_supervision_has_finite_gradient(self):
+        import tensorflow as tf
+
+        contract = compact_phone_contract()
+        logits = tf.Variable(tf.random.stateless_normal((2, 66, 20), seed=(13, 17)))
+        endpoints = tf.constant([54, 54], dtype=tf.int32)
+        with tf.GradientTape() as tape:
+            loss = paired_clean_path_supervision_loss(
+                logits,
+                endpoints,
+                tf.constant([1.0, 1.0]),
+                contract,
+                algorithm="forward_sum_ctc",
+            )
+        gradient = tape.gradient(loss, logits)
+        self.assertTrue(bool(tf.math.is_finite(loss)))
+        self.assertTrue(bool(tf.reduce_any(tf.not_equal(gradient, 0.0))))
 
     def test_causal_teacher_sampling_excludes_undeployable_prefixes(self):
         scores = np.zeros((2, 66), dtype=np.float32)
