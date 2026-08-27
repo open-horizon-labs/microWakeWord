@@ -47,6 +47,14 @@ class ConvertDistilledStudentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "contract"):
                 load_distillation_contract(metadata, weights)
 
+    def test_dilated_memory_architecture_contract_is_explicit(self):
+        contract = compact_phone_contract()
+        architecture = architecture_contract(contract, "dilated_temporal_memory")
+        self.assertEqual(architecture["architecture_id"], "dilated_temporal_memory")
+        self.assertEqual(architecture["temporal_dilations"], [1, 2, 4, 8, 16])
+        self.assertEqual(architecture["warmup_output_drop"], 20)
+        self.assertEqual(architecture["output_count"], len(contract["tokens"]))
+
     def test_exact_weight_hash_is_checked_when_declared(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); weights = root / "weights.h5"; weights.write_bytes(b"weights")

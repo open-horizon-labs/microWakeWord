@@ -24,10 +24,11 @@ from microwakeword.phoneme_student import (
     student_stream_phase_offset_frames,
 )
 from tools.distill_kizz_phoneme_student import (
+    student_architecture_contract,
     student_decoder_contract,
     student_decoder_contract_hash,
+    student_flags_for_architecture,
 )
-from tools.distill_kizz_student import student_flags
 
 INPUT_SHAPE = (260, 40)
 FEATURE_STEP_SECONDS = 0.010
@@ -48,22 +49,15 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def architecture_contract(contract: dict) -> dict:
+def architecture_contract(contract: dict, architecture: str = "control_mixconv") -> dict:
     """Return the exact Keras architecture contract for this phone vocabulary."""
-    return {
-        "input_shape": list(INPUT_SHAPE), "output_frames": 66,
-        "output_count": len(contract["tokens"]),
-        "pointwise_filters": [96, 96, 96, 96],
-        "residual_connection": [0, 0, 0, 0], "repeat_in_block": [1, 1, 1, 1],
-        "mixconv_kernel_sizes": [[3], [5], [7], [9]],
-        "first_conv_filters": 48, "first_conv_kernel_size": 5, "stride": 3,
-    }
+    return student_architecture_contract(contract, architecture)
 
 
-def _flags(contract: dict) -> SimpleNamespace:
+def _flags(contract: dict, architecture: str) -> SimpleNamespace:
     if contract != compact_phone_contract():
         raise ValueError("unsupported or drifted compact phone contract")
-    return student_flags(len(contract["tokens"]))
+    return student_flags_for_architecture(architecture, len(contract["tokens"]))
 
 
 def load_distillation_contract(path: Path, weights: Path) -> tuple[dict, dict, str, str]:
@@ -73,14 +67,15 @@ def load_distillation_contract(path: Path, weights: Path) -> tuple[dict, dict, s
     if contract != compact_phone_contract():
         raise ValueError("distillation metadata compact phone contract differs")
     if metadata.get("recipe") not in {
-        f"kizz_control_compact_ctc_distillation_v{version}"
-        for version in range(1, 7)
+        *(f"kizz_control_compact_ctc_distillation_v{version}" for version in range(1, 7)),
+        "kizz_control_e2_dilated_listwise_v1",
     }:
         raise ValueError("unsupported distillation recipe")
     architecture = metadata.get("architecture")
-    if architecture is None:
+    if not architecture:
         raise ValueError("distillation metadata has no exact architecture contract")
-    if architecture != architecture_contract(contract):
+    architecture_id = architecture.get("architecture_id", "control_mixconv")
+    if architecture != architecture_contract(contract, architecture_id):
         raise ValueError("distillation architecture contract differs")
     decoder = metadata.get("decoder") or {}
     decoder_contract = decoder.get("contract") or {}
@@ -277,7 +272,10 @@ def convert(args: argparse.Namespace) -> dict:
         if decoder_algorithm == "forward_sum_ctc"
         else VITERBI_DECODER_MODULE
     )
-    flags = _flags(contract)
+    architecture_id = (metadata.get("architecture") or {}).get(
+        "architecture_id", "control_mixconv"
+    )
+    flags = _flags(contract, architecture_id)
     phase_offset = student_stream_phase_offset_frames(flags)
     model = build_student(flags, INPUT_SHAPE, None); model.load_weights(args.weights)
     output_frames = int(metadata.get("student_output_frames", 66))
@@ -333,7 +331,7 @@ def convert(args: argparse.Namespace) -> dict:
         report["paths"][name] = {"max_abs": max(item["max_abs"] for item in items), "mean_abs": float(np.mean([item["mean_abs"] for item in items])), "decision_kind": items[0]["decision_kind"], "decision_mismatch_count": sum(item["decision_mismatch_count"] for item in items), "decision_mismatch_rate": float(np.mean([item["decision_mismatch_rate"] for item in items]))}
     require_equivalence(report, max_abs=args.max_abs, max_mean_abs=args.max_mean_abs, max_decision_mismatch=args.max_decision_mismatch)
     interpreter = tf.lite.Interpreter(model_path=str(artifact_path)); interpreter.allocate_tensors(); input_detail, output_detail = interpreter.get_input_details()[0], interpreter.get_output_details()[0]
-    immutable = {"schema_version": 2, "artifact": {"filename": artifact_path.name, "sha256": sha256_file(artifact_path), "bytes": len(artifact)}, "source": {"distillation_metadata": str(args.distillation_metadata.resolve()), "distillation_metadata_sha256": metadata_hash, "weights": str(args.weights.resolve()), "weights_sha256": weights_hash, "representative_features": str(args.representative_features.resolve()), "representative_features_sha256": sha256_file(args.representative_features)}, "compact_phone_contract": contract, "architecture": architecture_contract(contract), "timeline": {"feature_step_seconds": FEATURE_STEP_SECONDS, "output_step_seconds": OUTPUT_STEP_SECONDS, "output_frames": output_frames, "output_times_seconds": student_output_times_seconds(flags, output_frames).tolist(), "stream_phase_offset_frames": phase_offset, "stream_phase_priming": "zero_prefix_then_observed_prefix", "causal_warmup_derived": True}, "input": {"shape": [int(v) for v in input_detail["shape"]], "dtype": np.dtype(input_detail["dtype"]).name, "quantization": [float(v) for v in input_detail["quantization"]]}, "output": {"shape": [int(v) for v in output_detail["shape"]], "dtype": np.dtype(output_detail["dtype"]).name, "quantization": [float(v) for v in output_detail["quantization"]]}, "equivalence": report, "decoder": {"type": ("deterministic_suffix_forward_sum_ctc" if decoder_algorithm == "forward_sum_ctc" else "deterministic_suffix_viterbi_ctc"), "algorithm": decoder_algorithm, "contract_sha256": metadata["decoder"]["contract_sha256"], "distillation_decoder_contract": decoder_contract, "distillation_decoder_contract_sha256": metadata["decoder"]["contract_sha256"], "reference_module": str(decoder_module), "reference_module_sha256": sha256_file(decoder_module)}}
+    immutable = {"schema_version": 2, "artifact": {"filename": artifact_path.name, "sha256": sha256_file(artifact_path), "bytes": len(artifact)}, "source": {"distillation_metadata": str(args.distillation_metadata.resolve()), "distillation_metadata_sha256": metadata_hash, "weights": str(args.weights.resolve()), "weights_sha256": weights_hash, "representative_features": str(args.representative_features.resolve()), "representative_features_sha256": sha256_file(args.representative_features)}, "compact_phone_contract": contract, "architecture": architecture_contract(contract, architecture_id), "timeline": {"feature_step_seconds": FEATURE_STEP_SECONDS, "output_step_seconds": OUTPUT_STEP_SECONDS, "output_frames": output_frames, "output_times_seconds": student_output_times_seconds(flags, output_frames).tolist(), "stream_phase_offset_frames": phase_offset, "stream_phase_priming": "zero_prefix_then_observed_prefix", "causal_warmup_derived": True}, "input": {"shape": [int(v) for v in input_detail["shape"]], "dtype": np.dtype(input_detail["dtype"]).name, "quantization": [float(v) for v in input_detail["quantization"]]}, "output": {"shape": [int(v) for v in output_detail["shape"]], "dtype": np.dtype(output_detail["dtype"]).name, "quantization": [float(v) for v in output_detail["quantization"]]}, "equivalence": report, "decoder": {"type": ("deterministic_suffix_forward_sum_ctc" if decoder_algorithm == "forward_sum_ctc" else "deterministic_suffix_viterbi_ctc"), "algorithm": decoder_algorithm, "contract_sha256": metadata["decoder"]["contract_sha256"], "distillation_decoder_contract": decoder_contract, "distillation_decoder_contract_sha256": metadata["decoder"]["contract_sha256"], "reference_module": str(decoder_module), "reference_module_sha256": sha256_file(decoder_module)}}
     (args.output / "firmware-artifact.json").write_text(json.dumps(immutable, indent=2, sort_keys=True) + "\n")
     return immutable
 
