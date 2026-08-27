@@ -1660,6 +1660,29 @@ def channel_consistency_loss(device_logits, clean_logits, mask):
     return _masked_mean(per_example, mask)
 
 
+def paired_path_consistency_loss(
+    device_logits, clean_logits, endpoints, mask, contract, *, algorithm
+):
+    """Anchor device views to clean views in the deployed CTC decision space.
+
+    This is deliberately distinct from posterior consistency.  Both views
+    receive gradients from the agreement term, while the device
+    view still receives the hard CTC/path and collision losses in the main
+    objective.  Matching both canonical fit and collision margin keeps
+    the invariance constraint attached to the actual deployment decision.
+    """
+    device_fit, device_margin = deployment_path_scores(
+        device_logits, contract, algorithm=algorithm, endpoints=endpoints
+    )
+    clean_fit, clean_margin = deployment_path_scores(
+        clean_logits, contract, algorithm=algorithm, endpoints=endpoints
+    )
+    target = tf.stack((clean_fit, clean_margin), axis=-1)
+    observed = tf.stack((device_fit, device_margin), axis=-1)
+    per_example = tf.reduce_mean(tf.square(observed - target), axis=-1)
+    return _masked_mean(per_example, mask)
+
+
 def temporal_representation_loss(student_frames, teacher_frames, mask):
     """Transfer time-resolved normalized teacher acoustics to student frames."""
 
@@ -2028,6 +2051,12 @@ def main() -> int:
     parser.add_argument("--representation-weight", type=float, default=0.0)
     parser.add_argument("--temporal-representation-weight", type=float, default=0.0)
     parser.add_argument("--channel-consistency-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--paired-path-consistency-weight",
+        type=float,
+        default=0.0,
+        help="Match aligned clean/device canonical fit and collision margin.",
+    )
     parser.add_argument("--ctc-weight", type=float, default=0.25)
     parser.add_argument("--positive-collision-weight", type=float, default=0.25)
     parser.add_argument("--legacy-negative-weight", type=float, default=0.0)
@@ -2059,6 +2088,7 @@ def main() -> int:
         args.representation_weight,
         args.temporal_representation_weight,
         args.channel_consistency_weight,
+        args.paired_path_consistency_weight,
         args.ctc_weight,
         args.positive_collision_weight,
         args.legacy_negative_weight,
@@ -2425,7 +2455,7 @@ def main() -> int:
     overlay_providers = [str(train_ledger[i]["provider"]) for i in overlay_indexes]
     device_parent_features = (
         device_parent_feature_pairs(corpus, rows)
-        if args.channel_consistency_weight
+        if args.channel_consistency_weight or args.paired_path_consistency_weight
         else {}
     )
     noise_sources = []
@@ -2573,13 +2603,28 @@ def main() -> int:
                 parts = (*parts, temporal_loss)
             else:
                 parts = (*parts, tf.cast(0.0, loss.dtype))
-            if args.channel_consistency_weight:
+            paired_logits = None
+            if args.channel_consistency_weight or args.paired_path_consistency_weight:
                 paired_logits, _, _ = training_model(paired_clean, training=True)
+            if args.channel_consistency_weight:
                 channel_loss = channel_consistency_loss(
                     logits, paired_logits, paired_clean_mask
                 )
                 loss = loss + args.channel_consistency_weight * channel_loss
                 parts = (*parts, channel_loss)
+            else:
+                parts = (*parts, tf.cast(0.0, loss.dtype))
+            if args.paired_path_consistency_weight:
+                path_loss = paired_path_consistency_loss(
+                    logits,
+                    paired_logits,
+                    scoring_endpoints,
+                    paired_clean_mask,
+                    contract,
+                    algorithm=args.decoder_algorithm,
+                )
+                loss = loss + args.paired_path_consistency_weight * path_loss
+                parts = (*parts, path_loss)
             else:
                 parts = (*parts, tf.cast(0.0, loss.dtype))
         gradients = tape.gradient(loss, training_model.trainable_variables)
@@ -2971,6 +3016,12 @@ def main() -> int:
                 else None
             ),
             "paired_clean_device_channel_consistency_weight": args.channel_consistency_weight,
+            "paired_clean_device_path_consistency_weight": args.paired_path_consistency_weight,
+            "paired_path_consistency_target": (
+                "symmetric_canonical_fit_and_collision_margin"
+                if args.paired_path_consistency_weight
+                else None
+            ),
             "utterance_representation_target": "qualified_teacher_last_hidden_time_mean_train_pca",
             "utterance_representation_adapter": (
                 "training_only_global_mean_dense_96_discarded_before_runtime"

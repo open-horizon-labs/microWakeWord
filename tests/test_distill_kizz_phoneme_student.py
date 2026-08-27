@@ -19,6 +19,7 @@ from tools.distill_kizz_phoneme_student import (
     checkpoint_binding,
     checkpoint_selection_key,
     channel_consistency_loss,
+    paired_path_consistency_loss,
     collision_path_supervision,
     deployment_path_scores,
     delayed_occupation_loss,
@@ -54,6 +55,34 @@ from tools.qualify_kizz_phoneme_student import score_features
 
 
 class DistillKizzPhonemeStudentTests(unittest.TestCase):
+    def test_paired_path_consistency_anchors_deployed_fit_and_margin(self):
+        import tensorflow as tf
+
+        contract = compact_phone_contract()
+        clean = tf.random.stateless_normal((2, 66, 20), seed=(7, 11))
+        device = tf.tensor_scatter_nd_add(
+            clean, indices=[[0, 30, 1], [1, 40, 2]], updates=[0.25, -0.25]
+        )
+        endpoints = tf.constant([54, 54], dtype=tf.int32)
+        equal = paired_path_consistency_loss(
+            clean,
+            clean,
+            endpoints,
+            tf.constant([1.0, 1.0]),
+            contract,
+            algorithm="forward_sum_ctc",
+        )
+        different = paired_path_consistency_loss(
+            device,
+            clean,
+            endpoints,
+            tf.constant([1.0, 1.0]),
+            contract,
+            algorithm="forward_sum_ctc",
+        )
+        self.assertAlmostEqual(float(equal), 0.0, places=6)
+        self.assertGreater(float(different), 0.0)
+
     def test_causal_teacher_sampling_excludes_undeployable_prefixes(self):
         scores = np.zeros((2, 66), dtype=np.float32)
         valid = deployable_causal_mask(scores)
