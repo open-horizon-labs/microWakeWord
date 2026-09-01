@@ -889,6 +889,32 @@ class DistillKizzPhonemeStudentTests(unittest.TestCase):
         self.assertEqual(wide.output_shape, narrow.output_shape)
         self.assertGreater(wide.count_params(), narrow.count_params())
 
+    def test_small_control_mixconv_preserves_context_with_fewer_parameters(self):
+        from microwakeword.ordered_state_model import model as build_student
+        from microwakeword.ordered_state_model import receptive_field_ms
+
+        contract = compact_phone_contract()
+        reference_flags = student_flags_for_architecture(
+            "control_mixconv", len(contract["tokens"])
+        )
+        small_flags = student_flags_for_architecture(
+            "control_mixconv_small", len(contract["tokens"])
+        )
+        reference = build_student(reference_flags, (260, 40), None)
+        small = build_student(small_flags, (260, 40), None)
+        architecture = student_architecture_contract(
+            contract, "control_mixconv_small"
+        )
+
+        self.assertEqual(small.output_shape, reference.output_shape)
+        self.assertEqual(
+            receptive_field_ms(small_flags), receptive_field_ms(reference_flags)
+        )
+        self.assertEqual(architecture["mixconv_kernel_sizes"], [[3], [5], [7], [9]])
+        self.assertEqual(architecture["pointwise_filters"], [48, 48, 48, 48])
+        self.assertEqual(architecture["first_conv_filters"], 24)
+        self.assertLess(small.count_params(), reference.count_params() / 2)
+
     def test_temporal_representation_loss_and_cache_are_bounded(self):
         student = np.ones((2, 3, 4), dtype=np.float32)
         teacher = np.ones((2, 3, 4), dtype=np.float32)

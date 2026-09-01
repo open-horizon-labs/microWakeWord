@@ -21,6 +21,7 @@ import os
 import re
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.parse
@@ -34,7 +35,8 @@ from microwakeword.wake_phrase import KIZZ_CONTROL
 
 
 SAMPLE_RATE = 16_000
-DEFAULT_ENV_FILE = Path("/Users/muness1/.config/open-horizon-labs/voice.env")
+DEFAULT_ENV_FILE = Path.home() / ".config" / "open-horizon-labs" / "voice.env"
+DEFAULT_KOKORO_PYTHON = Path(os.environ.get("KIZZ_KOKORO_PYTHON", sys.executable))
 PAID_PROVIDERS = frozenset(("assemblyai", "deepgram", "elevenlabs"))
 EXPECTED_PROVIDERS = frozenset(
     ("assemblyai", "deepgram", "elevenlabs", "kokoro", "macos-say")
@@ -534,13 +536,18 @@ for line in sys.stdin:
 """
 
     def __init__(self, python: Path) -> None:
+        worker_env = os.environ.copy()
+        # The generator may use a version-specific dependency overlay. Kokoro
+        # runs in its own interpreter/venv and must never inherit that path.
+        worker_env.pop("PYTHONPATH", None)
         self.process = subprocess.Popen(
             [str(python), "-u", "-c", self._CODE],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=worker_env,
         )
 
     def render(self, task: Task, output: Path) -> None:
@@ -563,7 +570,13 @@ for line in sys.stdin:
             while True:
                 line = self.process.stdout.readline()
                 if not line:
-                    raise RuntimeError("Kokoro worker exited before rendering")
+                    detail = ""
+                    if self.process.stderr is not None:
+                        detail = self.process.stderr.read().strip()
+                    suffix = f": {detail}" if detail else ""
+                    raise RuntimeError(
+                        f"Kokoro worker exited before rendering{suffix}"
+                    )
                 if line.startswith("KOKORO_DONE "):
                     result = json.loads(line.removeprefix("KOKORO_DONE "))
                     break
@@ -573,7 +586,10 @@ for line in sys.stdin:
 
     def close(self) -> None:
         if self.process.stdin is not None:
-            self.process.stdin.close()
+            try:
+                self.process.stdin.close()
+            except BrokenPipeError:
+                pass
         try:
             self.process.wait(timeout=10)
         except subprocess.TimeoutExpired:
@@ -803,8 +819,15 @@ def retain_active_rows(
     return retained, len(rows) - len(retained)
 
 
-def corpus_mix_report(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
+def corpus_mix_report(
+    rows: Sequence[dict[str, Any]],
+    *,
+    expected_positive_providers: Sequence[str] = tuple(EXPECTED_PROVIDERS),
+) -> dict[str, Any]:
     """Verify provider use and voice disjointness over realized parent audio."""
+    expected_providers = frozenset(expected_positive_providers)
+    if not expected_providers or not expected_providers <= EXPECTED_PROVIDERS:
+        raise ValueError("expected positive providers must be a non-empty known subset")
     reasons: list[dict[str, Any]] = []
     splits: dict[str, Any] = {}
     voice_splits: dict[tuple[str, str], set[str]] = {}
@@ -918,7 +941,7 @@ def corpus_mix_report(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         ]
         counts = {
             provider: sum(row.get("provider") == provider for row in positives)
-            for provider in sorted(EXPECTED_PROVIDERS)
+            for provider in sorted(expected_providers)
         }
         total = len(positives)
         shares = {
@@ -952,7 +975,7 @@ def corpus_mix_report(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "qualified": not reasons,
-        "expected_positive_providers": sorted(EXPECTED_PROVIDERS),
+        "expected_positive_providers": sorted(expected_providers),
         "maximum_positive_provider_share": 0.35,
         "reserved_replay_contract": reserved_contract,
         "splits": splits,
@@ -980,7 +1003,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--kokoro-python",
         type=Path,
-        default=Path("/private/tmp/kokoro-venv/bin/python"),
+        default=DEFAULT_KOKORO_PYTHON,
     )
     args = parser.parse_args(argv)
     if args.max_paid_audio_seconds <= 0:

@@ -1,24 +1,27 @@
-# HiPhi Kizz wake-word recipe
+# Kizz wake-word research and Kizz Control recipe
 
-This repository preserves the research recipe for **HiPhi Kizz**, but that
-phrase is now stopped under the current phonetic-identifiability evidence.
-Intended positives and some captured false wakes both realize as “Hi-Fi Kids,”
-“High Five Kiss,” and nearby sequences. The current preliminary replacement is
-**Kizz Control**; Mycroft remains the device model until a replacement passes
-every gate.
+The current implementation is the
+[Kizz Control three-stage cascade v9](CASCADE_V9_RECIPE.md). It combines a
+high-recall ordered detector, a device-adapted compact verifier, and an
+independent ordered verifier. The checked-in
+[machine recipe](control-cascade-v9.yaml),
+[`run_kizz_control_cascade_recipe.py`](../../tools/run_kizz_control_cascade_recipe.py),
+and [reference artifacts](reference-cascade-v9/README.md) are the starting
+point for a new run.
 
-The current physical recall control is **v19**, operated at a `0.70` probability
-cutoff with a one-frame sliding window. Its live precision is unacceptable.
-**V34** is the strongest v19-derived offline precision/separation candidate,
-but its best recorded point reached only 39.8% recall and it was never
-hardware-qualified. Neither is a release model. V19's old Piper lineage is
-excluded from the new training baseline. See
-[Training reference](TRAINING_REFERENCE.md) for the complete corpus and tooling
-story, [Experiments](EXPERIMENTS.md) for the failure boundaries, the
-[canonical-v3 phonetic gate](CANONICAL_V3_PHONETIC_GATE.md) for the current
-stop decision and replacement-phrase screen, and the
-[ordered-state v1 outline](archive/ORDERED_STATE_V1.md) for the scratch
-architecture that follows the failed v32 binary reboot.
+The accepted reference point retained 12/12 fresh StackChan-channel positives
+and produced 39 false wakes over 100.47 locked hours (`0.388/hour`). Only 5.19%
+of detector candidates reached the expensive final verifier. This is a
+maintainer-accepted practical point, not a pass of the formal `0.1/hour`
+upper-confidence gate and not yet exact-artifact physical performance proof.
+
+The older **HiPhi Kizz** phrase remains stopped under phonetic-identifiability
+evidence: intended positives and observed false wakes overlap with “Hi-Fi
+Kids,” “High Five Kiss,” and nearby speech. V19, v34, clean-slate teachers, and
+the failed single-student firmware path remain documented because their
+failure boundaries shaped the cascade. See [Training reference](TRAINING_REFERENCE.md),
+[Experiments](EXPERIMENTS.md), and the
+[canonical-v3 phonetic gate](CANONICAL_V3_PHONETIC_GATE.md).
 
 The corrected teacher → student run, including PCM-context preparation,
 87→66 temporal alignment, qualification, distillation, stateful INT8 scoring,
@@ -35,16 +38,12 @@ is the restart contract.
 
 ### Current disposition
 
-The recipe is reproducible research infrastructure, not a qualified production
-wake-word recipe. The clean-slate C teacher passed an explicitly experimental
-gate, but its aligned INT8 student reached only 72.62% recall with 0/560
-observed false accepts over 1,456 seconds of offline negative exposure. After
-the ordered-state decoder was added and the exact artifact was flashed,
-StackChan produced frequent live false wakes. The student was rejected and the
-firmware reverted to the ESP-IDF wake-word model. See
-[Experiments](EXPERIMENTS.md) for the measured decision history. Do not treat
-the offline student score, v19, or any checked-in configuration as evidence of
-acceptable live precision.
+V9 is the active Kizz Control training and firmware-handoff recipe. Its host
+false-wake result and device-channel replay meet the maintainer's practical
+bar. Exact StackChan startup equivalence, accepted-path timing, duty cycle,
+audio-drop telemetry, and physical soak remain required before claiming full
+hardware qualification. Do not treat v19, v34, the clean-slate C teacher, or
+the earlier single-student score as current evidence.
 
 The later canonical-v3 C teacher reached only 9/22 held-out positives and
 accepted 2/62 quarantined false wakes. A pinned pretrained IPA/CTC teacher then

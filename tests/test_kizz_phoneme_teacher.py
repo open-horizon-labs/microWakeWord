@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 
@@ -9,10 +11,64 @@ from microwakeword.kizz_phoneme_teacher import (
     ctc_log_probability_batch,
     score_window,
     resolve_hf_weights_path,
+    load_hf_teacher,
 )
 
 
 class KizzPhonemeTeacherTests(unittest.TestCase):
+    def test_teacher_loader_disables_unused_text_phonemizer(self):
+        calls = {}
+
+        class Loader:
+            @classmethod
+            def from_pretrained(cls, model_id, **kwargs):
+                calls[cls.__name__] = {"model_id": model_id, **kwargs}
+                return cls()
+
+        class Wav2Vec2FeatureExtractor(Loader):
+            pass
+
+        class Wav2Vec2PhonemeCTCTokenizer(Loader):
+            pass
+
+        class Wav2Vec2ForCTC(Loader):
+            def to(self, target):
+                calls["model_target"] = target
+                return self
+
+            def eval(self):
+                calls["model_eval"] = True
+                return self
+
+        class Wav2Vec2Processor:
+            def __init__(self, *, feature_extractor, tokenizer):
+                self.feature_extractor = feature_extractor
+                self.tokenizer = tokenizer
+
+        transformers = SimpleNamespace(
+            Wav2Vec2FeatureExtractor=Wav2Vec2FeatureExtractor,
+            Wav2Vec2ForCTC=Wav2Vec2ForCTC,
+            Wav2Vec2PhonemeCTCTokenizer=Wav2Vec2PhonemeCTCTokenizer,
+            Wav2Vec2Processor=Wav2Vec2Processor,
+        )
+        torch = SimpleNamespace(device=lambda value: f"device:{value}")
+        with mock.patch.dict(
+            "sys.modules", {"torch": torch, "transformers": transformers}
+        ):
+            model, processor, tokenizer, target = load_hf_teacher(
+                "teacher-id", revision="fixed", device="mps"
+            )
+        self.assertIs(processor.tokenizer, tokenizer)
+        self.assertIsInstance(model, Wav2Vec2ForCTC)
+        self.assertEqual(target, "device:mps")
+        self.assertFalse(
+            calls["Wav2Vec2PhonemeCTCTokenizer"]["do_phonemize"]
+        )
+        self.assertEqual(
+            calls["Wav2Vec2PhonemeCTCTokenizer"]["revision"], "fixed"
+        )
+        self.assertTrue(calls["model_eval"])
+
     def test_resolves_exactly_one_local_teacher_weights_file(self):
         import tempfile
         from pathlib import Path

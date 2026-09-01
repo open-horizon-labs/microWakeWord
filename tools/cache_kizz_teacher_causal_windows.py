@@ -119,6 +119,7 @@ def main() -> int:
         "--student-architecture",
         choices=(
             "control_mixconv",
+            "control_mixconv_small",
             "temporal_residual",
             "dilated_temporal_memory",
             "dilated_temporal_memory_wide",

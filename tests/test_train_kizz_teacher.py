@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 import numpy as np
@@ -14,7 +15,9 @@ from tools.train_kizz_teacher import (
     resolve_topology,
     scheduled_sequence_weight,
     training_positive_source_families,
+    validate_feature_provenance,
     validate_realized_positive_sampling,
+    validation_selection_key,
 )
 
 
@@ -34,6 +37,103 @@ class _MarkerModel:
 
 
 class TrainKizzTeacherTest(unittest.TestCase):
+    def _write_feature_provenance_fixture(
+        self, root: Path, *, overlay_count: int = 12
+    ) -> tuple[Path, Path, Path, object]:
+        topology = resolve_topology(
+            type(
+                "Args",
+                (),
+                {
+                    "topology": "single",
+                    "states_per_phone": None,
+                    "phrase_id": "kizz-control",
+                },
+            )()
+        )
+        variants = ["clean"] + [
+            f"overlay-{index}" for index in range(overlay_count)
+        ]
+        examples = [
+            {
+                "split": "train",
+                "parent_source_id": "parent-a",
+                "variant": variant,
+                "augmentation": None if variant == "clean" else {"seed": index},
+            }
+            for index, variant in enumerate(variants)
+        ]
+        examples.extend(
+            {
+                "split": split,
+                "parent_source_id": f"parent-{split}",
+                "variant": "clean",
+                "augmentation": None,
+            }
+            for split in ("validation", "test")
+        )
+        report = {
+            "schema_version": 3,
+            "recipe": "kizz_aligned_teacher_features_v3",
+            "state_count": topology.state_count,
+            "states_per_phone": topology.states_per_phone,
+            "include_inherited_alignments": False,
+            "positive_counts": {"train": len(variants)},
+            "overlay_snr_db": [10.0] * overlay_count,
+            "examples": examples,
+        }
+        provenance = root / "feature-provenance.json"
+        features = root / "positive-features.npy"
+        targets = root / "positive-targets.npy"
+        provenance.write_text(json.dumps(report), encoding="utf-8")
+        np.save(features, np.zeros((len(variants), 2, 2), dtype=np.float32))
+        np.save(targets, np.zeros((len(variants), 2), dtype=np.int32))
+        return provenance, features, targets, topology
+
+    def test_feature_provenance_accepts_declared_twelve_overlay_recipe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            provenance, features, targets, topology = (
+                self._write_feature_provenance_fixture(Path(directory))
+            )
+            report = validate_feature_provenance(
+                provenance, features, targets, topology
+            )
+            self.assertEqual(len(report["overlay_snr_db"]), 12)
+
+    def test_feature_provenance_rejects_missing_parent_overlay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provenance, features, targets, topology = (
+                self._write_feature_provenance_fixture(root)
+            )
+            report = json.loads(provenance.read_text(encoding="utf-8"))
+            report["examples"] = [
+                item
+                for item in report["examples"]
+                if not (
+                    item["split"] == "train" and item["variant"] == "overlay-11"
+                )
+            ]
+            provenance.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "variants are incomplete"):
+                validate_feature_provenance(provenance, features, targets, topology)
+
+    def test_feature_provenance_rejects_augmented_evaluation_example(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provenance, features, targets, topology = (
+                self._write_feature_provenance_fixture(root)
+            )
+            report = json.loads(provenance.read_text(encoding="utf-8"))
+            evaluation = next(
+                item for item in report["examples"] if item["split"] == "validation"
+            )
+            evaluation["variant"] = "overlay-0"
+            evaluation["augmentation"] = {"seed": 1}
+            provenance.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "evaluation examples must be clean"):
+                validate_feature_provenance(provenance, features, targets, topology)
+
     def test_positive_source_balance_counts_parents_not_overlays(self):
         provenance = {
             "examples": [
@@ -207,6 +307,39 @@ class TrainKizzTeacherTest(unittest.TestCase):
             self.assertEqual(first["selected"]["false_accepts"], 0)
             self.assertEqual(first["selected"]["opportunity_recall"], 1.0)
             self.assertTrue(first["ledger"])
+
+    def test_detector_selection_minimizes_false_accepts_at_recall_floor(self):
+        points = [
+            {
+                "zero_false_accepts": True,
+                "opportunity_recall": 0.55,
+                "false_accepts": 0,
+                "separation": -1.0,
+                "validation_loss": 0.1,
+                "threshold": 2.0,
+            },
+            {
+                "zero_false_accepts": False,
+                "opportunity_recall": 0.97,
+                "false_accepts": 25,
+                "separation": -2.0,
+                "validation_loss": 0.2,
+                "threshold": 1.0,
+            },
+            {
+                "zero_false_accepts": False,
+                "opportunity_recall": 1.0,
+                "false_accepts": 80,
+                "separation": -3.0,
+                "validation_loss": 0.3,
+                "threshold": 0.0,
+            },
+        ]
+        selected = max(
+            points, key=lambda item: validation_selection_key(item, 0.95)
+        )
+        self.assertEqual(selected["opportunity_recall"], 0.97)
+        self.assertEqual(selected["false_accepts"], 25)
 
 
 if __name__ == "__main__":

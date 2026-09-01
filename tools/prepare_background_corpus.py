@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import wave
 
 from microwakeword.device_corpus import validate_device_corpus
 
@@ -61,6 +62,8 @@ ESC50_OUTDOOR = {
     "wind",
 }
 
+SPLIT_RANK = {"train": 0, "validation": 1, "test": 2}
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -68,6 +71,39 @@ def sha256(path: Path) -> str:
         while chunk := source.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def wav_duration_seconds(path: Path) -> float:
+    with wave.open(str(path), "rb") as audio:
+        rate = audio.getframerate()
+        frames = audio.getnframes()
+    if rate <= 0 or frames <= 0:
+        raise ValueError(f"background WAV has no positive duration: {path}")
+    return frames / rate
+
+
+def esc50_split(fold: int) -> str:
+    if fold in {1, 2, 3}:
+        return "train"
+    if fold == 4:
+        return "validation"
+    if fold == 5:
+        return "test"
+    raise ValueError(f"unsupported ESC-50 fold: {fold}")
+
+
+def esc50_source_splits(rows: list[dict]) -> dict[str, str]:
+    """Assign every ESC-50 source recording to its most-held-out fold."""
+    assignments: dict[str, str] = {}
+    for row in rows:
+        source_file_id = str(row.get("src_file", "")).strip()
+        if not source_file_id:
+            raise ValueError("ESC-50 metadata requires non-empty src_file")
+        candidate = esc50_split(int(row["fold"]))
+        current = assignments.get(source_file_id)
+        if current is None or SPLIT_RANK[candidate] > SPLIT_RANK[current]:
+            assignments[source_file_id] = candidate
+    return assignments
 
 
 def hardlink(source: Path, destination: Path) -> None:
@@ -95,32 +131,36 @@ def add_esc50(source: Path, output: Path) -> tuple[list[dict], dict]:
         capture_output=True,
         text=True,
     ).stdout.strip()
-    files = []
     with metadata.open(newline="") as rows:
-        for row in csv.DictReader(rows):
-            category = row["category"]
-            if category in ESC50_INDOOR:
-                environment = "indoor"
-            elif category in ESC50_OUTDOOR:
-                environment = "outdoor"
-            else:
-                continue
-            evidence_split = "stress" if int(row["fold"]) == 5 else "train"
-            audio = source / "audio" / row["filename"]
-            destination = output / environment / evidence_split / row["filename"]
-            hardlink(audio, destination)
-            files.append(
-                {
-                    "path": destination.relative_to(output).as_posix(),
-                    "source": "esc50",
-                    "source_path": audio.relative_to(source).as_posix(),
-                    "source_split": int(row["fold"]),
-                    "environment": environment,
-                    "evidence_split": evidence_split,
-                    "category": category,
-                    "sha256": sha256(audio),
-                }
-            )
+        metadata_rows = list(csv.DictReader(rows))
+    assignments = esc50_source_splits(metadata_rows)
+    files = []
+    for row in metadata_rows:
+        category = row["category"]
+        if category in ESC50_INDOOR:
+            environment = "indoor"
+        elif category in ESC50_OUTDOOR:
+            environment = "outdoor"
+        else:
+            continue
+        source_file_id = str(row["src_file"]).strip()
+        evidence_split = assignments[source_file_id]
+        audio = source / "audio" / row["filename"]
+        destination = output / environment / evidence_split / row["filename"]
+        hardlink(audio, destination)
+        files.append(
+            {
+                "path": destination.relative_to(output).as_posix(),
+                "source": "esc50",
+                "source_path": audio.relative_to(source).as_posix(),
+                "source_split": int(row["fold"]),
+                "source_file_id": source_file_id,
+                "environment": environment,
+                "evidence_split": evidence_split,
+                "category": category,
+                "sha256": sha256(audio),
+            }
+        )
     return files, {
         "name": "ESC-50",
         "url": "https://github.com/karolpiczak/ESC-50",
@@ -145,6 +185,8 @@ def add_device_ambient(corpus: Path, output: Path) -> tuple[list[dict], dict]:
                 "source_path": capture["path"],
                 "capture_id": capture["capture_id"],
                 "device_profile": capture["device_profile"],
+                "speaker_id": capture["speaker_id"],
+                "session_id": capture["session_id"],
                 "environment": "indoor",
                 "evidence_split": "train",
                 "category": capture.get("pronunciation") or "room-tone",
@@ -154,6 +196,52 @@ def add_device_ambient(corpus: Path, output: Path) -> tuple[list[dict], dict]:
     return files, {
         "name": manifest["corpus_id"],
         "manifest_sha256": sha256(corpus / "device-corpus.json"),
+    }
+
+
+def canonical_example(item: dict, output: Path) -> dict:
+    audio_hash = str(item["sha256"])
+    path = (output / item["path"]).resolve()
+    split = str(item["evidence_split"])
+    common = {
+        "path": str(path),
+        "audio_sha256": audio_hash,
+        "duration_seconds": wav_duration_seconds(path),
+        "label": 0,
+        "semantic_label": "background_noise",
+        "source_group": "background_noise",
+        "split": split,
+        "training_eligible": split == "train",
+        "locked_deployment_anchor": False,
+        "provenance_id": f"audio-sha256:{audio_hash}",
+        "environment": item["environment"],
+        "category": item["category"],
+        "source": item["source"],
+        "source_path": item["source_path"],
+    }
+    if item["source"] == "esc50":
+        source_file_id = str(item["source_file_id"])
+        source_identity = f"esc50-source-file:{source_file_id}"
+        return {
+            **common,
+            "source_id": f"esc50-audio:{audio_hash}",
+            "parent_id": source_identity,
+            "ancestry_id": f"esc50-ancestry:{source_file_id}",
+            "speaker_id": source_identity,
+            "session_id": source_identity,
+            "source_file_id": source_file_id,
+            "source_split": int(item["source_split"]),
+        }
+    capture_id = str(item["capture_id"])
+    return {
+        **common,
+        "source_id": f"device-ambient:{capture_id}",
+        "parent_id": f"device-capture:{capture_id}",
+        "ancestry_id": f"device-ambient-ancestry:{audio_hash}",
+        "speaker_id": item["speaker_id"],
+        "session_id": item["session_id"],
+        "capture_id": capture_id,
+        "device_profile": item["device_profile"],
     }
 
 
@@ -184,11 +272,15 @@ def prepare(
                     and item["evidence_split"] == split
                     for item in files
                 )
-                for split in ("train", "stress")
+                for split in ("train", "validation", "test")
             }
             for environment in ("indoor", "outdoor")
         },
         "files": sorted(files, key=lambda item: item["path"]),
+        "examples": sorted(
+            (canonical_example(item, output) for item in files),
+            key=lambda item: (item["split"], item["source_id"]),
+        ),
     }
     output.mkdir(parents=True, exist_ok=True)
     (output / "background-corpus.json").write_text(

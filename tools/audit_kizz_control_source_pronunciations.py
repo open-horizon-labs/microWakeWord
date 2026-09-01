@@ -19,6 +19,15 @@ from typing import Sequence
 
 MODEL_NAME = "eng2102"
 CANONICAL_PREFIX = ("k", "ɪ", "z", "k")
+AUDITED_PROVIDERS = frozenset(
+    ("assemblyai", "deepgram", "elevenlabs", "kokoro", "macos-say")
+)
+RUNTIME_RESERVED_PROVIDERS = (
+    "assemblyai",
+    "deepgram",
+    "elevenlabs",
+    "kokoro",
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -60,16 +69,17 @@ def build_report(
         for split in requested_splits
     ):
         raise ValueError("pronunciation audit splits must be train/validation/test")
-    if gate_mode not in {"reserved", "all"}:
-        raise ValueError("pronunciation gate mode must be reserved or all")
+    if gate_mode not in {"reserved", "all", "training_eligible"}:
+        raise ValueError(
+            "pronunciation gate mode must be reserved, all, or training_eligible"
+        )
     payload = json.loads(source_manifest.read_text())
     rows = [
         dict(row)
         for row in payload.get("examples", [])
         if int(row.get("label", -1)) == 1
         and row.get("split") in requested_splits
-        and row.get("provider")
-        in {"assemblyai", "deepgram", "elevenlabs", "kokoro"}
+        and row.get("provider") in AUDITED_PROVIDERS
     ]
     if not rows:
         raise ValueError("source manifest has no runtime-provider test positives")
@@ -90,6 +100,7 @@ def build_report(
                 "render_text": row["render_text"],
                 "reserved": row.get("reserved_evidence_role")
                 == "target_channel_positive",
+                "training_eligible": row.get("training_eligible") is True,
                 "phones": phones,
                 "accepted": has_canonical_prefix(phones),
             }
@@ -97,7 +108,12 @@ def build_report(
         if (index + 1) % 24 == 0 or index + 1 == len(rows):
             print(json.dumps({"audited": index + 1, "total": len(rows)}), flush=True)
     reserved = [item for item in results if item["reserved"]]
-    gated = reserved if gate_mode == "reserved" else results
+    if gate_mode == "reserved":
+        gated = reserved
+    elif gate_mode == "training_eligible":
+        gated = [item for item in results if item["training_eligible"] or item["reserved"]]
+    else:
+        gated = results
     reserved_failures = [item for item in reserved if not item["accepted"]]
     failures = [item for item in gated if not item["accepted"]]
     providers = {
@@ -107,16 +123,61 @@ def build_report(
                 {item["voice"] for item in reserved if item["provider"] == provider}
             ),
         }
-        for provider in ("assemblyai", "deepgram", "elevenlabs", "kokoro")
+        for provider in RUNTIME_RESERVED_PROVIDERS
     }
+    declared_contract = payload.get("reserved_evidence_contract")
+    if declared_contract is None:
+        contract_mode = "legacy_balanced_four_provider_v1"
+        required_total = 24
+        required_providers = {
+            provider: {"count": 6, "minimum_voices": 2}
+            for provider in RUNTIME_RESERVED_PROVIDERS
+        }
+    else:
+        contract_mode = "manifest_declared_fresh_qualification_v1"
+        if (
+            not isinstance(declared_contract, dict)
+            or declared_contract.get("role") != "target_channel_positive"
+            or declared_contract.get("locked_before_scoring") is not True
+            or not isinstance(declared_contract.get("providers"), dict)
+        ):
+            raise ValueError("reserved evidence contract is malformed")
+        required_total = declared_contract.get("total_count")
+        required_providers = declared_contract["providers"]
+        if (
+            not isinstance(required_total, int)
+            or required_total < 1
+            or not required_providers
+            or any(provider not in RUNTIME_RESERVED_PROVIDERS for provider in required_providers)
+            or any(
+                not isinstance(value, dict)
+                or not isinstance(value.get("count"), int)
+                or value["count"] < 1
+                or not isinstance(value.get("minimum_voices"), int)
+                or not 1 <= value["minimum_voices"] <= value["count"]
+                for value in required_providers.values()
+            )
+            or sum(value["count"] for value in required_providers.values()) != required_total
+        ):
+            raise ValueError("reserved evidence contract counts are invalid")
+    reserved_contract_qualified = (
+        len(reserved) == required_total
+        and not reserved_failures
+        and all(
+            providers[provider]["count"] == value["count"]
+            and len(providers[provider]["voices"]) >= value["minimum_voices"]
+            for provider, value in required_providers.items()
+        )
+        and all(
+            providers[provider]["count"] == 0
+            for provider in RUNTIME_RESERVED_PROVIDERS
+            if provider not in required_providers
+        )
+    )
     report = {
         "schema_version": 1,
         "gate_scope": "independent_source_pronunciation_qc",
-        "qualified": (
-            len(reserved) == 24 and not failures
-            if gate_mode == "reserved"
-            else bool(gated) and not failures
-        ),
+        "qualified": bool(gated) and not failures and reserved_contract_qualified,
         "locked_before_device_capture": True,
         "source_manifest": str(source_manifest.resolve()),
         "source_manifest_sha256": sha256_file(source_manifest),
@@ -141,8 +202,15 @@ def build_report(
             "reserved_rejected": len(reserved_failures),
             "gated": len(gated),
             "gated_rejected": len(failures),
+            "training_eligible": sum(item["training_eligible"] for item in results),
+            "training_eligible_rejected": sum(
+                item["training_eligible"] and not item["accepted"]
+                for item in results
+            ),
         },
         "reserved_provider_contract": providers,
+        "reserved_contract_mode": contract_mode,
+        "declared_reserved_evidence_contract": declared_contract,
         "reserved_audio_sha256": [item["audio_sha256"] for item in reserved],
         "reserved_failures": reserved_failures,
         "gated_failures": failures,
@@ -165,7 +233,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--gate-mode",
-        choices=("reserved", "all"),
+        choices=("reserved", "all", "training_eligible"),
         default="reserved",
         help="qualify reserved anchors or every audited positive",
     )

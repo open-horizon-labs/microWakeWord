@@ -107,14 +107,31 @@ def select_rows(
                 )
             )
         voices = sorted(by_voice)
-        if len(voices) < per_provider:
+        available = sum(len(rows) for rows in by_voice.values())
+        if available < per_provider:
             raise ValueError(
-                f"provider {provider} has only {len(voices)} distinct train voices; "
+                f"provider {provider} has only {available} eligible train renders; "
                 f"needs {per_provider}"
             )
-        # One source per voice. This prevents punctuation variants from
-        # masquerading as acoustic diversity.
-        selected.extend(by_voice[voice][0] for voice in voices[:per_provider])
+        # Exhaust one render per voice before taking a second render from any
+        # voice.  This keeps voice diversity primary while allowing a larger
+        # target-channel corpus than the number of available TTS voices.
+        positions = {voice: 0 for voice in voices}
+        provider_rows: list[dict[str, Any]] = []
+        while len(provider_rows) < per_provider:
+            made_progress = False
+            for voice in voices:
+                position = positions[voice]
+                if position >= len(by_voice[voice]):
+                    continue
+                provider_rows.append(by_voice[voice][position])
+                positions[voice] += 1
+                made_progress = True
+                if len(provider_rows) == per_provider:
+                    break
+            if not made_progress:
+                raise ValueError(f"provider {provider} selection stalled")
+        selected.extend(provider_rows)
     hashes = [str(row.get("audio_sha256", "")) for row in selected]
     if any(not value for value in hashes) or len(hashes) != len(set(hashes)):
         raise ValueError("selected adaptation sources have missing/duplicate audio")

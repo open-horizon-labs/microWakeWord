@@ -1,6 +1,8 @@
 import unittest
+from pathlib import Path
 
 from tools.generate_kizz_control_c1_corpus import (
+    DEFAULT_ENV_FILE,
     EXPECTED_PROVIDERS,
     RESERVED_REPLAY_VARIANTS,
     RESERVED_REPLAYS_PER_PROVIDER,
@@ -16,6 +18,12 @@ from tools.generate_kizz_control_c1_corpus import (
 
 
 class GenerateKizzControlC1CorpusTest(unittest.TestCase):
+    def test_default_env_file_is_home_relative(self):
+        self.assertEqual(
+            DEFAULT_ENV_FILE,
+            Path.home() / ".config" / "open-horizon-labs" / "voice.env",
+        )
+
     def realized_rows(self):
         rows = []
         for index, task in enumerate(_tasks()):
@@ -55,6 +63,23 @@ class GenerateKizzControlC1CorpusTest(unittest.TestCase):
         self.assertIn(
             "positive_provider_missing",
             {violation["reason"] for violation in report["violations"]},
+        )
+
+    def test_explicit_runtime_subset_can_keep_macos_as_audit_only(self):
+        rows = [
+            row for row in self.realized_rows() if row["provider"] != "macos-say"
+        ]
+        report = corpus_mix_report(
+            rows,
+            expected_positive_providers=sorted(RUNTIME_POSITIVE_PROVIDERS),
+        )
+        self.assertNotIn(
+            "positive_provider_missing",
+            {violation["reason"] for violation in report["violations"]},
+        )
+        self.assertEqual(
+            set(report["expected_positive_providers"]),
+            set(RUNTIME_POSITIVE_PROVIDERS),
         )
 
     def test_replay_holdout_realizes_provider_and_voice_diversity(self):

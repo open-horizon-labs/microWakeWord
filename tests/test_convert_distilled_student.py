@@ -55,6 +55,18 @@ class ConvertDistilledStudentTests(unittest.TestCase):
         self.assertEqual(architecture["warmup_output_drop"], 20)
         self.assertEqual(architecture["output_count"], len(contract["tokens"]))
 
+    def test_small_control_mixconv_architecture_contract_is_explicit(self):
+        contract = compact_phone_contract()
+        architecture = architecture_contract(
+            contract, "control_mixconv_small"
+        )
+        self.assertEqual(
+            architecture["architecture_id"], "control_mixconv_small"
+        )
+        self.assertEqual(architecture["pointwise_filters"], [48, 48, 48, 48])
+        self.assertEqual(architecture["first_conv_filters"], 24)
+        self.assertEqual(architecture["mixconv_kernel_sizes"], [[3], [5], [7], [9]])
+
     def test_exact_weight_hash_is_checked_when_declared(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); weights = root / "weights.h5"; weights.write_bytes(b"weights")

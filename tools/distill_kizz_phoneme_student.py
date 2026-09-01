@@ -118,6 +118,8 @@ def student_decoder_contract_hash(
 def student_flags_for_architecture(architecture: str, output_count: int):
     if architecture == "control_mixconv":
         return student_flags(output_count)
+    if architecture == "control_mixconv_small":
+        return student_flags(output_count, architecture)
     if architecture == "temporal_residual":
         return SimpleNamespace(
             pointwise_filters="80,96,96,96,96",
@@ -2161,6 +2163,7 @@ def main() -> int:
         "--student-architecture",
         choices=(
             "control_mixconv",
+            "control_mixconv_small",
             "temporal_residual",
             "dilated_temporal_memory",
             "dilated_temporal_memory_wide",

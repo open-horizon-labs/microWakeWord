@@ -16,6 +16,9 @@ from tools.build_kizz_phoneme_distillation_corpus import (
     select_negative_rows,
     student_test_positive_evidence,
 )
+from tools.build_kizz_aligned_teacher_features_v3 import (
+    load_pronunciation_acceptances as load_aligned_pronunciation_acceptances,
+)
 
 
 class BuildKizzPhonemeDistillationCorpusTests(unittest.TestCase):
@@ -203,7 +206,7 @@ class BuildKizzPhonemeDistillationCorpusTests(unittest.TestCase):
         )
         return quality, train_selection
 
-    def test_pronunciation_allowlist_requires_bound_all_split_audit(self):
+    def test_pronunciation_allowlist_requires_qualified_bound_all_split_audit(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source.json"
@@ -211,24 +214,36 @@ class BuildKizzPhonemeDistillationCorpusTests(unittest.TestCase):
             from tools.build_kizz_phoneme_distillation_corpus import sha256_file
 
             audit = root / "audit.json"
-            audit.write_text(
-                json.dumps(
-                    {
-                        "gate_scope": "independent_source_pronunciation_qc",
-                        "source_manifest_sha256": sha256_file(source),
-                        "scope": {
-                            "gate_mode": "all",
-                            "splits": ["train", "validation", "test"],
-                        },
-                        "results": [
-                            {"source_id": "good", "accepted": True},
-                            {"source_id": "bad", "accepted": False},
-                        ],
-                    }
-                )
-            )
-            self.assertEqual(load_pronunciation_acceptances(audit, source), {"good"})
-            payload = json.loads(audit.read_text())
+            payload = {
+                "gate_scope": "independent_source_pronunciation_qc",
+                "source_manifest_sha256": sha256_file(source),
+                "scope": {
+                    "gate_mode": "all",
+                    "splits": ["train", "validation", "test"],
+                },
+                "results": [
+                    {"source_id": "good", "accepted": True},
+                    {"source_id": "bad", "accepted": False},
+                ],
+            }
+
+            for loader in (
+                load_pronunciation_acceptances,
+                load_aligned_pronunciation_acceptances,
+            ):
+                for qualified in (False, "true", None, True):
+                    with self.subTest(loader=loader.__module__, qualified=qualified):
+                        candidate = dict(payload)
+                        if qualified is not None:
+                            candidate["qualified"] = qualified
+                        audit.write_text(json.dumps(candidate))
+                        if qualified is True:
+                            self.assertEqual(loader(audit, source), {"good"})
+                        else:
+                            with self.assertRaisesRegex(ValueError, "qualified"):
+                                loader(audit, source)
+
+            payload["qualified"] = True
             payload["scope"]["gate_mode"] = "reserved"
             audit.write_text(json.dumps(payload))
             with self.assertRaisesRegex(ValueError, "all-split"):
@@ -411,8 +426,39 @@ class BuildKizzPhonemeDistillationCorpusTests(unittest.TestCase):
             bad = json.loads(quality.read_text())
             bad["counts"]["providers"]["kokoro"] = 3
             quality.write_text(json.dumps(bad))
-            with self.assertRaisesRegex(ValueError, "4x4"):
+            with self.assertRaisesRegex(ValueError, "balanced"):
                 load_device_training_rows(quality)
+
+            selection_payload = json.loads(selection.read_text())
+            selection_payload["selected_examples"] = [
+                row
+                for row in selection_payload["selected_examples"]
+                if row["voice"] != "train-3"
+            ]
+            selection_payload["selected_count"] = 12
+            selection_payload["providers"] = list(providers)
+            selection_payload["per_provider"] = 3
+            selection.write_text(json.dumps(selection_payload))
+            corpus_payload = json.loads(corpus.read_text())
+            corpus_payload["captures"] = [
+                row
+                for row in corpus_payload["captures"]
+                if row["conditions"]["source_voice"] != "train-3"
+            ]
+            corpus.write_text(json.dumps(corpus_payload))
+            balanced = json.loads(quality.read_text())
+            balanced["counts"]["providers"] = {provider: 3 for provider in providers}
+            balanced["results"] = [
+                row for row in balanced["results"] if row["voice"] != "train-3"
+            ]
+            balanced["inputs"]["selection_sha256"] = hashlib.sha256(
+                selection.read_bytes()
+            ).hexdigest()
+            balanced["inputs"]["corpus_sha256"] = hashlib.sha256(
+                corpus.read_bytes()
+            ).hexdigest()
+            quality.write_text(json.dumps(balanced))
+            self.assertEqual(len(load_device_training_rows(quality)), 12)
 
     def test_device_validation_rows_exclude_failed_capture_and_are_never_training(self):
         with tempfile.TemporaryDirectory() as directory:

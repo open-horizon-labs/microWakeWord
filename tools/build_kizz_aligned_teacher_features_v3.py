@@ -29,7 +29,7 @@ from typing import Any
 
 import numpy as np
 import soundfile as sf
-from scipy.signal import resample_poly
+from scipy.signal import fftconvolve, resample_poly
 
 from microwakeword.audio.audio_utils import MicroFrontend
 from microwakeword.ordered_state_data import example_from_mapping, frame_state_targets
@@ -55,6 +55,7 @@ ALLOWED_ALIGNMENT_METHODS = frozenset(
     )
 )
 DEFAULT_OVERLAY_SNR_DB = (5.0, 10.0, 15.0, 20.0)
+DEFAULT_GAIN_DB_RANGE = (-6.0, 3.0)
 
 
 def sha256_file(path: Path) -> str:
@@ -87,10 +88,13 @@ def load_pronunciation_acceptances(audit_path: Path, source_manifest: Path) -> s
     if (
         payload.get("gate_scope") != "independent_source_pronunciation_qc"
         or payload.get("source_manifest_sha256") != sha256_file(source_manifest)
-        or scope.get("gate_mode") != "all"
+        or payload.get("qualified") is not True
+        or scope.get("gate_mode") not in {"all", "training_eligible"}
         or set(scope.get("splits", [])) != {"train", "validation", "test"}
     ):
-        raise ValueError("source pronunciation audit is not the bound all-split gate")
+        raise ValueError(
+            "source pronunciation audit is not the qualified bound all-split gate"
+        )
     results = payload.get("results", [])
     identities = [str(row.get("source_id", "")) for row in results]
     if (
@@ -277,13 +281,52 @@ def _translated_record(
     return record
 
 
-def _background_context(samples: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+def _background_context(
+    samples: np.ndarray, rng: np.random.Generator
+) -> tuple[np.ndarray, int, bool]:
     values = np.asarray(samples, dtype=np.float32)
+    if not len(values) or not np.all(np.isfinite(values)):
+        raise ValueError("background audio must be finite and non-empty")
     if len(values) >= CONTEXT_SAMPLES:
         start = int(rng.integers(0, len(values) - CONTEXT_SAMPLES + 1))
-        return values[start : start + CONTEXT_SAMPLES]
+        return values[start : start + CONTEXT_SAMPLES], start, False
     repeats = math.ceil(CONTEXT_SAMPLES / len(values))
-    return np.tile(values, repeats)[:CONTEXT_SAMPLES]
+    return np.tile(values, repeats)[:CONTEXT_SAMPLES], 0, repeats > 1
+
+
+def apply_gain_db(samples: np.ndarray, gain_db: float) -> np.ndarray:
+    if not math.isfinite(gain_db):
+        raise ValueError("gain must be finite")
+    return np.clip(
+        np.asarray(samples, dtype=np.float32) * (10.0 ** (gain_db / 20.0)),
+        -1.0,
+        1.0,
+    ).astype(np.float32)
+
+
+def apply_room_impulse_response(
+    samples: np.ndarray, impulse_response: np.ndarray
+) -> tuple[np.ndarray, int]:
+    """Apply a finite-energy RIR after trimming its pre-arrival silence."""
+    signal = np.asarray(samples, dtype=np.float32)
+    rir = np.asarray(impulse_response, dtype=np.float32)
+    if not len(rir) or not np.all(np.isfinite(rir)):
+        raise ValueError("room impulse response must be finite and non-empty")
+    peak = float(np.max(np.abs(rir)))
+    if peak <= 1e-8:
+        raise ValueError("room impulse response has no usable impulse")
+    arrivals = np.flatnonzero(np.abs(rir) >= peak * 0.05)
+    arrival_sample = int(arrivals[0])
+    rir = rir[arrival_sample : arrival_sample + SAMPLE_RATE * 2]
+    energy = float(np.sqrt(np.sum(np.square(rir, dtype=np.float64))))
+    if not math.isfinite(energy) or energy <= 1e-8:
+        raise ValueError("room impulse response has no finite energy")
+    rir = rir / energy
+    convolved = fftconvolve(signal, rir, mode="full")[: len(signal)]
+    peak_after = float(np.max(np.abs(convolved)))
+    if peak_after > 1.0:
+        convolved = convolved / peak_after
+    return convolved.astype(np.float32), arrival_sample
 
 
 def mix_at_snr(
@@ -302,17 +345,48 @@ def mix_at_snr(
     return np.clip(foreground + background * scale, -1.0, 1.0).astype(np.float32)
 
 
-def _background_rows(path: Path | None) -> list[dict[str, Any]]:
+def _eligible_audio_rows(
+    path: Path | None,
+    *,
+    allowed_source_groups: frozenset[str] | None = None,
+    kind: str,
+) -> list[dict[str, Any]]:
     if path is None:
         return []
-    return [
-        row
-        for row in _rows(path)
-        if row.get("split") == "train"
-        and int(row.get("label", -1)) == 0
-        and row.get("source_group") in ("music", "background_noise")
-        and Path(str(row.get("path", ""))).is_file()
-    ]
+    result = []
+    for raw in _rows(path):
+        if (
+            raw.get("split") != "train"
+            or raw.get("training_eligible") is not True
+            or raw.get("locked_deployment_anchor") is True
+        ):
+            continue
+        if allowed_source_groups is not None and raw.get("source_group") not in allowed_source_groups:
+            continue
+        row = dict(raw)
+        audio = Path(str(row.get("path", ""))).resolve()
+        expected = str(row.get("audio_sha256", row.get("sha256", "")))
+        if not audio.is_file() or not expected or sha256_file(audio) != expected:
+            raise ValueError(f"{kind} audio hash drift: {audio}")
+        row["path"] = str(audio)
+        row["audio_sha256"] = expected
+        result.append(row)
+    identities = [str(row.get("source_id", "")) for row in result]
+    if any(not identity for identity in identities) or len(identities) != len(set(identities)):
+        raise ValueError(f"{kind} rows require unique source_id values")
+    return sorted(result, key=lambda row: str(row["source_id"]))
+
+
+def _background_rows(path: Path | None) -> list[dict[str, Any]]:
+    return _eligible_audio_rows(
+        path,
+        allowed_source_groups=frozenset(("public_speech", "music", "background_noise")),
+        kind="background",
+    )
+
+
+def _rir_rows(path: Path | None) -> list[dict[str, Any]]:
+    return _eligible_audio_rows(path, kind="RIR")
 
 
 def build(
@@ -322,8 +396,10 @@ def build(
     source_pronunciation_audit: Path | None = None,
     source_manifest: Path | None = None,
     background_manifest: Path | None = None,
+    rir_manifest: Path | None = None,
     negative_manifest: Path | None = None,
     overlay_snr_db: Sequence[float] = DEFAULT_OVERLAY_SNR_DB,
+    gain_db_range: tuple[float, float] = DEFAULT_GAIN_DB_RANGE,
     negative_groups: Sequence[str] = (),
     include_inherited_alignments: bool = False,
     states_per_phone: int = 1,
@@ -369,11 +445,15 @@ def build(
             seen.add(source_id)
             direct.append(dict(row))
     backgrounds = _background_rows(background_manifest)
+    rirs = _rir_rows(rir_manifest)
     snrs = tuple(float(value) for value in overlay_snr_db)
     if any(not math.isfinite(value) for value in snrs):
         raise ValueError("overlay SNRs must be finite")
     if snrs and not backgrounds:
         raise ValueError("training overlays require a background manifest")
+    gain_min, gain_max = (float(value) for value in gain_db_range)
+    if not math.isfinite(gain_min) or not math.isfinite(gain_max) or gain_min > gain_max:
+        raise ValueError("gain range must be finite and ordered")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     feature_rows: dict[str, list[np.ndarray]] = {
@@ -386,6 +466,9 @@ def build(
     for row in sorted(direct, key=lambda item: (item["split"], item["source_id"])):
         split = str(row["split"])
         source_audio = load_audio(Path(row["path"]))
+        expected_source_hash = str(row.get("audio_sha256", ""))
+        if not expected_source_hash or sha256_file(Path(row["path"])) != expected_source_hash:
+            raise ValueError(f"positive audio hash drift: {row['path']}")
         source_phrase = _span_seconds(row["phrase_span"], "phrase_span")
         variants: list[tuple[str, np.ndarray, float, dict[str, Any] | None]] = []
         clean, translation = place_phrase_context(source_audio, source_phrase)
@@ -408,13 +491,21 @@ def build(
                     source_audio, source_phrase, desired_phrase_center_s=desired
                 )
                 background_row = backgrounds[int(rng.integers(0, len(backgrounds)))]
-                background = _background_context(
+                background, background_crop_start, background_tiled = _background_context(
                     load_audio(Path(background_row["path"])), rng
                 )
                 shifted_phrase = (
                     source_phrase[0] + variant_translation,
                     source_phrase[1] + variant_translation,
                 )
+                rir_row = rirs[int(rng.integers(0, len(rirs)))] if rirs else None
+                rir_arrival_sample = None
+                if rir_row is not None:
+                    foreground, rir_arrival_sample = apply_room_impulse_response(
+                        foreground, load_audio(Path(rir_row["path"]))
+                    )
+                gain_db = float(rng.uniform(gain_min, gain_max))
+                foreground = apply_gain_db(foreground, gain_db)
                 mixed = mix_at_snr(foreground, background, shifted_phrase, snr)
                 variants.append(
                     (
@@ -427,6 +518,14 @@ def build(
                             "background_audio_sha256": background_row.get(
                                 "audio_sha256"
                             ),
+                            "background_source_group": background_row.get("source_group"),
+                            "background_crop_start_sample": background_crop_start,
+                            "background_tiled": background_tiled,
+                            "foreground_gain_db": gain_db,
+                            "rir_source_id": rir_row.get("source_id") if rir_row else None,
+                            "rir_audio_sha256": rir_row.get("audio_sha256") if rir_row else None,
+                            "rir_stratum": rir_row.get("stratum") if rir_row else None,
+                            "rir_arrival_trim_samples": rir_arrival_sample,
                             "seed": variant_seed,
                         },
                     )
@@ -519,15 +618,24 @@ def build(
                 left = (CONTEXT_SAMPLES - len(audio)) // 2
                 context = np.pad(audio, (left, CONTEXT_SAMPLES - len(audio) - left))
             grouped[(split, group)].append(frontend(context))
+        observed_groups = {
+            group for (_, group), values in grouped.items() if values
+        }
+        if observed_groups != allowed:
+            raise ValueError(
+                f"negative groups are absent from every split: {sorted(allowed-observed_groups)}"
+            )
         for split in ("train", "validation", "test"):
             negative_counts[split] = {}
             for group in sorted(allowed):
                 values_for_group = grouped[(split, group)]
                 if not values_for_group:
-                    raise ValueError(f"negative group is empty: {split}/{group}")
+                    continue
                 values = np.stack(values_for_group).astype(np.float32, copy=False)
                 np.save(output_dir / f"negative-{split}-{group}.npy", values)
                 negative_counts[split][group] = len(values)
+            if not negative_counts[split]:
+                raise ValueError(f"negative split is empty: {split}")
 
     report = {
         "schema_version": 3,
@@ -556,6 +664,15 @@ def build(
             if background_manifest is not None
             else None
         ),
+        "rir_manifest": (
+            {
+                "path": str(rir_manifest.resolve()),
+                "sha256": sha256_file(rir_manifest),
+                "eligible_count": len(rirs),
+            }
+            if rir_manifest is not None
+            else None
+        ),
         "negative_manifest": (
             {
                 "path": str(negative_manifest.resolve()),
@@ -575,6 +692,7 @@ def build(
         },
         "target_frame_times_seconds": TARGET_FRAME_TIMES.tolist(),
         "overlay_snr_db": list(snrs),
+        "foreground_gain_db_range": [gain_min, gain_max],
         "include_inherited_alignments": include_inherited_alignments,
         "seed": seed,
         **(
@@ -600,6 +718,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-pronunciation-audit", type=Path)
     parser.add_argument("--source-manifest", type=Path)
     parser.add_argument("--background-manifest", type=Path)
+    parser.add_argument("--rir-manifest", type=Path)
     parser.add_argument(
         "--negative-manifest",
         type=Path,
@@ -609,6 +728,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--overlay-snr-db", type=float, action="append")
+    parser.add_argument("--gain-db-min", type=float, default=DEFAULT_GAIN_DB_RANGE[0])
+    parser.add_argument("--gain-db-max", type=float, default=DEFAULT_GAIN_DB_RANGE[1])
     parser.add_argument("--negative-group", action="append", default=[])
     parser.add_argument(
         "--include-inherited-alignments",
@@ -635,8 +756,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         source_pronunciation_audit=args.source_pronunciation_audit,
         source_manifest=args.source_manifest,
         background_manifest=args.background_manifest,
+        rir_manifest=args.rir_manifest,
         negative_manifest=args.negative_manifest,
         overlay_snr_db=args.overlay_snr_db or DEFAULT_OVERLAY_SNR_DB,
+        gain_db_range=(args.gain_db_min, args.gain_db_max),
         negative_groups=args.negative_group,
         include_inherited_alignments=args.include_inherited_alignments,
         states_per_phone=args.states_per_phone,

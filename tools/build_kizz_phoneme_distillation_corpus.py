@@ -86,10 +86,13 @@ def load_pronunciation_acceptances(audit_path: Path, source_manifest: Path) -> s
     if (
         payload.get("gate_scope") != "independent_source_pronunciation_qc"
         or payload.get("source_manifest_sha256") != sha256_file(source_manifest)
-        or scope.get("gate_mode") != "all"
+        or payload.get("qualified") is not True
+        or scope.get("gate_mode") not in {"all", "training_eligible"}
         or set(scope.get("splits", [])) != {"train", "validation", "test"}
     ):
-        raise ValueError("source pronunciation audit is not the bound all-split gate")
+        raise ValueError(
+            "source pronunciation audit is not the qualified bound all-split gate"
+        )
     results = payload.get("results", [])
     identities = [str(row.get("source_id", "")) for row in results]
     if (
@@ -102,17 +105,25 @@ def load_pronunciation_acceptances(audit_path: Path, source_manifest: Path) -> s
 
 
 def load_device_training_rows(quality_report_path: Path) -> list[dict]:
-    """Resolve the exact 4x4 train-only target-device replay contract."""
+    """Resolve the exact balanced train-only target-device replay contract."""
     quality = json.loads(quality_report_path.read_text())
+    provider_counts = quality.get("counts", {}).get("providers")
+    balanced_count = (
+        next(iter(provider_counts.values()))
+        if isinstance(provider_counts, dict) and provider_counts
+        else None
+    )
     if (
         quality.get("kind") != "kizz_control_teacher_adaptation_device_replay_quality"
         or quality.get("gate_scope") != "train_only_target_channel_positive_quality"
         or quality.get("qualified") is not True
-        or quality.get("counts", {}).get("providers")
-        != {provider: 4 for provider in APPROVED_PROVIDERS}
+        or not isinstance(balanced_count, int)
+        or balanced_count < 1
+        or provider_counts
+        != {provider: balanced_count for provider in APPROVED_PROVIDERS}
     ):
         raise ValueError(
-            "device replay quality report is not the qualified 4x4 contract"
+            "device replay quality report is not a qualified balanced contract"
         )
     inputs = quality.get("inputs", {})
     resolved = {}
@@ -128,10 +139,12 @@ def load_device_training_rows(quality_report_path: Path) -> list[dict]:
         selection.get("kind")
         != "kizz_control_teacher_adaptation_device_replay_selection"
         or selection.get("locked_before_teacher_adaptation") is not True
-        or selection.get("selected_count") != 16
-        or len(selected) != 16
+        or selection.get("providers") not in (None, list(APPROVED_PROVIDERS))
+        or selection.get("per_provider") not in (None, balanced_count)
+        or selection.get("selected_count") != balanced_count * len(APPROVED_PROVIDERS)
+        or len(selected) != balanced_count * len(APPROVED_PROVIDERS)
     ):
-        raise ValueError("device replay selection is not the locked 16-row contract")
+        raise ValueError("device replay selection is not the locked balanced contract")
     sources = {}
     for row in selected:
         validate_aligned_positive(row, KIZZ_CONTROL)
@@ -172,8 +185,11 @@ def load_device_training_rows(quality_report_path: Path) -> list[dict]:
     corpus = json.loads(resolved["corpus"].read_text())
     captures = corpus.get("captures", [])
     results = {str(row.get("capture_id")): row for row in quality.get("results", [])}
-    if len(captures) != 16 or len(results) != 16:
-        raise ValueError("device replay corpus/quality result count is not exactly 16")
+    expected_total = balanced_count * len(APPROVED_PROVIDERS)
+    if len(captures) != expected_total or len(results) != expected_total:
+        raise ValueError(
+            "device replay corpus/quality result count does not match the locked balance"
+        )
 
     corpus_root = resolved["corpus"].parent
     rows = []
@@ -253,10 +269,11 @@ def load_device_training_rows(quality_report_path: Path) -> list[dict]:
             }
         )
     if (
-        counts != Counter({provider: 4 for provider in APPROVED_PROVIDERS})
-        or len(voices) != 16
+        counts
+        != Counter({provider: balanced_count for provider in APPROVED_PROVIDERS})
+        or len(voices) != expected_total
     ):
-        raise ValueError("device replay provider/voice balance is not exactly 4x4")
+        raise ValueError("device replay provider/voice balance is not exact")
     return sorted(
         rows, key=lambda row: (row["provider"], row["voice"], row["audio_sha256"])
     )

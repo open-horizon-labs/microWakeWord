@@ -127,13 +127,42 @@ def validate_feature_provenance(
         raise ValueError(
             "feature provenance positive count does not match training arrays"
         )
-    if any(
-        item.get("split") == "train"
-        and item.get("variant")
-        not in {"clean", "overlay-0", "overlay-1", "overlay-2", "overlay-3"}
-        for item in report.get("examples", [])
-    ):
-        raise ValueError("feature provenance contains an undeclared training variant")
+    overlay_snr_db = report.get("overlay_snr_db")
+    if not isinstance(overlay_snr_db, list):
+        raise ValueError("feature provenance does not declare overlay variants")
+    expected_train_variants = {"clean"} | {
+        f"overlay-{index}" for index in range(len(overlay_snr_db))
+    }
+    variants_by_parent: dict[str, list[str]] = {}
+    for item in report.get("examples", []):
+        split = item.get("split")
+        variant = item.get("variant")
+        augmentation = item.get("augmentation")
+        if split == "train":
+            parent_source_id = item.get("parent_source_id")
+            if not parent_source_id or variant not in expected_train_variants:
+                raise ValueError(
+                    "feature provenance contains an undeclared training variant"
+                )
+            if (variant == "clean") != (augmentation is None):
+                raise ValueError(
+                    "feature provenance training augmentation does not match variant"
+                )
+            variants_by_parent.setdefault(parent_source_id, []).append(variant)
+        elif split in {"validation", "test"}:
+            if variant != "clean" or augmentation is not None:
+                raise ValueError(
+                    "feature provenance evaluation examples must be clean"
+                )
+    for parent_source_id, variants in variants_by_parent.items():
+        if len(variants) != len(set(variants)):
+            raise ValueError(
+                f"feature provenance repeats a training variant for {parent_source_id}"
+            )
+        if set(variants) != expected_train_variants:
+            raise ValueError(
+                f"feature provenance training variants are incomplete for {parent_source_id}"
+            )
     return report
 
 
@@ -429,6 +458,7 @@ def evaluate_validation_checkpoint(
     batch_size: int,
     seed: int,
     keyword_frame_weight: float = 1.0,
+    selection_min_recall: float | None = None,
 ):
     positives = np.asarray(np.load(positive_features, mmap_mode="r"), dtype=np.float32)
     targets = np.asarray(np.load(positive_targets, mmap_mode="r"), dtype=np.int32)
@@ -483,22 +513,34 @@ def evaluate_validation_checkpoint(
                 "zero_false_accepts": false_accepts == 0,
             }
         )
-    selected = max(
-        ledger,
-        key=lambda item: (
-            item["zero_false_accepts"],
-            item["opportunity_recall"],
-            item["separation"],
-            -item["validation_loss"],
-            item["threshold"],
-        ),
-    )
+    selected = max(ledger, key=lambda item: validation_selection_key(item, selection_min_recall))
     return {
         "selected": selected,
         "ledger": ledger,
         "positive_count": len(positive_scores),
         "negative_count": len(negative_scores),
     }
+
+
+def validation_selection_key(
+    item: Mapping[str, float | bool], selection_min_recall: float | None
+) -> tuple:
+    if selection_min_recall is not None:
+        return (
+            float(item["opportunity_recall"]) >= selection_min_recall,
+            -int(item["false_accepts"]),
+            float(item["opportunity_recall"]),
+            float(item["separation"]),
+            -float(item["validation_loss"]),
+            float(item["threshold"]),
+        )
+    return (
+        bool(item["zero_false_accepts"]),
+        float(item["opportunity_recall"]),
+        float(item["separation"]),
+        -float(item["validation_loss"]),
+        float(item["threshold"]),
+    )
 
 
 def train(args: argparse.Namespace) -> dict:
@@ -652,23 +694,16 @@ def train(args: argparse.Namespace) -> dict:
                 batch_size=args.batch_size,
                 seed=args.seed,
                 keyword_frame_weight=args.keyword_frame_weight,
+                selection_min_recall=args.selection_min_recall,
             )
             selected = validation["selected"]
             entry = {"step": step + 1, **validation}
             selection_ledger.append(entry)
             model.save_weights(output / f"checkpoint-{step + 1:06d}.weights.h5")
-            if best_selection is None or (
-                selected["zero_false_accepts"],
-                selected["opportunity_recall"],
-                selected["separation"],
-                -selected["validation_loss"],
-                selected["threshold"],
-            ) > (
-                best_selection["selected"]["zero_false_accepts"],
-                best_selection["selected"]["opportunity_recall"],
-                best_selection["selected"]["separation"],
-                -best_selection["selected"]["validation_loss"],
-                best_selection["selected"]["threshold"],
+            if best_selection is None or validation_selection_key(
+                selected, args.selection_min_recall
+            ) > validation_selection_key(
+                best_selection["selected"], args.selection_min_recall
             ):
                 best_selection = entry
                 shutil.copyfile(
@@ -772,7 +807,12 @@ def train(args: argparse.Namespace) -> dict:
         "positive_sampling_guard": positive_sampling_guard,
         "batch_mixture_ledger": str(sampling_ledger_path),
         "batch_mixture_ledger_sha256": sha256_file(sampling_ledger_path),
-        "checkpoint_selection": "validation_zero_fp_opportunity_recall_separation_loss",
+        "checkpoint_selection": (
+            "validation_min_false_accepts_subject_to_recall_floor"
+            if args.selection_min_recall is not None
+            else "validation_zero_fp_opportunity_recall_separation_loss"
+        ),
+        "selection_min_recall": args.selection_min_recall,
         "validation_positive_features": str(
             args.validation_positive_features.resolve()
         ),
@@ -867,6 +907,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--log-interval", type=int, default=100)
     parser.add_argument("--validation-interval", type=int, default=100)
     parser.add_argument("--validation-negative-limit", type=int, default=4096)
+    parser.add_argument(
+        "--selection-min-recall",
+        type=float,
+        help=(
+            "Select checkpoints by minimum validation false accepts subject to "
+            "this detector-recall floor; omission preserves zero-FP selection."
+        ),
+    )
     args = parser.parse_args(argv)
     if (
         args.steps < 1
@@ -879,6 +927,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         or args.gradient_clip_norm <= 0
         or args.validation_interval < 1
         or args.validation_negative_limit < 1
+        or (
+            args.selection_min_recall is not None
+            and not 0 < args.selection_min_recall <= 1
+        )
     ):
         parser.error("invalid training objective or schedule")
     args.negative_source_probabilities = dict(args.negative_source_probability)

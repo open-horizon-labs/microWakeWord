@@ -1,0 +1,53 @@
+schema_version: 1
+name: kizz_control_c1_synthetic_bootstrap_teacher_batch_mixture
+deployment_qualification: false
+
+positive_source_guard:
+  splits:
+    train:
+      minimum_families: 4
+      maximum_family_share: 0.35
+    validation:
+      minimum_families: 4
+      maximum_family_share: 0.35
+    test:
+      minimum_families: 4
+      maximum_family_share: 0.35
+
+positive_sampling_guard:
+  mode: uniform_family
+  minimum_families: 4
+  minimum_family_share: 0.24
+  maximum_family_share: 0.26
+
+mixture_guard:
+  schema_version: 1
+  require_all_active_groups: true
+  minimum_realized_samples: 1000
+  tolerances:
+    sample_share: 0.02
+    weighted_pressure_share: 0.02
+  expected:
+    classes:
+      positive:
+        sample_share: 0.50
+        weighted_pressure_share: 0.50
+      negative:
+        sample_share: 0.50
+        weighted_pressure_share: 0.50
+    groups:
+      canonical_positive:
+        sample_share: 0.50
+        weighted_pressure_share: 0.50
+      phonetic_collision:
+        sample_share: 0.125
+        weighted_pressure_share: 0.125
+      public_speech:
+        sample_share: 0.125
+        weighted_pressure_share: 0.125
+      music:
+        sample_share: 0.125
+        weighted_pressure_share: 0.125
+      background_noise:
+        sample_share: 0.125
+        weighted_pressure_share: 0.125

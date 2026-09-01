@@ -11,7 +11,7 @@ from tools.audit_kizz_control_adaptation_replays import audit
 
 
 class AuditKizzControlAdaptationReplaysTests(unittest.TestCase):
-    def _fixture(self, root: Path):
+    def _fixture(self, root: Path, per_provider: int = 4):
         providers = ("assemblyai", "deepgram", "elevenlabs", "kokoro")
         source_rows = []
         captures = []
@@ -19,7 +19,7 @@ class AuditKizzControlAdaptationReplaysTests(unittest.TestCase):
         audio.mkdir()
         t = np.arange(6400, dtype=np.float32) / 16000.0
         for provider_index, provider in enumerate(providers):
-            for variant in range(4):
+            for variant in range(per_provider):
                 frequency = 300 + provider_index * 50 + variant * 7
                 source_values = (
                     0.20
@@ -95,6 +95,51 @@ class AuditKizzControlAdaptationReplaysTests(unittest.TestCase):
             self.assertFalse(failed["qualified"])
             self.assertTrue(
                 any("qualification_voice_overlap" in reason for reason in failed["failure_reasons"])
+            )
+
+    def test_balanced_locked_selection_may_use_three_voices_per_provider(self):
+        with tempfile.TemporaryDirectory() as directory:
+            corpus, selection, qualification = self._fixture(
+                Path(directory), per_provider=3
+            )
+            report = audit(corpus, selection, qualification)
+            self.assertTrue(report["qualified"], report["failure_reasons"])
+            self.assertEqual(
+                report["counts"]["providers"],
+                {
+                    "assemblyai": 3,
+                    "deepgram": 3,
+                    "elevenlabs": 3,
+                    "kokoro": 3,
+                },
+            )
+
+    def test_validation_split_requires_validation_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            corpus, selection, qualification = self._fixture(
+                Path(directory), per_provider=3
+            )
+            payload = json.loads(corpus.read_text())
+            for capture in payload["captures"]:
+                capture["split"] = "validation"
+                capture["conditions"]["evidence_role"] = (
+                    "teacher_adaptation_target_channel_validation_positive"
+                )
+            corpus.write_text(json.dumps(payload))
+
+            report = audit(
+                corpus,
+                selection,
+                qualification,
+                expected_split="validation",
+            )
+            self.assertTrue(report["qualified"], report["failure_reasons"])
+            self.assertEqual(
+                report["gate_scope"],
+                "validation_only_target_channel_positive_quality",
+            )
+            self.assertFalse(
+                audit(corpus, selection, qualification)["qualified"]
             )
 
 

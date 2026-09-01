@@ -3,10 +3,25 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.distill_kizz_student import require_teacher_qualification, sha256_file
+from tools.distill_kizz_student import (
+    detector_cache_teacher,
+    require_detector_teacher_gate,
+    require_teacher_qualification,
+    sha256_file,
+    student_flags,
+)
 
 
 class DistillKizzStudentGateTests(unittest.TestCase):
+    def test_small_detector_architecture_preserves_geometry(self):
+        reference = student_flags(12)
+        small = student_flags(12, "control_mixconv_small")
+        self.assertEqual(small.mixconv_kernel_sizes, reference.mixconv_kernel_sizes)
+        self.assertEqual(small.stride, reference.stride)
+        self.assertEqual(small.num_states, reference.num_states)
+        self.assertEqual(small.pointwise_filters, "48,48,48,48")
+        self.assertEqual(small.first_conv_filters, 24)
+
     def reports(self, root: Path) -> tuple[Path, Path, Path]:
         weights = root / "teacher.weights.h5"
         weights.write_bytes(b"teacher")
@@ -86,6 +101,128 @@ class DistillKizzStudentGateTests(unittest.TestCase):
             continuous.write_text(json.dumps(report))
             with self.assertRaisesRegex(ValueError, "FAPH upper bound"):
                 require_teacher_qualification(teacher, weights, continuous)
+
+    def test_detector_gate_permits_distillation_but_not_deployment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            weights = root / "best.weights.h5"
+            weights.write_bytes(b"detector-teacher")
+            training = root / "teacher-training.json"
+            training.write_text("{}", encoding="utf-8")
+            feature = root / "feature-provenance.json"
+            feature.write_text("{}", encoding="utf-8")
+            gate = root / "detector-gate.json"
+            gate.write_text(
+                json.dumps(
+                    {
+                        "gate_scope": "teacher_detector_synthetic_bootstrap_prequalification",
+                        "qualified": True,
+                        "eligible_for_detector_distillation": True,
+                        "deployment_qualification": False,
+                        "eligible_for_final_deployment": False,
+                        "selected_checkpoint": {
+                            "best_weights_path": str(weights.resolve()),
+                            "best_weights_sha256": sha256_file(weights),
+                        },
+                        "selection": {
+                            "split": "validation",
+                            "minimum_recall": 0.95,
+                            "opportunity_recall": 0.97,
+                            "threshold": -1.0,
+                        },
+                        "training_report": {
+                            "path": str(training.resolve()),
+                            "sha256": sha256_file(training),
+                        },
+                        "bindings": {
+                            "feature_provenance": {
+                                "path": str(feature.resolve()),
+                                "sha256": sha256_file(feature),
+                            }
+                        },
+                        "topology": {
+                            "phones": ["k"],
+                            "states_per_phone": 1,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report = require_detector_teacher_gate(gate, weights)
+            self.assertTrue(report["eligible_for_detector_distillation"])
+            self.assertFalse(report["deployment_qualification"])
+
+    def test_detector_gate_rejects_recall_or_provenance_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            weights = root / "best.weights.h5"
+            weights.write_bytes(b"detector-teacher")
+            training = root / "teacher-training.json"
+            training.write_text("{}", encoding="utf-8")
+            payload = {
+                "gate_scope": "teacher_detector_synthetic_bootstrap_prequalification",
+                "qualified": True,
+                "eligible_for_detector_distillation": True,
+                "deployment_qualification": False,
+                "eligible_for_final_deployment": False,
+                "selected_checkpoint": {
+                    "best_weights_path": str(weights.resolve()),
+                    "best_weights_sha256": sha256_file(weights),
+                },
+                "selection": {
+                    "split": "validation",
+                    "minimum_recall": 0.95,
+                    "opportunity_recall": 0.94,
+                    "threshold": -1.0,
+                },
+                "training_report": {
+                    "path": str(training.resolve()),
+                    "sha256": sha256_file(training),
+                },
+                "bindings": {},
+                "topology": {"phones": ["k"], "states_per_phone": 1},
+            }
+            gate = root / "detector-gate.json"
+            gate.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "recall contract"):
+                require_detector_teacher_gate(gate, weights)
+            payload["selection"]["opportunity_recall"] = 0.97
+            gate.write_text(json.dumps(payload), encoding="utf-8")
+            training.write_text('{"drift": true}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "provenance hash drift"):
+                require_detector_teacher_gate(gate, weights)
+
+    def test_detector_cache_binds_teacher_and_all_arrays(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            weights = root / "best.weights.h5"
+            weights.write_bytes(b"teacher")
+            outputs = {}
+            for name in ("features", "targets", "labels", "teacher_logits"):
+                path = root / f"{name}.npy"
+                path.write_bytes(name.encode())
+                outputs[name] = {
+                    "path": str(path.resolve()),
+                    "sha256": sha256_file(path),
+                }
+            metadata = {
+                "schema_version": 2,
+                "cache_role": "detector_student_distillation",
+                "deployment_qualification": False,
+                "selected_teacher": {
+                    "best_weights": {
+                        "path": str(weights.resolve()),
+                        "sha256": sha256_file(weights),
+                    }
+                },
+                "outputs": outputs,
+            }
+            selected, binding = detector_cache_teacher(metadata)
+            self.assertEqual(selected, weights.resolve())
+            self.assertEqual(binding["sha256"], sha256_file(weights))
+            (root / "teacher_logits.npy").write_bytes(b"drift")
+            with self.assertRaisesRegex(ValueError, "teacher_logits hash drift"):
+                detector_cache_teacher(metadata)
 
 
 if __name__ == "__main__":

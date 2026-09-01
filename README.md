@@ -51,34 +51,28 @@ phrase + pronunciations + confusable speech
 When a gate fails, revise the recipe, corpus balance, or training configuration.
 Record rejected candidates; aggregate scores never satisfy a release gate.
 
-## Worked recipe: Kizz
+## Worked recipe: Kizz Control
 
-The [Kizz recipe](recipes/kizz/README.md) treats natural readings of **HiPhi
-Kizz** as one wake class. Bare `Kizz`, `kids`, `kiss`, `quiz`, incomplete
-phrases, and phrases with the wrong prefix or suffix are negatives.
+The current [Kizz Control cascade recipe](recipes/kizz/CASCADE_V9_RECIPE.md)
+is a reproducible three-stage path for StackChan: a permissive ordered INT8
+detector, a compact device-adapted INT8 DS-CNN verifier, and an independent
+ordered verifier. The machine-readable graph and resumable runner parallelize
+source synthesis and locked continuous evaluation while enforcing validation-
+only selection, frozen fresh test, evidence hashes, and explicit paid-call
+authority.
 
-V19 remains the live-recall control, but its live precision is unacceptable.
-V34 is the strongest v19-derived offline precision/separation candidate: its
-best recorded point accepted 683/1,715 positives and 6/768 connected negatives.
-That is only 39.8% recall, so v34 is also not a deployable replacement or a
-hardware-qualified model.
-We rebuilt the active Kizz recipe from a new manifest that lists the exact
-eligible audio files and their hash. It excludes the old Piper lineage and
-inherited feature caches. We tested two larger offline models that could teach
-a small firmware model; the results are documented in the
-[clean-slate comparison](recipes/kizz/CLEAN_SLATE_V2_C_D_RESULTS.md): C, a
-microfrontend ordered-state teacher, was the only candidate worth distilling;
-D, a WavLM waveform teacher, failed the false-wake limit. The aligned C
-student reached 72.62% recall with 0/560 observed false accepts over 1,456
-seconds of offline negative exposure, but that was not a production
-qualification. Read the
-[teacher → student salvage report](recipes/kizz/SALVAGE_TEACHER_STUDENT_V1.md),
-[aligned distillation record](recipes/kizz/TEACHER_DISTILLATION_ALIGNED_V1.md),
-and [experiment ledger](recipes/kizz/EXPERIMENTS.md) before starting another
-run. The separate aligned teacher/student artifact was flashed to StackChan; it
-produced frequent live false wakes. The student was
-rejected and firmware reverted to the ESP-IDF wake-word model. No Kizz model is
-currently hardware-qualified.
+The reference cascade retained 12/12 fresh StackChan-channel positives. Over a
+locked 100.47-hour negative corpus it accepted 39 false wakes (`0.388/hour`,
+about one every 2.6 hours), and only 5.19% of detector candidates reached the
+expensive ordered stage. The maintainer accepted this practical operating
+point. It does not pass the stricter formal `0.1/hour` upper-confidence gate,
+and host evidence is not physical ESP32-S3 performance qualification.
+
+Exact reference models and hashes are checked in under
+[`recipes/kizz/reference-cascade-v9`](recipes/kizz/reference-cascade-v9/README.md).
+Earlier HiPhi Kizz and single-student attempts remain as failure evidence in
+the [experiment ledger](recipes/kizz/EXPERIMENTS.md); they are not the current
+recipe.
 
 ## Start here
 

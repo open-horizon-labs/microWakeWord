@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Compose Kizz Control C1 with phrase-independent frozen negatives.
 
-Only eligible C1 source positives/collisions enter.  From the older canonical
-inventory, this tool reuses public speech, music, background noise, and explicit
-device collision recordings; old phrase-specific synthetic collisions and
-overlays are excluded.  A second manifest contains an equal-count deterministic
-overlay pool, preventing the largest archived source from dominating positive
-augmentation by row count.
+Only eligible C1 source positives/collisions enter. Frozen negatives retain
+their train/validation/test role: train rows may augment or train a model, while
+non-training ESC-50 rows remain clean evaluation evidence. Locked deployment or
+continuous-stream anchors never enter. A second manifest contains an equal-count
+deterministic train-only overlay pool, preventing the largest archived source
+from dominating positive augmentation by row count.
 """
 
 from __future__ import annotations
@@ -61,6 +61,26 @@ def _stable_sample(
     return ranked[: min(count, len(ranked))]
 
 
+def reusable_frozen_negatives(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Keep split-aware reusable negatives without admitting locked anchors."""
+    selected = []
+    for raw in rows:
+        if (
+            int(raw.get("label", -1)) != 0
+            or raw.get("source_group") not in REUSABLE_NEGATIVE_GROUPS
+            or raw.get("locked_deployment_anchor") is True
+            or raw.get("split") not in {"train", "validation", "test"}
+        ):
+            continue
+        row = dict(raw)
+        if row["split"] == "train" and row.get("training_eligible") is not True:
+            raise ValueError("train negative must be explicitly training eligible")
+        if row["split"] != "train" and row.get("training_eligible") is not False:
+            raise ValueError("evaluation negative must be explicitly non-training")
+        selected.append(row)
+    return selected
+
+
 def compose(
     source_manifest: Path,
     frozen_manifest: Path,
@@ -98,17 +118,21 @@ def compose(
             raise ValueError(
                 "causally unlearnable suffix-extension negative reached composition"
             )
-    mix = corpus_mix_report(source["examples"])
+    provider_policy = source.get("positive_provider_policy", {})
+    expected_positive_providers = provider_policy.get(
+        "expected_positive_providers"
+    )
+    mix = corpus_mix_report(
+        source["examples"],
+        **(
+            {"expected_positive_providers": expected_positive_providers}
+            if expected_positive_providers is not None
+            else {}
+        ),
+    )
     if not mix["qualified"]:
         raise ValueError(f"C1 source mix does not qualify: {mix['violations']}")
-    frozen_rows = [
-        dict(row)
-        for row in frozen["examples"]
-        if int(row.get("label", -1)) == 0
-        and row.get("training_eligible") is True
-        and row.get("source_group") in REUSABLE_NEGATIVE_GROUPS
-        and not row.get("locked_deployment_anchor")
-    ]
+    frozen_rows = reusable_frozen_negatives(frozen["examples"])
     rows = source_rows + frozen_rows
     seen_paths: set[str] = set()
     seen_audio: set[str] = set()

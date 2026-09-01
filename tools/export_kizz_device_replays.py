@@ -70,12 +70,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     audit = json.loads(args.source_pronunciation_audit.read_text())
     selected_hashes = set(selection.get("selected_audio_sha256", []))
     captured_hashes = {str(row["source_audio_sha256"]) for row in rows}
+    selected_count = selection.get("selected_count")
+    per_provider = selection.get("per_provider")
     if (
         selection.get("locked_before_teacher_scoring") is not True
-        or selection.get("selected_count") != 24
+        or not isinstance(selected_count, int)
+        or selected_count <= 0
+        or selected_count != len(rows)
+        or not isinstance(per_provider, int)
+        or per_provider <= 0
         or selected_hashes != captured_hashes
     ):
-        raise ValueError("device captures do not exactly realize the locked 24-source selection")
+        raise ValueError("device captures do not exactly realize the locked source selection")
     if (
         audit.get("gate_scope") != "independent_source_pronunciation_qc"
         or audit.get("qualified") is not True
@@ -90,8 +96,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         provider = str(row["conditions"]["source_provider"])
         provider_counts[provider] = provider_counts.get(provider, 0) + 1
         voices.setdefault(provider, set()).add(str(row["conditions"]["source_voice"]))
-    if set(provider_counts.values()) != {6} or len(provider_counts) != 4:
-        raise ValueError(f"device replay provider balance differs from 6x4: {provider_counts}")
+    if set(provider_counts.values()) != {per_provider} or len(provider_counts) != 4:
+        raise ValueError(
+            f"device replay provider balance differs from {per_provider}x4: "
+            f"{provider_counts}"
+        )
     if any(len(values) < 2 for values in voices.values()):
         raise ValueError("device replay evidence collapsed a provider to one voice")
     payload = {

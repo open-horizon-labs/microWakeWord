@@ -320,7 +320,14 @@ def load_hf_teacher(
         else {"revision": revision, "local_files_only": local_files_only}
     )
     extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_id, **common)
-    tokenizer = Wav2Vec2PhonemeCTCTokenizer.from_pretrained(model_id, **common)
+    # Every training/evaluation path supplies already-canonical IPA token IDs;
+    # the processor is used only for waveform feature extraction.  Disabling
+    # text phonemization avoids an unnecessary host espeak dependency and also
+    # prevents Transformers 4.55 from swallowing a phonemizer RuntimeError and
+    # returning the boolean ``False`` as the tokenizer.
+    tokenizer = Wav2Vec2PhonemeCTCTokenizer.from_pretrained(
+        model_id, do_phonemize=False, **common
+    )
     processor = Wav2Vec2Processor(feature_extractor=extractor, tokenizer=tokenizer)
     model = Wav2Vec2ForCTC.from_pretrained(model_id, **common)
     target = torch.device(device)

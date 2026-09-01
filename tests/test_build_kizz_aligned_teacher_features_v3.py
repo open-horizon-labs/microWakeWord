@@ -11,6 +11,7 @@ import soundfile as sf
 from microwakeword.ordered_state import KIZZ_PHONES
 from tools.build_kizz_aligned_teacher_features_v3 import (
     CONTEXT_SAMPLES,
+    apply_room_impulse_response,
     build,
     mix_at_snr,
     place_phrase_context,
@@ -101,8 +102,13 @@ class BuildKizzAlignedTeacherFeaturesV3Test(unittest.TestCase):
                                 "path": str(background),
                                 "label": 0,
                                 "split": "train",
+                                "training_eligible": True,
+                                "locked_deployment_anchor": False,
                                 "source_group": "music",
                                 "source_id": "music-1",
+                                "audio_sha256": hashlib.sha256(
+                                    background.read_bytes()
+                                ).hexdigest(),
                             }
                         ]
                     }
@@ -138,6 +144,174 @@ class BuildKizzAlignedTeacherFeaturesV3Test(unittest.TestCase):
             self.assertTrue(
                 all(row["provider"] == "test-provider" for row in report["examples"])
             )
+            overlay = next(
+                row for row in report["examples"] if row["variant"] == "overlay-0"
+            )
+            self.assertEqual(overlay["augmentation"]["background_source_group"], "music")
+            self.assertIn("background_crop_start_sample", overlay["augmentation"])
+            self.assertIn("foreground_gain_db", overlay["augmentation"])
+            self.assertIsNone(overlay["augmentation"]["rir_source_id"])
+
+    def test_train_overlay_uses_speech_rir_gain_and_keeps_eval_clean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            positive = root / "positive.wav"
+            sf.write(
+                positive,
+                np.sin(np.linspace(0, 200, 24_000)).astype(np.float32) * 0.1,
+                16_000,
+            )
+            positives = root / "positives.json"
+            positives.write_text(
+                json.dumps(
+                    {
+                        "examples": [
+                            aligned_row(positive, f"source-{split}", split)
+                            for split in ("train", "validation", "test")
+                        ]
+                    }
+                )
+            )
+            speech = root / "speech.wav"
+            sf.write(speech, np.ones(60_000, dtype=np.float32) * 0.01, 16_000)
+            backgrounds = root / "backgrounds.json"
+            backgrounds.write_text(
+                json.dumps(
+                    {
+                        "examples": [
+                            {
+                                "path": str(speech),
+                                "label": 0,
+                                "split": "train",
+                                "training_eligible": True,
+                                "locked_deployment_anchor": False,
+                                "source_group": "public_speech",
+                                "source_id": "speech-1",
+                                "audio_sha256": hashlib.sha256(
+                                    speech.read_bytes()
+                                ).hexdigest(),
+                            }
+                        ]
+                    }
+                )
+            )
+            rir = root / "rir.wav"
+            impulse = np.zeros(2_000, dtype=np.float32)
+            impulse[120] = 1.0
+            impulse[400] = 0.3
+            sf.write(rir, impulse, 16_000, subtype="FLOAT")
+            rirs = root / "rirs.json"
+            rirs.write_text(
+                json.dumps(
+                    {
+                        "examples": [
+                            {
+                                "path": str(rir),
+                                "split": "train",
+                                "training_eligible": True,
+                                "locked_deployment_anchor": False,
+                                "source_id": "rir-1",
+                                "stratum": "real",
+                                "audio_sha256": hashlib.sha256(
+                                    rir.read_bytes()
+                                ).hexdigest(),
+                            }
+                        ]
+                    }
+                )
+            )
+            fake_features = np.zeros((260, 40), dtype=np.float32)
+            with mock.patch(
+                "tools.build_kizz_aligned_teacher_features_v3.frontend",
+                return_value=fake_features,
+            ):
+                report = build(
+                    [positives],
+                    root / "out",
+                    background_manifest=backgrounds,
+                    rir_manifest=rirs,
+                    overlay_snr_db=(7.0,),
+                    gain_db_range=(-4.0, -4.0),
+                    seed=13,
+                )
+            self.assertEqual(
+                report["positive_counts"], {"train": 2, "validation": 1, "test": 1}
+            )
+            overlay = next(row for row in report["examples"] if row["variant"] == "overlay-0")
+            augmentation = overlay["augmentation"]
+            self.assertEqual(augmentation["background_source_group"], "public_speech")
+            self.assertEqual(augmentation["rir_source_id"], "rir-1")
+            self.assertEqual(augmentation["rir_stratum"], "real")
+            self.assertEqual(augmentation["rir_arrival_trim_samples"], 120)
+            self.assertEqual(augmentation["foreground_gain_db"], -4.0)
+            self.assertEqual(
+                [row["variant"] for row in report["examples"] if row["split"] != "train"],
+                ["clean", "clean"],
+            )
+            self.assertEqual(report["rir_manifest"]["eligible_count"], 1)
+
+    def test_rejects_background_hash_drift_and_locked_holdout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            positive = root / "positive.wav"
+            sf.write(positive, np.zeros(24_000, dtype=np.float32), 16_000)
+            positives = root / "positives.json"
+            positives.write_text(
+                json.dumps(
+                    {
+                        "examples": [
+                            aligned_row(positive, f"source-{split}", split)
+                            for split in ("train", "validation", "test")
+                        ]
+                    }
+                )
+            )
+            background = root / "background.wav"
+            sf.write(background, np.ones(16_000, dtype=np.float32), 16_000)
+            manifest = root / "backgrounds.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "examples": [
+                            {
+                                "path": str(background),
+                                "label": 0,
+                                "split": "train",
+                                "training_eligible": True,
+                                "locked_deployment_anchor": False,
+                                "source_group": "background_noise",
+                                "source_id": "drifted",
+                                "audio_sha256": "0" * 64,
+                            }
+                        ]
+                    }
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "background audio hash drift"):
+                build(
+                    [positives],
+                    root / "out",
+                    background_manifest=manifest,
+                    overlay_snr_db=(10.0,),
+                )
+
+            payload = json.loads(manifest.read_text())
+            payload["examples"][0].update(
+                {
+                    "audio_sha256": hashlib.sha256(background.read_bytes()).hexdigest(),
+                    "split": "test",
+                    "training_eligible": False,
+                    "locked_deployment_anchor": True,
+                }
+            )
+            manifest.write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ValueError, "training overlays require"):
+                build(
+                    [positives],
+                    root / "locked",
+                    background_manifest=manifest,
+                    overlay_snr_db=(10.0,),
+                )
 
     def test_two_states_per_phone_produce_sixteen_state_targets(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -190,6 +364,7 @@ class BuildKizzAlignedTeacherFeaturesV3Test(unittest.TestCase):
                 json.dumps(
                     {
                         "gate_scope": "independent_source_pronunciation_qc",
+                        "qualified": True,
                         "source_manifest_sha256": hashlib.sha256(
                             source_manifest.read_bytes()
                         ).hexdigest(),
@@ -294,12 +469,85 @@ class BuildKizzAlignedTeacherFeaturesV3Test(unittest.TestCase):
                 str(negative_manifest.resolve()),
             )
 
+    def test_negative_groups_may_be_train_only_when_each_eval_split_remains_nonempty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "audio.wav"
+            sf.write(audio, np.zeros(24_000, dtype=np.float32), 16_000)
+            positives = root / "positives.json"
+            positives.write_text(
+                json.dumps(
+                    {
+                        "examples": [
+                            aligned_row(audio, f"positive-{split}", split)
+                            for split in ("train", "validation", "test")
+                        ]
+                    }
+                )
+            )
+            negatives = root / "negatives.json"
+            negatives.write_text(
+                json.dumps(
+                    {
+                        "examples": [
+                            {
+                                "path": str(audio),
+                                "label": 0,
+                                "split": split,
+                                "source_group": "background_noise",
+                            }
+                            for split in ("train", "validation", "test")
+                        ]
+                        + [
+                            {
+                                "path": str(audio),
+                                "label": 0,
+                                "split": "train",
+                                "source_group": "music",
+                            }
+                        ]
+                    }
+                )
+            )
+            with mock.patch(
+                "tools.build_kizz_aligned_teacher_features_v3.frontend",
+                return_value=np.zeros((260, 40), dtype=np.float32),
+            ):
+                report = build(
+                    [positives],
+                    root / "out",
+                    negative_manifest=negatives,
+                    negative_groups=("background_noise", "music"),
+                    overlay_snr_db=(),
+                )
+            self.assertEqual(
+                report["negative_counts"],
+                {
+                    "train": {"background_noise": 1, "music": 1},
+                    "validation": {"background_noise": 1},
+                    "test": {"background_noise": 1},
+                },
+            )
+
     def test_snr_mixer_preserves_shape_and_is_finite(self):
         foreground = np.ones(CONTEXT_SAMPLES, dtype=np.float32) * 0.1
         background = np.ones(CONTEXT_SAMPLES, dtype=np.float32) * 0.02
         mixed = mix_at_snr(foreground, background, (0.4, 1.0), 10.0)
         self.assertEqual(mixed.shape, foreground.shape)
         self.assertTrue(np.all(np.isfinite(mixed)))
+
+    def test_rir_trims_prearrival_and_rejects_silence(self):
+        foreground = np.zeros(CONTEXT_SAMPLES, dtype=np.float32)
+        foreground[100] = 0.5
+        rir = np.zeros(500, dtype=np.float32)
+        rir[42] = 1.0
+        rir[90] = 0.25
+        convolved, trim = apply_room_impulse_response(foreground, rir)
+        self.assertEqual(trim, 42)
+        self.assertEqual(convolved.shape, foreground.shape)
+        self.assertGreater(float(np.abs(convolved).sum()), 0.5)
+        with self.assertRaisesRegex(ValueError, "usable impulse"):
+            apply_room_impulse_response(foreground, np.zeros(500, dtype=np.float32))
 
 
 if __name__ == "__main__":

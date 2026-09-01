@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualify train-voice StackChan replays before teacher adaptation."""
+"""Qualify split-bound StackChan replays before model adaptation/evaluation."""
 
 from __future__ import annotations
 
@@ -17,7 +17,10 @@ from microwakeword.kizz_phoneme_teacher import TARGET_SAMPLE_RATE, sha256_file
 
 
 PROVIDERS = ("assemblyai", "deepgram", "elevenlabs", "kokoro")
-EVIDENCE_ROLE = "teacher_adaptation_target_channel_positive"
+EVIDENCE_ROLES = {
+    "train": "teacher_adaptation_target_channel_positive",
+    "validation": "teacher_adaptation_target_channel_validation_positive",
+}
 
 
 def _examples(path: Path) -> list[dict]:
@@ -82,12 +85,22 @@ def audit(
     max_clip_percent: float = 0.10,
     min_lag_seconds: float = 0.20,
     max_lag_seconds: float = 1.50,
+    expected_split: str = "train",
 ) -> dict:
+    if expected_split not in EVIDENCE_ROLES:
+        raise ValueError(f"unsupported expected split: {expected_split}")
+    expected_role = EVIDENCE_ROLES[expected_split]
     corpus_payload = json.loads(corpus.read_text())
     selection_payload = json.loads(selection.read_text())
     captures = [dict(row) for row in corpus_payload.get("captures", [])]
     selected = [dict(row) for row in selection_payload.get("selected_examples", [])]
     selected_by_hash = {str(row.get("audio_sha256", "")): row for row in selected}
+    selected_counts: Counter[str] = Counter()
+    selected_voices: dict[str, set[str]] = defaultdict(set)
+    for row in selected:
+        provider, voice = _provider_voice(row)
+        selected_counts[provider] += 1
+        selected_voices[provider].add(voice)
     heldout_voices = {_provider_voice(row) for row in _examples(qualification_evidence)}
     reasons = []
     results = []
@@ -106,8 +119,8 @@ def audit(
         row_reasons = []
         if (
             capture.get("truth") != "positive"
-            or capture.get("split") != "train"
-            or conditions.get("evidence_role") != EVIDENCE_ROLE
+            or capture.get("split") != expected_split
+            or conditions.get("evidence_role") != expected_role
         ):
             row_reasons.append("capture_role_or_split_invalid")
         if provider_voice in heldout_voices:
@@ -163,14 +176,16 @@ def audit(
     selected_hashes = set(selected_by_hash)
     if captured_source_hashes != selected_hashes:
         reasons.append("captures_do_not_exactly_realize_locked_selection")
-    if provider_counts != Counter({provider: 4 for provider in PROVIDERS}):
-        reasons.append("provider_counts_not_exactly_four_each")
-    if any(len(provider_voices[provider]) != 4 for provider in PROVIDERS):
-        reasons.append("provider_voice_counts_not_exactly_four_each")
+    if provider_counts != selected_counts:
+        reasons.append("provider_counts_do_not_match_locked_selection")
+    if any(provider_voices[provider] != selected_voices[provider] for provider in PROVIDERS):
+        reasons.append("provider_voices_do_not_match_locked_selection")
     return {
         "schema_version": 1,
         "kind": "kizz_control_teacher_adaptation_device_replay_quality",
-        "gate_scope": "train_only_target_channel_positive_quality",
+        "gate_scope": f"{expected_split}_only_target_channel_positive_quality",
+        "expected_split": expected_split,
+        "expected_evidence_role": expected_role,
         "qualified": not reasons,
         "inputs": {
             "corpus": str(corpus.resolve()),
@@ -206,11 +221,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--selection", type=Path, required=True)
     parser.add_argument("--qualification-evidence", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--expected-split",
+        choices=sorted(EVIDENCE_ROLES),
+        default="train",
+    )
     args = parser.parse_args(argv)
     report = audit(
         args.corpus.resolve(),
         args.selection.resolve(),
         args.qualification_evidence.resolve(),
+        expected_split=args.expected_split,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

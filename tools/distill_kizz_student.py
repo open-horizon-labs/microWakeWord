@@ -71,13 +71,109 @@ def require_teacher_qualification(
     return report, continuous
 
 
-def student_flags(num_states: int = 23) -> SimpleNamespace:
+def require_detector_teacher_gate(path: Path, teacher_weights: Path) -> dict:
+    report = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        report.get("gate_scope")
+        != "teacher_detector_synthetic_bootstrap_prequalification"
+        or report.get("qualified") is not True
+        or report.get("eligible_for_detector_distillation") is not True
+    ):
+        raise ValueError("detector teacher gate does not permit distillation")
+    if (
+        report.get("deployment_qualification") is not False
+        or report.get("eligible_for_final_deployment") is not False
+    ):
+        raise ValueError("detector teacher gate must remain non-deployment evidence")
+    checkpoint = report.get("selected_checkpoint", {})
+    actual = sha256_file(teacher_weights)
+    if checkpoint.get("best_weights_sha256") != actual:
+        raise ValueError("detector teacher gate is for different weights")
+    declared = checkpoint.get("best_weights_path")
+    if (
+        not isinstance(declared, str)
+        or Path(declared).expanduser().resolve() != teacher_weights.resolve()
+    ):
+        raise ValueError("detector teacher gate weights path differs")
+    selection = report.get("selection", {})
+    if (
+        selection.get("split") != "validation"
+        or float(selection.get("minimum_recall", 0)) < 0.95
+        or float(selection.get("opportunity_recall", 0)) < 0.95
+    ):
+        raise ValueError("detector teacher gate recall contract is too permissive")
+    training = report.get("training_report", {})
+    bindings = report.get("bindings", {})
+    references = [training] + list(bindings.values()) if isinstance(bindings, dict) else []
+    if not references:
+        raise ValueError("detector teacher gate has no provenance bindings")
+    for binding in references:
+        if not isinstance(binding, dict):
+            raise ValueError("detector teacher gate provenance binding is malformed")
+        raw_path = binding.get("path")
+        expected = binding.get("sha256")
+        if not isinstance(raw_path, str) or not isinstance(expected, str):
+            raise ValueError("detector teacher gate provenance binding is incomplete")
+        reference = Path(raw_path).expanduser().resolve()
+        if not reference.is_file() or sha256_file(reference) != expected:
+            raise ValueError("detector teacher gate provenance hash drift")
+    topology = report.get("topology")
+    if not isinstance(topology, dict):
+        raise ValueError("detector teacher gate has no topology")
+    return report
+
+
+def detector_cache_teacher(cache_metadata: dict) -> tuple[Path, dict]:
+    if (
+        cache_metadata.get("schema_version") != 2
+        or cache_metadata.get("cache_role") != "detector_student_distillation"
+        or cache_metadata.get("deployment_qualification") is not False
+    ):
+        raise ValueError("cache is not a non-deployment detector distillation cache")
+    selected = cache_metadata.get("selected_teacher", {})
+    binding = selected.get("best_weights", {}) if isinstance(selected, dict) else {}
+    raw_path = binding.get("path")
+    expected = binding.get("sha256")
+    if not isinstance(raw_path, str) or not isinstance(expected, str):
+        raise ValueError("detector cache has no selected teacher binding")
+    weights = Path(raw_path).expanduser().resolve()
+    if not weights.is_file() or sha256_file(weights) != expected:
+        raise ValueError("detector cache selected teacher hash drift")
+    outputs = cache_metadata.get("outputs")
+    if not isinstance(outputs, dict):
+        raise ValueError("detector cache has no output bindings")
+    for name in ("features", "targets", "labels", "teacher_logits"):
+        output = outputs.get(name, {})
+        raw_output = output.get("path") if isinstance(output, dict) else None
+        output_hash = output.get("sha256") if isinstance(output, dict) else None
+        if not isinstance(raw_output, str) or not isinstance(output_hash, str):
+            raise ValueError(f"detector cache has no {name} binding")
+        output_path = Path(raw_output).expanduser().resolve()
+        if not output_path.is_file() or sha256_file(output_path) != output_hash:
+            raise ValueError(f"detector cache {name} hash drift")
+    return weights, binding
+
+
+def student_flags(
+    num_states: int = 23, architecture: str = "control_mixconv"
+) -> SimpleNamespace:
+    if architecture == "control_mixconv":
+        first_conv_filters = 48
+        pointwise_filters = "96,96,96,96"
+    elif architecture == "control_mixconv_small":
+        # Keep v5c's exact stride, temporal kernels, and decoder-facing output
+        # geometry while reducing the channel dimensions that dominate every
+        # always-on embedded invoke.
+        first_conv_filters = 24
+        pointwise_filters = "48,48,48,48"
+    else:
+        raise ValueError(f"unsupported detector student architecture: {architecture}")
     return SimpleNamespace(
-        pointwise_filters="96,96,96,96",
+        pointwise_filters=pointwise_filters,
         residual_connection="0,0,0,0",
         repeat_in_block="1,1,1,1",
         mixconv_kernel_sizes="[3], [5], [7], [9]",
-        first_conv_filters=48,
+        first_conv_filters=first_conv_filters,
         first_conv_kernel_size=5,
         stride=3,
         num_states=num_states,
@@ -87,8 +183,9 @@ def student_flags(num_states: int = 23) -> SimpleNamespace:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache-prefix", type=Path, required=True)
-    parser.add_argument("--teacher-qualification", type=Path, required=True)
-    parser.add_argument("--continuous-qualification", type=Path, required=True)
+    parser.add_argument("--teacher-qualification", type=Path)
+    parser.add_argument("--continuous-qualification", type=Path)
+    parser.add_argument("--detector-teacher-gate", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--steps", type=int, default=3000)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -116,6 +213,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="apply the slow sequence objective every N batches",
     )
     parser.add_argument("--init-weights", type=Path)
+    parser.add_argument(
+        "--student-architecture",
+        choices=("control_mixconv", "control_mixconv_small"),
+        default="control_mixconv",
+    )
     parser.add_argument("--seed", type=int, default=24105)
     parser.add_argument("--log-interval", type=int, default=100)
     args = parser.parse_args(argv)
@@ -130,12 +232,44 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     prefix = args.cache_prefix
     cache_metadata = json.loads(prefix.with_suffix(".json").read_text())
-    teacher_weights = Path(cache_metadata["teacher_weights"])
-    qualification, continuous_qualification = require_teacher_qualification(
-        args.teacher_qualification,
-        teacher_weights,
-        args.continuous_qualification,
-    )
+    if args.detector_teacher_gate is not None:
+        try:
+            teacher_weights, cache_teacher_binding = detector_cache_teacher(
+                cache_metadata
+            )
+        except ValueError as error:
+            parser.error(str(error))
+    else:
+        teacher_weights = Path(cache_metadata["teacher_weights"])
+        cache_teacher_binding = None
+    if args.detector_teacher_gate is not None:
+        if args.teacher_qualification is not None or args.continuous_qualification is not None:
+            parser.error(
+                "--detector-teacher-gate is mutually exclusive with single-stage qualification"
+            )
+        qualification = require_detector_teacher_gate(
+            args.detector_teacher_gate, teacher_weights
+        )
+        if (
+            qualification["selected_checkpoint"]["best_weights_sha256"]
+            != cache_teacher_binding["sha256"]
+            or qualification["training_report"]["sha256"]
+            != cache_metadata.get("teacher_training", {}).get("sha256")
+        ):
+            parser.error("detector cache and teacher gate provenance differ")
+        continuous_qualification = None
+        student_role = "permissive_detector_candidate_generator"
+    else:
+        if args.teacher_qualification is None or args.continuous_qualification is None:
+            parser.error(
+                "provide --detector-teacher-gate or both teacher and continuous qualifications"
+            )
+        qualification, continuous_qualification = require_teacher_qualification(
+            args.teacher_qualification,
+            teacher_weights,
+            args.continuous_qualification,
+        )
+        student_role = "single_stage_wake_word"
     features = np.load(prefix.with_name("features.npy"), mmap_mode="r")
     targets = np.load(prefix.with_name("targets.npy"), mmap_mode="r")
     labels = np.load(prefix.with_name("labels.npy"), mmap_mode="r")
@@ -164,7 +298,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     tf.keras.utils.set_random_seed(args.seed)
     if teacher_logits.shape[-1] != topology.state_count:
         parser.error("teacher logits do not match the qualified topology")
-    student = build_student(student_flags(topology.state_count), (260, 40), None)
+    student = build_student(
+        student_flags(topology.state_count, args.student_architecture),
+        (260, 40),
+        None,
+    )
     if args.init_weights is not None:
         student.load_weights(args.init_weights)
     optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
@@ -233,11 +371,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     metadata = {
         "schema_version": 1,
         "model": "ordered_state_causal_student_distilled",
+        "student_role": student_role,
+        "deployment_qualification": False,
+        "teacher_gate_mode": (
+            "detector_recall_prequalification"
+            if args.detector_teacher_gate
+            else "single_stage_teacher_prequalification"
+        ),
         "input_shape": [260, 40],
         "output_shape": [66, topology.state_count],
+        "student_architecture": args.student_architecture,
+        "parameter_count": int(student.count_params()),
+        "selected_weights": {
+            "path": str((args.output / "best.weights.h5").resolve()),
+            "sha256": sha256_file(args.output / "best.weights.h5"),
+            "selection": "minimum_observed_training_batch_loss",
+        },
+        "last_weights": {
+            "path": str((args.output / "last.weights.h5").resolve()),
+            "sha256": sha256_file(args.output / "last.weights.h5"),
+        },
         "topology": {
-            "phrase_id": topology_payload.get("phrase_id"),
-            "text": topology_payload.get("text"),
+            "phrase_id": topology_payload.get("phrase_id")
+            or cache_metadata.get("topology", {}).get("phrase_id"),
+            "text": topology_payload.get("text")
+            or cache_metadata.get("topology", {}).get("text"),
             "phones": list(topology.phones),
             "states_per_phone": topology.states_per_phone,
             "state_count": topology.state_count,
@@ -252,16 +410,46 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "teacher_logits.npy",
             )
         },
-        "teacher_qualification": str(args.teacher_qualification.resolve()),
-        "teacher_qualification_sha256": sha256_file(args.teacher_qualification),
-        "teacher_qualification_threshold": qualification["validation"][
-            "operating_point"
-        ]["threshold"],
-        "continuous_qualification": str(args.continuous_qualification.resolve()),
-        "continuous_qualification_sha256": sha256_file(args.continuous_qualification),
-        "continuous_qualification_threshold": continuous_qualification["qualification"][
-            "threshold"
-        ],
+        "teacher_qualification": (
+            str(args.teacher_qualification.resolve())
+            if args.teacher_qualification is not None
+            else None
+        ),
+        "teacher_qualification_sha256": (
+            sha256_file(args.teacher_qualification)
+            if args.teacher_qualification is not None
+            else None
+        ),
+        "teacher_qualification_threshold": (
+            qualification["selection"]["threshold"]
+            if args.detector_teacher_gate is not None
+            else qualification["validation"]["operating_point"]["threshold"]
+        ),
+        "detector_teacher_gate": (
+            str(args.detector_teacher_gate.resolve())
+            if args.detector_teacher_gate is not None
+            else None
+        ),
+        "detector_teacher_gate_sha256": (
+            sha256_file(args.detector_teacher_gate)
+            if args.detector_teacher_gate is not None
+            else None
+        ),
+        "continuous_qualification": (
+            str(args.continuous_qualification.resolve())
+            if args.continuous_qualification is not None
+            else None
+        ),
+        "continuous_qualification_sha256": (
+            sha256_file(args.continuous_qualification)
+            if args.continuous_qualification is not None
+            else None
+        ),
+        "continuous_qualification_threshold": (
+            continuous_qualification["qualification"]["threshold"]
+            if continuous_qualification is not None
+            else None
+        ),
         "steps": args.steps,
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
