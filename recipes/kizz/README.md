@@ -1,63 +1,81 @@
 # Kizz wake-word research and Kizz Control recipe
 
-The current implementation is the
-[Kizz Control three-stage cascade v10](CASCADE_V10_RECIPE.md), refined on
-physical StackChan failures by the
-[v15 hardware pass](CASCADE_V15_HARDWARE_REFINEMENT.md). It combines a
-high-recall ordered detector, a device-adapted compact verifier, and an
-independent ordered verifier. The checked-in
+## Recommended
+
+Use the [Kizz Control three-stage cascade v10](CASCADE_V10_RECIPE.md) as the
+baseline for a new run. Its checked-in
 [machine recipe](control-cascade-v10.yaml),
 [`run_kizz_control_cascade_recipe.py`](../../tools/run_kizz_control_cascade_recipe.py),
-and [reference artifacts](reference-cascade-v10/README.md) are the starting
-point for a new run.
+and [reference artifacts](reference-cascade-v10/README.md) reproduce the
+training and evaluation path.
 
-For the exact counterexample loop—quarantine and review a false-wake recording,
-capture a locked physical replay matrix, mine frozen-detector candidates, apply
-bounded hard-negative emphasis, repair physical recall, quantize, flash, and
-retest—use the
-[physical false-wake retraining runbook](FALSE_WAKE_RETRAINING.md).
+Qualify v10 on the target hardware before adapting it. If physical use exposes
+repeatable false wakes, follow the
+[v15 hardware pass](CASCADE_V15_HARDWARE_REFINEMENT.md) and retrain only the
+candidate-triggered compact verifier. Keep the continuous detector and final
+ordered verifier frozen. The
+[physical false-wake runbook](FALSE_WAKE_RETRAINING.md) covers quarantine,
+human review, locked replay, candidate mining, bounded hard-negative sampling,
+INT8 conversion, firmware handoff, flash, and retest.
 
-The v10 exact firmware retained 12/12 fresh held-out StackChan-channel
-positives. It passed all three startup AOT/reference equivalence checks and ran
-the continuous detector at about 8 ms p99 without ring overflow. On the locked
-100.47-hour negative corpus it produced 23 false wakes (`0.229/hour`), with only
-4.36% of detector candidates reaching the expensive ordered verifier.
+The three stages have separate jobs:
 
-The older **HiPhi Kizz** phrase remains stopped under phonetic-identifiability
-evidence: intended positives and observed false wakes overlap with “Hi-Fi
-Kids,” “High Five Kiss,” and nearby speech. V19, v34, clean-slate teachers, and
-the failed single-student firmware path remain documented because their
-failure boundaries shaped the cascade. See [Training reference](TRAINING_REFERENCE.md),
-[Experiments](EXPERIMENTS.md), and the
-[canonical-v3 phonetic gate](CANONICAL_V3_PHONETIC_GATE.md).
+| Stage | Optimization target | Execution cost |
+| --- | --- | --- |
+| Ordered detector | High recall | Continuous; about 8 ms p99 per 10 ms hop in the v10 firmware |
+| Compact DS-CNN verifier | Reject device-channel collisions | 95–123 ms, only on detector candidates |
+| Independent ordered verifier | Final precision | 296–432 ms, reached by 4.36% of v10 detector candidates |
+
+## Current evidence
+
+V10 retained 12/12 fresh held-out StackChan-channel positives and passed all
+three startup AOT/reference checks without ring overflow. On the locked
+100.47-hour negative corpus it produced 23 false wakes (`0.229/hour`).
+
+V15 retained 12/12 post-flash physical wakes, reduced false accepts from 17 to
+5 on the same adversarial 25-minute schedule, and accepted 0/20 candidates on
+a sealed unseen guard. After the production profile disabled the optional
+enrollment connection, the corrected firmware retained 11/12 physical wakes
+with the live gateway and completed an event-gated physical
+wake→STT→Roon volume command with about 12 KiB of internal-heap margin.
+
+This is enough to recommend the method for continued StackChan testing. It is
+not broad multi-human, multi-room, thermal, or command-heavy product
+qualification.
+
+## How we got there
+
+| Evidence boundary | Result | What changed |
+| --- | --- | --- |
+| **HiPhi Kizz** phrase | Intended positives and false wakes overlapped with “Hi-Fi Kids,” “High Five Kiss,” and nearby speech | Stop the phrase and move to **Kizz Control** |
+| Teacher and single-student paths | No candidate passed the frozen promotion gates; the experimental single-student firmware also failed live precision | Preserve the experiments, but do not use them as the deployment path |
+| Old int16/xwide detector and verifier | StackChan was effectively CPU-locked | Use INT8 models, fixed AOT schedules, static arenas, ESP-NN kernels, and sparse verifier invocation |
+| V9 compact verifier | The short playback lead created zero-padded pre-trigger context | Discard those 54 device positives and rebuild with full pre-roll |
+| V10 | 12/12 physical replay and `0.229` false wakes/hour over 100.47 hours | Keep it as the long-duration reference |
+| V15 | Same 25-minute adversarial schedule improved from 17 false accepts to 5 while positive replay stayed 12/12 | Adapt only the compact verifier from reviewed physical failures |
+| First wake/STT coexistence run | Enrollment reconnects drove internal heap to 16 bytes and caused a socket allocation failure | Disable enrollment in production and qualify wake→STT→command on the corrected profile |
+
+## Research archive
+
+The older **HiPhi Kizz** phrase remains stopped under the
+[canonical-v3 phonetic gate](CANONICAL_V3_PHONETIC_GATE.md). V19, v34,
+clean-slate teachers, and the failed single-student firmware path remain
+documented because their failure boundaries shaped the cascade. See the
+[training reference](TRAINING_REFERENCE.md) and
+[experiment ledger](EXPERIMENTS.md).
 
 The corrected teacher → student run, including PCM-context preparation,
 87→66 temporal alignment, qualification, distillation, stateful INT8 scoring,
-experimental firmware integration, and the live-precision failure, is documented in
+experimental firmware integration, and the live-precision failure, is in
 [TEACHER_DISTILLATION_ALIGNED_V1.md](TEACHER_DISTILLATION_ALIGNED_V1.md).
 The later [Kizz Control distillation tournament](DISTILLATION_TOURNAMENT_V1.md)
-implements temperature KD, sequence-conditioned occupation KD, intermediate
+tested temperature KD, sequence-conditioned occupation KD, intermediate
 representation KD, and a bounded temporal-residual student. D3 was the best
-float candidate, but no candidate passed the frozen promotion gate; therefore
-none was quantized, packaged, or flashed.
-The [clean-slate C/D comparison](CLEAN_SLATE_V2_C_D_RESULTS.md) explains why C
-survived and D was rejected; the [salvage report](SALVAGE_TEACHER_STUDENT_V1.md)
-is the restart contract.
-
-### Current disposition
-
-V10 is the long-duration Kizz Control reference and v15 is the active
-hardware-refined middle-verifier method. The exact v15 firmware accepted 12/12
-post-flash wake replays, reduced false accepts from 17 to 5 on the same
-adversarial 25-minute schedule, and accepted 0/20 candidates on a fresh unseen
-guard. A later production-profile correction disabled the optional enrollment
-connection during normal use. The corrected firmware retained 11/12 physical
-wakes with the live gateway and completed an event-gated physical
-wake→STT→Roon volume command while preserving about 12 KiB of internal-heap
-low-water. Extended multi-human, multi-room, and command-heavy soak tests remain
-required before claiming complete product qualification. Do not treat v19,
-v34, the clean-slate C teacher, or the earlier single-student score as current
-evidence.
+float candidate, but no candidate passed the frozen promotion gate; none was
+quantized, packaged, or flashed. The
+[clean-slate C/D comparison](CLEAN_SLATE_V2_C_D_RESULTS.md) explains why C
+survived and D was rejected; the
+[salvage report](SALVAGE_TEACHER_STUDENT_V1.md) is the restart contract.
 
 The later canonical-v3 C teacher reached only 9/22 held-out positives and
 accepted 2/62 quarantined false wakes. A pinned pretrained IPA/CTC teacher then

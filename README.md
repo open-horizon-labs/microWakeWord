@@ -51,37 +51,62 @@ phrase + pronunciations + confusable speech
 When a gate fails, revise the recipe, corpus balance, or training configuration.
 Record rejected candidates; aggregate scores never satisfy a release gate.
 
-## Worked recipe: Kizz Control
+## Recommended: the Kizz Control cascade
 
-The current [Kizz Control cascade recipe](recipes/kizz/CASCADE_V10_RECIPE.md)
-is a reproducible three-stage path for StackChan: a permissive ordered INT8
-detector, a compact device-adapted INT8 DS-CNN verifier, and an independent
-ordered verifier. The machine-readable graph and resumable runner parallelize
-source synthesis and locked continuous evaluation while enforcing validation-
-only selection, frozen fresh test, evidence hashes, and explicit paid-call
-authority. The
-[v15 hardware refinement](recipes/kizz/CASCADE_V15_HARDWARE_REFINEMENT.md)
-shows how to retrain only the compact verifier from reviewed physical false
-wakes without changing the detector or final verifier.
+Start with the [v10 machine recipe](recipes/kizz/CASCADE_V10_RECIPE.md). It is
+the reproducible baseline for a new run. Do not begin by retraining every
+network. First qualify the complete v10 cascade on the target device. If
+physical use exposes repeatable false wakes, follow the
+[v15 refinement](recipes/kizz/CASCADE_V15_HARDWARE_REFINEMENT.md) and retrain
+only the compact verifier from reviewed device recordings.
 
-The v10 reference retained 12/12 fresh StackChan-channel positives. Over a
-locked 100.47-hour negative corpus it accepted 23 false wakes (`0.229/hour`),
-and only 4.36% of detector candidates reached the expensive ordered stage. The
-v15 compact verifier then retained 12/12 post-flash physical wakes, reduced
+| Stage | When it runs | Job |
+| --- | --- | --- |
+| Ordered INT8 detector | Continuously | Preserve wake recall with a permissive threshold |
+| Compact INT8 DS-CNN verifier | On detector candidates | Reject common microphone- and room-specific collisions cheaply |
+| Independent ordered verifier | On compact survivors | Make the sparse final decision |
+
+Follow this order:
+
+1. Run the checked-in v10 recipe and freeze its model, threshold, and test
+   evidence.
+2. Flash the fixed AOT/ESP-NN firmware path and test positive recall, false
+   wakes, latency, queue depth, heap, and wake-to-command coexistence.
+3. If physical false wakes remain, use the
+   [false-wake retraining runbook](recipes/kizz/FALSE_WAKE_RETRAINING.md) to
+   quarantine and review them, retrain the compact stage, then repeat the same
+   physical tests with a sealed negative guard.
+
+The v10 reference retained 12/12 fresh StackChan-channel positives and produced
+23 false wakes over a locked 100.47-hour negative corpus (`0.229/hour`). Its
+compact gate forwarded 4.36% of detector candidates to the ordered verifier.
+The v15 cascade retained 12/12 post-flash physical wakes, reduced
 false accepts from 17 to 5 on the same adversarial 25-minute playback, and
 accepted 0/20 candidates on a sealed unseen guard. A corrected production
 profile also completed one physical wake-to-STT-to-Roon command with about
-12 KiB of internal-heap margin. These results meet the maintainer's practical
-operating point, but not the stricter formal `0.1/hour` upper-confidence gate
-or broad multi-human, multi-room product qualification.
+12 KiB of internal-heap margin.
 
-Exact v10 reference models and hashes are checked in under
+These results meet the maintainer's practical operating point. They do not pass
+the formal `0.1/hour` upper-confidence gate or establish broad multi-human,
+multi-room product qualification.
+
+### How we got there
+
+| Attempt | What the evidence showed | Decision retained in the recipe |
+| --- | --- | --- |
+| **HiPhi Kizz** phrase | Positives and false wakes overlapped with “Hi-Fi Kids,” “High Five Kiss,” and nearby speech | Change the phrase to **Kizz Control** |
+| Teacher and single-student paths | No candidate passed the frozen promotion gates, and the experimental single-student firmware failed live precision | Preserve the experiments, but do not use them as the deployment path |
+| Old int16/xwide detector and verifier | The runtime left StackChan effectively CPU-locked | Use compact INT8 models, fixed AOT schedules, static arenas, ESP-NN kernels, and sparse verifier invocation |
+| V9 device adaptation | It reached `0.388` false wakes/hour, but the short capture lead created invalid zero-padded verifier context | Rebuild the device corpus with at least 2.3 seconds of real pre-roll |
+| V10 clean cascade | It retained 12/12 physical replay recall at `0.229` false wakes/hour while forwarding only 4.36% of candidates | Keep v10 as the long-duration reference and reproducible starting point |
+| V15 physical hard negatives | Retraining the compact stage cut the same 25-minute adversarial replay from 17 false accepts to 5 without losing the 12/12 positive replay | Keep the outer stages frozen; adapt the compact verifier from reviewed physical failures |
+| Wake/STT coexistence test | The optional enrollment client exhausted socket and internal-heap headroom during normal voice use | Disable enrollment in production and retest the exact wake-to-command path |
+
+Exact v10 models and hashes are checked in under
 [`recipes/kizz/reference-cascade-v10`](recipes/kizz/reference-cascade-v10/README.md).
-The [physical false-wake runbook](recipes/kizz/FALSE_WAKE_RETRAINING.md) records
-the capture, review, retraining, optimized-firmware handoff, flash, and retest
-loop. Earlier v9, HiPhi Kizz, and single-student attempts remain as failure
-evidence in the [experiment ledger](recipes/kizz/EXPERIMENTS.md); they are not
-the current recipe.
+The [Kizz research overview](recipes/kizz/README.md) links the full experiment
+history and explains why the rejected teacher, distillation, v9, and
+single-student paths remain as evidence rather than recommendations.
 
 ## Start here
 
