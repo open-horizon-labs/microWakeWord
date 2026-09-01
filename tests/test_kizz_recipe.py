@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import yaml
@@ -57,12 +58,23 @@ class KizzRecipeTest(unittest.TestCase):
         self.assertIn("Hee Fye Kizz", phrases)
         self.assertIn("High Fye Kizz", phrases)
         self.assertIn("Hiffy Kizz", phrases)
+        self.assertTrue(
+            {
+                "hippy kids",
+                "Hi-Fi Kids",
+                "High-Fi Kids",
+                "Hi Fi Kids",
+                "High Fi Kids",
+                "hee fee kids",
+                "high fee kids",
+                "hiffy kids",
+            }.issubset(phrases)
+        )
         counts = {
             entry["text"]: entry["samples"] for entry in self.recipe["positive_phrases"]
         }
         self.assertGreaterEqual(counts["Hee Fee Kizz"], 2000)
         self.assertGreaterEqual(counts["Hippy Kizz"], 2000)
-        self.assertTrue(all(count >= 3000 for count in counts.values()))
 
     def test_near_sounding_words_are_hard_negatives(self):
         phrases = {entry["text"] for entry in self.recipe["hard_negative_phrases"]}
@@ -70,6 +82,26 @@ class KizzRecipeTest(unittest.TestCase):
         self.assertTrue(
             {"Hi-Fi Kiss", "Hippy Kiss", "Wi-Fi Kizz", "Happy Kizz"}.issubset(phrases)
         )
+        self.assertTrue(
+            {
+                "hippy kids",
+                "hee fee kids",
+                "high fee kids",
+                "hiffy kids",
+            }.isdisjoint(phrases)
+        )
+        self.assertTrue({"high five kids", "High Five Kizz"}.issubset(phrases))
+
+    def test_high_five_kizz_is_not_a_positive_alias(self):
+        positives = {
+            entry["text"].casefold() for entry in self.recipe["positive_phrases"]
+        }
+        negatives = {
+            entry["text"].casefold()
+            for entry in self.recipe["hard_negative_phrases"]
+        }
+        self.assertNotIn("high five kizz", positives)
+        self.assertIn("high five kizz", negatives)
 
     def test_pronunciation_probes_are_unseen_during_training(self):
         probes = yaml.safe_load((ROOT / "recipes/kizz/probes.yaml").read_text())
@@ -82,6 +114,29 @@ class KizzRecipeTest(unittest.TestCase):
         self.assertIn("high phi kizz", probe_phrases)
         self.assertTrue(training.isdisjoint(probe_phrases))
 
+    def test_age_cohorts_can_be_reported_separately(self):
+        manifest = {
+            "plan": [
+                {
+                    "class": "positive",
+                    "split": "test",
+                    "age_group": "child",
+                    "output": "/tmp/child",
+                },
+                {
+                    "class": "positive",
+                    "split": "test",
+                    "age_group": "adult",
+                    "output": "/tmp/adult",
+                },
+            ]
+        }
+        with mock.patch.object(Path, "glob", return_value=[]):
+            cohorts = EVALUATOR_MODULE.clips_by_age_group(
+                manifest, "positive", "test", set()
+            )
+        self.assertEqual(set(cohorts), {"adult", "child"})
+
     def test_generator_command_preserves_variation_grid(self):
         phrase = self.recipe["positive_phrases"][0]
         command = MODULE.generator_command(
@@ -90,11 +145,101 @@ class KizzRecipeTest(unittest.TestCase):
             Path("model.pt"),
             Path("out"),
             8,
+            self.recipe["generation"]["speaker_cohorts"]["train"],
+            100,
+            231,
         )
         self.assertIn("--length-scales", command)
         self.assertIn("--noise-scales", command)
         self.assertIn("--noise-scale-ws", command)
         self.assertIn("--slerp-weights", command)
+        self.assertIn("--speaker-range", command)
+        self.assertIn("--metadata-file", command)
+
+    def test_recipe_holds_synthetic_speakers_out_by_identity(self):
+        cohorts = MODULE.speaker_cohorts(self.recipe["generation"])
+        speakers = {
+            split: set(range(item["speaker_start"], item["speaker_end"]))
+            for split, item in cohorts.items()
+        }
+
+        self.assertTrue(speakers["train"].isdisjoint(speakers["validation"]))
+        self.assertTrue(speakers["train"].isdisjoint(speakers["test"]))
+        self.assertTrue(speakers["validation"].isdisjoint(speakers["test"]))
+        self.assertEqual({item["age_group"] for item in cohorts.values()}, {"unknown"})
+
+    def test_recipe_requires_independent_adult_and_child_voice_evidence(self):
+        requirements = self.recipe["generation"]["labeled_voice_requirements"]
+        self.assertEqual(set(requirements["age_groups"]), {"adult", "child"})
+        self.assertEqual(
+            requirements["minimum_voices_per_split"],
+            {"train": 2, "validation": 1, "test": 1},
+        )
+
+    def test_recipe_split_counts_preserve_phrase_total(self):
+        cohorts = MODULE.speaker_cohorts(self.recipe["generation"])
+        for phrase in self.recipe["positive_phrases"]:
+            counts = MODULE.split_sample_counts(phrase["samples"], cohorts)
+            self.assertEqual(sum(counts.values()), phrase["samples"])
+            self.assertTrue(all(count > 0 for count in counts.values()))
+
+    def test_generator_can_reuse_matching_phrase_audio_across_label_changes(self):
+        source = Path("old/hard_negative/hi_fi_kids")
+        manifests = [
+            {
+                "generator_model_sha256": "model-hash",
+                "plan": [
+                    {
+                        "class": "hard_negative",
+                        "text": "Hi-Fi Kids",
+                        "samples": 0,
+                        "output": str(source),
+                        "command": [
+                            "/old/python",
+                            "-m",
+                            "piper_sample_generator",
+                            "Hi-Fi Kids",
+                            "--max-samples",
+                            "0",
+                            "--output-dir",
+                            str(source),
+                            "--length-scales",
+                            "1.0",
+                        ],
+                    }
+                ],
+            }
+        ]
+        self.assertEqual(
+            MODULE.reusable_phrase_source(
+                manifests,
+                "Hi-Fi Kids",
+                0,
+                "model-hash",
+                [
+                    "/new/python",
+                    "-m",
+                    "piper_sample_generator",
+                    "Hi-Fi Kids",
+                    "--max-samples",
+                    "0",
+                    "--output-dir",
+                    "new/positive/hi_fi_kids",
+                    "--length-scales",
+                    "1.0",
+                ],
+            ),
+            source,
+        )
+        self.assertIsNone(
+            MODULE.reusable_phrase_source(
+                manifests,
+                "Hi-Fi Kids",
+                0,
+                "different-model",
+                ["python", "-m", "piper_sample_generator"],
+            )
+        )
 
     def test_feature_build_rejects_stale_corpus_directories(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -105,10 +250,15 @@ class KizzRecipeTest(unittest.TestCase):
             expected.mkdir(parents=True)
             (root / "generated" / "hard_negative").mkdir()
             manifest = {
+                "schema_version": 2,
                 "recipe_sha256": hashlib.sha256(recipe.read_bytes()).hexdigest(),
                 "plan": [
                     {
                         "class": "positive",
+                        "text": "test",
+                        "split": "train",
+                        "speaker_start": 0,
+                        "speaker_end": 1,
                         "output": str(expected),
                         "samples": 0,
                     }
@@ -117,15 +267,15 @@ class KizzRecipeTest(unittest.TestCase):
             (root / "generated" / "generation-manifest.json").write_text(
                 json.dumps(manifest)
             )
-            (root / "generated" / "positive" / "stale").mkdir()
+            stale = root / "generated" / "positive" / "stale"
+            stale.mkdir()
+            (stale / "0.wav").touch()
             with self.assertRaisesRegex(ValueError, "extra="):
                 FEATURE_MODULE.validate_generated_corpus(recipe, root / "generated")
 
-    def test_training_selects_for_ambient_false_accepts_first(self):
+    def test_training_selects_for_all_validation_false_accepts_first(self):
         config = CONFIG_MODULE.training_config(Path("work"), Path("trained"))
-        self.assertEqual(
-            config["minimization_metric"], "ambient_false_positives_per_hour"
-        )
+        self.assertEqual(config["minimization_metric"], "validation_false_positives")
         hard_negatives = [
             item
             for item in config["features"]
@@ -148,7 +298,7 @@ class KizzRecipeTest(unittest.TestCase):
             for item in config["features"]
             if item["features_dir"].startswith("device-features/")
         ]
-        self.assertEqual(len(device_sources), 4)
+        self.assertEqual(len(device_sources), 3)
         self.assertTrue(any(item["truth"] for item in device_sources))
         self.assertTrue(any(not item["truth"] for item in device_sources))
         self.assertTrue(
@@ -184,24 +334,80 @@ class KizzRecipeTest(unittest.TestCase):
                     )
             grouped = EVALUATOR_MODULE.clips_by_group(root, "test", 231)
             held_out = [path for paths in grouped.values() for path in paths]
+            repeated = EVALUATOR_MODULE.clips_by_group(root, "test", 231)
+            repeated_held_out = [path for paths in repeated.values() for path in paths]
             self.assertEqual(len(held_out), 2)
+            self.assertEqual(held_out, repeated_held_out)
             self.assertTrue(
                 all(path.parent.name in {"hi_fi", "hee_fee"} for path in held_out)
             )
 
-    def test_streaming_model_state_can_be_reset_between_independent_clips(self):
+    def test_evaluator_uses_explicit_speaker_cohort_split(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = []
+            for split in ("train", "test"):
+                output = root / "positive" / "wake" / split
+                output.mkdir(parents=True)
+                wavfile.write(
+                    output / f"{split}.wav",
+                    16000,
+                    np.zeros(1600, dtype=np.int16),
+                )
+                plan.append(
+                    {
+                        "class": "positive",
+                        "group": "wake",
+                        "split": split,
+                        "output": str(output),
+                    }
+                )
+
+            grouped = EVALUATOR_MODULE.clips_by_group(
+                root / "positive",
+                "test",
+                231,
+                generation_manifest={"schema_version": 2, "plan": plan},
+                class_name="positive",
+            )
+
+            self.assertEqual([path.name for path in grouped["wake"]], ["test.wav"])
+
+    def test_evaluator_excludes_quality_mask_rejections(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            group = root / "hi_fi"
+            group.mkdir()
+            accepted = group / "accepted.wav"
+            rejected = group / "rejected.wav"
+            for path in (accepted, rejected):
+                wavfile.write(path, 16000, np.zeros(1600, dtype=np.int16))
+
+            grouped = EVALUATOR_MODULE.clips_by_group(
+                root, "all", 231, {rejected.resolve()}
+            )
+
+            self.assertEqual(grouped, {"hi_fi": [accepted]})
+
+    def test_streaming_model_state_reloads_after_inference(self):
         from microwakeword.inference import Model
 
-        class Interpreter:
-            reset_count = 0
+        model = Model.__new__(Model)
+        model._state_dirty = True
+        reloads = []
+        model._load_interpreter = lambda: reloads.append(True)
+        model.reset_states()
+        self.assertEqual(reloads, [True])
 
-            def reset_all_variables(self):
-                self.reset_count += 1
+    def test_streaming_model_state_does_not_reload_before_first_inference(self):
+        from microwakeword.inference import Model
 
         model = Model.__new__(Model)
-        model.model = Interpreter()
+        model._state_dirty = False
+        reloads = []
+        model._load_interpreter = lambda: reloads.append(True)
         model.reset_states()
-        self.assertEqual(model.model.reset_count, 1)
+        self.assertEqual(reloads, [])
 
 
 if __name__ == "__main__":

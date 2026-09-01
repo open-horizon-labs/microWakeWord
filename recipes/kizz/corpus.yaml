@@ -1,4 +1,4 @@
-recipe_version: 4
+recipe_version: 6
 name: hiphi_kizz
 sample_rate_hz: 16000
 clip_duration_ms: 2000
@@ -26,6 +26,25 @@ positive_phrases:
     samples: 3000
   - text: Hiffy Kizz
     samples: 3000
+  # Real intended attempts often realize the final /z/ as the plural in "kids".
+  # Spell the accepted Hi-Fi reading directly; do not substitute "high five",
+  # which produces a distinct consonant and is retained as a collision phrase.
+  - text: hippy kids
+    samples: 1800
+  - text: Hi-Fi Kids
+    samples: 1500
+  - text: High-Fi Kids
+    samples: 1500
+  - text: Hi Fi Kids
+    samples: 1000
+  - text: High Fi Kids
+    samples: 1500
+  - text: hee fee kids
+    samples: 1000
+  - text: high fee kids
+    samples: 1000
+  - text: hiffy kids
+    samples: 1000
 
 # These are not aliases. They are deliberately confusing speech that must not
 # wake Kizz, with extra weight on the short-word neighbors most likely to fire.
@@ -54,18 +73,15 @@ hard_negative_phrases:
     samples: 300
   - text: Hi Phi
     samples: 300
-  - text: hippy kids
-    samples: 1800
-  - text: high five kids
-    samples: 1500
   - text: hi kids
     samples: 800
-  - text: hee fee kids
-    samples: 1000
-  - text: high fee kids
-    samples: 1000
-  - text: hiffy kids
-    samples: 1000
+  - text: high five kids
+    samples: 1500
+  # The /v/ in "five" is a real extra consonant, not a pronunciation variant
+  # of Hi-Fi. Keeping this collision negative prevents the model from learning
+  # an over-broad "high f... Kizz" shortcut.
+  - text: High Five Kizz
+    samples: 1500
 
   # Conjunction-mining negatives: require both an accepted HiPhi prefix and the
   # Kizz suffix. These prevent the model from solving the diverse positive class
@@ -88,8 +104,6 @@ hard_negative_phrases:
     samples: 1000
   - text: Sci-Fi Kizz
     samples: 1000
-  - text: High Five Kizz
-    samples: 1000
   - text: Happy Kizz
     samples: 1000
   - text: Coffee Kizz
@@ -107,3 +121,32 @@ generation:
   noise_scale_ws: [0.65, 0.8, 0.95]
   slerp_weights: [0.2, 0.4, 0.6, 0.8]
   max_speakers: 700
+  # The LibriTTS-R generator exposes speaker embeddings but no reliable age
+  # labels. Hold base speakers out by identity; do not describe these cohorts as
+  # adult or child evidence.
+  speaker_cohorts:
+    train:
+      speaker_start: 0
+      speaker_end: 560
+      sample_fraction: 0.8
+      age_group: unknown
+    validation:
+      speaker_start: 560
+      speaker_end: 630
+      sample_fraction: 0.1
+      age_group: unknown
+    test:
+      speaker_start: 630
+      speaker_end: 700
+      sample_fraction: 0.1
+      age_group: unknown
+  # Piper's LibriTTS-R embeddings do not carry reliable age labels. Add
+  # provider-labeled voices and hold each voice identity to one split before
+  # building features. Train gets broader coverage; validation and test each
+  # retain independent adult and child voices.
+  labeled_voice_requirements:
+    age_groups: [adult, child]
+    minimum_voices_per_split:
+      train: 2
+      validation: 1
+      test: 1

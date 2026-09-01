@@ -1,0 +1,70 @@
+schema_version: 2
+name: kizz_control_c1_synthetic_bootstrap_only
+training_split: train
+splits: [train, validation, test]
+require_each_split: [positive, negative]
+required_metadata:
+  - speaker_id
+  - session_id
+  - semantic_label
+  - source_id
+  - provenance_id
+  - parent_id
+  - ancestry_id
+  - duration_seconds
+  - audio_sha256
+
+# This contract intentionally cannot establish target-channel qualification.
+# It exists only to train and compare synthetic bootstrap candidates before
+# independently-qualified StackChan captures are available.
+deployment_qualification: false
+
+semantic_labels:
+  enabled: true
+  field: semantic_label
+  canonical_labels: [canonical_exact]
+  prohibited_labels: [phonetic_collision]
+
+provenance:
+  enabled: true
+  required_fields: [source_id, provenance_id, parent_id, ancestry_id]
+
+duration:
+  enabled: true
+  # Very short licensed impulse/noise clips are valid negatives; the fixed
+  # frontend pads PCM before feature extraction instead of dropping them.
+  min_seconds: 0.02
+  max_seconds: 1200.0
+
+overall:
+  min_positive_fraction: 0.03
+  max_positive_fraction: 0.10
+
+classes:
+  positive:
+    min_source_groups: 4
+    required_source_groups:
+      - assemblyai_synthetic
+      - deepgram_synthetic
+      - elevenlabs_synthetic
+      - kokoro_synthetic
+    max_source_fraction: 0.35
+    max_source_duration_fraction: 0.45
+  negative:
+    min_source_groups: 4
+    required_source_groups:
+      - kizz_control_phonetic_collision
+      - public_speech
+      - music
+      - background_noise
+    max_source_fraction: 0.92
+    max_source_duration_fraction: 0.55
+
+split_disjoint:
+  speaker_id: true
+  session_id: true
+  source_id: true
+  provenance_id: true
+  parent_id: true
+  ancestry_id: true
+  source_group: false

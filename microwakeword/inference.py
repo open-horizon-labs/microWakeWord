@@ -32,9 +32,15 @@ class Model:
     """
 
     def __init__(self, tflite_model_path: str, stride: int | None = None):
-        # Load tflite model
+        self.tflite_model_path = tflite_model_path
+        self.stride = stride
+        self._state_dirty = False
+        self._load_interpreter()
+
+    def _load_interpreter(self):
+        """Create an interpreter with freshly initialized resource variables."""
         interpreter = Interpreter(
-            model_path=tflite_model_path,
+            model_path=self.tflite_model_path,
         )
         interpreter.allocate_tensors()
 
@@ -44,10 +50,8 @@ class Model:
         self.is_quantized_model = self.input_details[0]["dtype"] == np.int8
         self.input_feature_slices = self.input_details[0]["shape"][1]
 
-        if stride is None:
+        if self.stride is None:
             self.stride = self.input_feature_slices
-        else:
-            self.stride = stride
 
         for s in range(len(self.input_details)):
             if self.is_quantized_model:
@@ -62,12 +66,16 @@ class Model:
                 )
 
         self.model = interpreter
+        self._state_dirty = False
 
     def reset_states(self):
         """Reset recurrent streaming state between independent audio tracks."""
-        reset = getattr(self.model, "reset_all_variables", None)
-        if reset is not None:
-            reset()
+        # reset_all_variables() does not restore resource variables initialized
+        # by CALL_ONCE in state-internal streaming models. Recreate the
+        # interpreter after inference so independent clips cannot contaminate
+        # one another. A fresh, unused interpreter needs no work.
+        if self._state_dirty:
+            self._load_interpreter()
 
     def predict_clip(self, data: np.ndarray, step_ms: int = 20):
         """Run the model on a single clip of audio data
@@ -101,6 +109,13 @@ class Model:
         elif np.issubdtype(spectrogram.dtype, np.float64):
             spectrogram = spectrogram.astype(np.float32)
 
+        if len(spectrogram) < self.input_feature_slices:
+            spectrogram = np.pad(
+                spectrogram,
+                ((self.input_feature_slices - len(spectrogram), 0), (0, 0)),
+                constant_values=0,
+            )
+
         # Slice the input data into the required number of chunks
         chunks = []
         for last_index in range(
@@ -121,6 +136,7 @@ class Model:
                 np.reshape(chunk, self.input_details[0]["shape"]),
             )
             self.model.invoke()
+            self._state_dirty = True
 
             output = self.model.get_tensor(self.output_details[0]["index"])[0][0]
             if self.is_quantized_model:

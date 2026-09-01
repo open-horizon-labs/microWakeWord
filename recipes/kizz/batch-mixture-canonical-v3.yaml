@@ -1,0 +1,40 @@
+schema_version: 1
+name: hiphi_kizz_canonical_v3_batch_mixture
+
+# This sidecar governs batches, not corpus inventory. Every active sampler
+# group must be named here, so a large public-speech inventory cannot silently
+# become a large public-speech batch allocation.
+mixture_guard:
+  schema_version: 1
+  require_all_active_groups: true
+  minimum_realized_samples: 1000
+  tolerances:
+    sample_share: 0.02
+    weighted_pressure_share: 0.03
+  expected:
+    classes:
+      positive:
+        sample_share: 0.50
+        weighted_pressure_share: 0.50
+      negative:
+        sample_share: 0.50
+        weighted_pressure_share: 0.50
+    groups:
+      canonical_positive:
+        sample_share: 0.30
+        weighted_pressure_share: 0.30
+      device_positive:
+        sample_share: 0.20
+        weighted_pressure_share: 0.20
+      phonetic_collision:
+        sample_share: 0.15
+        weighted_pressure_share: 0.15
+      public_speech:
+        sample_share: 0.10
+        weighted_pressure_share: 0.10
+      music:
+        sample_share: 0.10
+        weighted_pressure_share: 0.10
+      background_noise:
+        sample_share: 0.15
+        weighted_pressure_share: 0.15

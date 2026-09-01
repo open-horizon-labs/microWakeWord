@@ -17,6 +17,7 @@
 
 import os
 import random
+from collections import Counter
 
 import numpy as np
 
@@ -27,6 +28,26 @@ from mmap_ninja.ragged import RaggedMmap
 from microwakeword.audio.clips import Clips
 from microwakeword.audio.augmentation import Augmentation
 from microwakeword.audio.spectrograms import SpectrogramGeneration
+from microwakeword.provenance import sha256_path
+
+
+def largest_remainder_counts(total: int, weights: dict[str, float]) -> dict[str, int]:
+    """Allocate an exact batch across named groups in proportion to their weights."""
+    positive = {name: float(weight) for name, weight in weights.items() if weight > 0}
+    if not positive:
+        raise ValueError("sampling group weights must contain a positive value")
+    weight_sum = sum(positive.values())
+    quotas = {name: total * weight / weight_sum for name, weight in positive.items()}
+    counts = {name: int(quota) for name, quota in quotas.items()}
+    remainder = total - sum(counts.values())
+    order = sorted(
+        positive,
+        key=lambda name: (quotas[name] - counts[name], name),
+        reverse=True,
+    )
+    for name in order[:remainder]:
+        counts[name] += 1
+    return counts
 
 
 def spec_augment(
@@ -299,11 +320,20 @@ class MmapFeatureGenerator(object):
                 spectrogram = spectrogram.astype(np.float32) * 0.0390625
 
             if truncation_strategy == "split":
+                if spectrogram.shape[0] <= features_length:
+                    yield fixed_length_spectrogram(
+                        spectrogram,
+                        features_length,
+                        "truncate_start",
+                    )
+                    continue
+
+                split_step = max(1, int(1000 * self.step * self.stride))
                 for feature_start_index in range(
                     0,
-                    spectrogram.shape[0] - features_length,
-                    int(1000 * self.step * self.stride),
-                ):  # 10*2 features corresponds to 200 ms
+                    spectrogram.shape[0] - features_length + 1,
+                    split_step,
+                ):
                     split_spectrogram = spectrogram[
                         feature_start_index : feature_start_index + features_length
                     ]
@@ -414,10 +444,28 @@ class FeatureHandler(object):
         config: dict,
     ):
         self.feature_providers = []
+        self.evaluation_enabled = []
+        self.sampling_groups = []
+        self.sampling_sources = []
+        self.sampling_group_weights = config.get("sampling_groups")
+        self.training_sampling_counts = Counter()
+        self.training_weighted_pressure = Counter()
+        self.current_class_weights = {0: 1.0, 1: 1.0}
+        self.sampling_source_config = {}
+        self.mixture_guard = config.get("mixture_guard")
 
         logging.info("Loading and analyzing data sets.")
 
         for feature_set in config["features"]:
+            expected_path_sha256 = feature_set.get("expected_path_sha256")
+            if expected_path_sha256 is not None:
+                actual_path_sha256 = sha256_path(Path(feature_set["features_dir"]))
+                if actual_path_sha256 != expected_path_sha256:
+                    raise ValueError(
+                        "training feature content hash mismatch for "
+                        f"{feature_set['features_dir']}: expected "
+                        f"{expected_path_sha256}, got {actual_path_sha256}"
+                    )
             if feature_set["type"] == "mmap":
                 self.feature_providers.append(
                     MmapFeatureGenerator(
@@ -450,6 +498,16 @@ class FeatureHandler(object):
                         feature_set["truncation_strategy"],
                     )
                 )
+            self.evaluation_enabled.append(feature_set.get("evaluation_enabled", True))
+            self.sampling_groups.append(feature_set.get("sampling_group"))
+            self.sampling_sources.append(
+                feature_set.get("sampling_source", feature_set["features_dir"])
+            )
+            self.sampling_source_config[self.sampling_sources[-1]] = {
+                "truth": bool(feature_set["truth"]),
+                "penalty_weight": float(feature_set["penalty_weight"]),
+                "within_group_weight": float(feature_set["sampling_weight"]),
+            }
             set_modes = [
                 "training",
                 "validation",
@@ -476,7 +534,11 @@ class FeatureHandler(object):
         """
 
         sample_duration = 0
-        for provider in self.feature_providers:
+        for provider, evaluation_enabled in zip(
+            self.feature_providers, self.evaluation_enabled
+        ):
+            if mode != "training" and not evaluation_enabled:
+                continue
             sample_duration += provider.get_mode_duration(mode)
         return sample_duration
 
@@ -490,9 +552,24 @@ class FeatureHandler(object):
             count of spectrograms in given mode
         """
         sample_count = 0
-        for provider in self.feature_providers:
+        for provider, evaluation_enabled in zip(
+            self.feature_providers, self.evaluation_enabled
+        ):
+            if mode != "training" and not evaluation_enabled:
+                continue
             sample_count += provider.get_mode_size(mode)
         return sample_count
+
+    def get_mode_label_counts(self, mode: str) -> dict[int, int]:
+        """Count enabled examples by class without loading their features."""
+        counts = {0: 0, 1: 0}
+        for provider, evaluation_enabled in zip(
+            self.feature_providers, self.evaluation_enabled
+        ):
+            if mode != "training" and not evaluation_enabled:
+                continue
+            counts[int(provider.label)] += provider.get_mode_size(mode)
+        return counts
 
     def get_data(
         self,
@@ -538,19 +615,59 @@ class FeatureHandler(object):
         weights = []
 
         if mode == "training":
-            random_feature_providers = random.choices(
-                [
-                    provider
-                    for provider in self.feature_providers
-                    if provider.get_mode_size("training")
-                ],
-                [
-                    provider.sampling_weight
-                    for provider in self.feature_providers
-                    if provider.get_mode_size("training")
-                ],
-                k=sample_count,
-            )
+            active = [
+                (provider, group)
+                for provider, group in zip(self.feature_providers, self.sampling_groups)
+                if provider.get_mode_size("training") and provider.sampling_weight > 0
+            ]
+            if self.sampling_group_weights:
+                grouped = {
+                    name: [provider for provider, group in active if group == name]
+                    for name in self.sampling_group_weights
+                }
+                missing = [name for name, providers in grouped.items() if not providers]
+                if missing:
+                    raise ValueError(
+                        "sampling groups have no active training source: "
+                        + ", ".join(missing)
+                    )
+                group_counts = largest_remainder_counts(
+                    sample_count, self.sampling_group_weights
+                )
+                random_feature_providers = []
+                for name, count in group_counts.items():
+                    providers = grouped[name]
+                    random_feature_providers.extend(
+                        random.choices(
+                            providers,
+                            [provider.sampling_weight for provider in providers],
+                            k=count,
+                        )
+                    )
+                random.shuffle(random_feature_providers)
+            else:
+                providers = [provider for provider, _ in active]
+                random_feature_providers = random.choices(
+                    providers,
+                    [provider.sampling_weight for provider in providers],
+                    k=sample_count,
+                )
+
+            provider_metadata = {
+                id(provider): (group, source)
+                for provider, group, source in zip(
+                    self.feature_providers,
+                    self.sampling_groups,
+                    self.sampling_sources,
+                )
+            }
+            for provider in random_feature_providers:
+                group, source = provider_metadata[id(provider)]
+                self.training_sampling_counts[(group or "ungrouped", source)] += 1
+                class_weight = self.current_class_weights[int(provider.label)]
+                self.training_weighted_pressure[(group or "ungrouped", source)] += (
+                    float(provider.penalty_weight) * class_weight
+                )
 
             for provider in random_feature_providers:
                 spectrogram = provider.get_random_spectrogram(
@@ -568,7 +685,11 @@ class FeatureHandler(object):
                 labels.append(float(provider.label))
                 weights.append(float(provider.penalty_weight))
         else:
-            for provider in self.feature_providers:
+            for provider, evaluation_enabled in zip(
+                self.feature_providers, self.evaluation_enabled
+            ):
+                if not evaluation_enabled:
+                    continue
                 generator = provider.get_feature_generator(
                     mode, features_length, truncation_strategy
                 )
@@ -590,8 +711,119 @@ class FeatureHandler(object):
 
         indices = np.arange(labels.shape[0])
 
-        if mode == "testing" or "validation":
+        if mode in ("testing", "validation"):
             # Randomize the order of the data, weights, and labels
             np.random.shuffle(indices)
 
         return data[indices], labels[indices], weights[indices]
+
+    def get_data_batches(
+        self,
+        mode: str,
+        batch_size: int,
+        features_length: int,
+        truncation_strategy: str = "default",
+    ):
+        """Yield evaluation data in bounded batches.
+
+        Unlike :meth:`get_data`, this method never accumulates a complete mode in
+        memory.  It is intended for long ambient modes, where materializing every
+        split window before invoking the model can exceed available RAM.
+
+        The provider order and per-provider generator semantics are unchanged;
+        callers that need the historical validation/testing shuffle should keep
+        using ``get_data``.
+        """
+        if mode == "training":
+            raise ValueError("get_data_batches is only for evaluation modes")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+
+        data = []
+        labels = []
+        weights = []
+
+        for provider, evaluation_enabled in zip(
+            self.feature_providers, self.evaluation_enabled
+        ):
+            if not evaluation_enabled:
+                continue
+            generator = provider.get_feature_generator(
+                mode, features_length, truncation_strategy
+            )
+            for spectrogram in generator:
+                data.append(spectrogram)
+                labels.append(provider.label)
+                weights.append(provider.penalty_weight)
+                if len(data) == batch_size:
+                    yield np.asarray(data), np.asarray(labels), np.asarray(weights)
+                    data = []
+                    labels = []
+                    weights = []
+
+        if data:
+            yield np.asarray(data), np.asarray(labels), np.asarray(weights)
+
+    def set_training_class_weights(self, positive: float, negative: float) -> None:
+        self.current_class_weights = {0: float(negative), 1: float(positive)}
+
+    def sampling_ledger(self) -> dict:
+        total = sum(self.training_sampling_counts.values())
+        total_pressure = sum(self.training_weighted_pressure.values())
+        by_group = Counter()
+        pressure_by_group = Counter()
+        by_source = {}
+        by_class = Counter()
+        pressure_by_class = Counter()
+        for (group, source), count in sorted(self.training_sampling_counts.items()):
+            by_group[group] += count
+            pressure = self.training_weighted_pressure[(group, source)]
+            pressure_by_group[group] += pressure
+            truth = bool(self.sampling_source_config[source]["truth"])
+            class_name = "positive" if truth else "negative"
+            by_class[class_name] += count
+            pressure_by_class[class_name] += pressure
+            by_source[source] = {
+                "group": group,
+                "samples": count,
+                "share": count / total if total else 0.0,
+                "weighted_pressure": pressure,
+                "weighted_pressure_share": (
+                    pressure / total_pressure if total_pressure else 0.0
+                ),
+                **self.sampling_source_config.get(source, {}),
+            }
+        ledger = {
+            "configured_group_weights": self.sampling_group_weights,
+            "total_samples": total,
+            "total_weighted_pressure": total_pressure,
+            "mixture_guard": getattr(self, "mixture_guard", None),
+            "realized_classes": {
+                class_name: {
+                    "samples": count,
+                    "share": count / total if total else 0.0,
+                    "weighted_pressure": pressure_by_class[class_name],
+                    "weighted_pressure_share": (
+                        pressure_by_class[class_name] / total_pressure
+                        if total_pressure
+                        else 0.0
+                    ),
+                }
+                for class_name, count in sorted(by_class.items())
+            },
+            "realized_groups": {
+                group: {
+                    "samples": count,
+                    "share": count / total if total else 0.0,
+                    "weighted_pressure": pressure_by_group[group],
+                    "weighted_pressure_share": (
+                        pressure_by_group[group] / total_pressure
+                        if total_pressure
+                        else 0.0
+                    ),
+                }
+                for group, count in sorted(by_group.items())
+            },
+            "realized_sources": by_source,
+        }
+        return ledger

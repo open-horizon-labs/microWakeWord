@@ -38,8 +38,41 @@ import microwakeword.utils as utils
 
 import microwakeword.inception as inception
 import microwakeword.mixednet as mixednet
+import microwakeword.ordered_state_model as ordered_state_model
 
 from microwakeword.layers import modes
+
+_NON_MODEL_FLAGS = {
+    "model_name",
+    "restore_checkpoint",
+    "test_tf_nonstreaming",
+    "test_tflite_nonstreaming",
+    "test_tflite_nonstreaming_quantized",
+    "test_tflite_streaming",
+    "test_tflite_streaming_quantized",
+    "tflite_roc_split",
+    "train",
+    "training_config",
+    "use_weights",
+    "verbosity",
+}
+
+
+def apply_model_parameters(config, flags):
+    """Apply architecture parameters recorded in the training configuration."""
+    parameters = config.get("model_parameters", {})
+    if not isinstance(parameters, dict):
+        raise ValueError("model_parameters must be a mapping")
+    unknown = set(parameters) - set(vars(flags))
+    if unknown:
+        raise ValueError(f"unknown model parameters: {sorted(unknown)}")
+    forbidden = set(parameters) & _NON_MODEL_FLAGS
+    if forbidden:
+        raise ValueError(
+            f"model_parameters contains non-model flags: {sorted(forbidden)}"
+        )
+    for name, value in parameters.items():
+        setattr(flags, name, value)
 
 
 def load_config(flags, model_module):
@@ -53,7 +86,9 @@ def load_config(flags, model_module):
         dict: dictionary containing training configuration
     """
     config_filename = flags.training_config
-    config = yaml.load(open(config_filename, "r").read(), yaml.Loader)
+    with open(config_filename, "r", encoding="utf-8") as config_file:
+        config = yaml.load(config_file.read(), yaml.Loader)
+    apply_model_parameters(config, flags)
 
     config["summaries_dir"] = os.path.join(config["train_dir"], "logs/")
 
@@ -83,9 +118,14 @@ def load_config(flags, model_module):
             length_minus_window / window_step_samples
         )
 
-    config["spectrogram_length"] = config[
-        "spectrogram_length_final_layer"
-    ] + model_module.spectrogram_slices_dropped(flags)
+    if hasattr(model_module, "training_spectrogram_length"):
+        config["spectrogram_length"] = model_module.training_spectrogram_length(
+            flags, config["spectrogram_length_final_layer"]
+        )
+    else:
+        config["spectrogram_length"] = config[
+            "spectrogram_length_final_layer"
+        ] + model_module.spectrogram_slices_dropped(flags)
 
     config["flags"] = flags.__dict__
 
@@ -123,6 +163,11 @@ def train_model(config, model, data_processor, restore_checkpoint):
     with open(config_fname, "w") as outfile:
         yaml.dump(config, outfile, default_flow_style=False)
 
+    if contract := config.get("ordered_state_decoder_contract"):
+        ordered_state_model.write_decoder_contract(
+            os.path.join(config["train_dir"], "ordered-state-decoder.json"), contract
+        )
+
     utils.save_model_summary(model, config["train_dir"])
 
     train.train(model, config, data_processor)
@@ -137,6 +182,7 @@ def evaluate_model(
     test_tflite_nonstreaming_quantized,
     test_tflite_streaming,
     test_tflite_streaming_quantized,
+    tflite_roc_split="testing",
 ):
     """Evaluates a model on test data.
 
@@ -252,7 +298,9 @@ def evaluate_model(
         utils.convert_saved_model_to_tflite(
             config,
             audio_processor=data_processor,
-            path_to_model=os.path.join(config["train_dir"], tflite_config["source_folder"]),
+            path_to_model=os.path.join(
+                config["train_dir"], tflite_config["source_folder"]
+            ),
             folder=os.path.join(config["train_dir"], tflite_config["output_folder"]),
             fname=tflite_config["filename"],
             quantize=tflite_config["quantize"],
@@ -263,15 +311,17 @@ def evaluate_model(
             tflite_config["log_string"],
         )
 
-        test.tflite_streaming_model_roc(
-            config,
-            tflite_config["output_folder"],
-            data_processor,
-            data_set=tflite_config["testing_dataset"],
-            ambient_set=tflite_config["testing_ambient_dataset"],
-            tflite_model_name=tflite_config["filename"],
-            accuracy_name="tflite_streaming_roc.txt",
-        )
+        if tflite_roc_split != "none":
+            split = tflite_roc_split
+            test.tflite_streaming_model_roc(
+                config,
+                tflite_config["output_folder"],
+                data_processor,
+                data_set=split,
+                ambient_set=f"{split}_ambient",
+                tflite_model_name=tflite_config["filename"],
+                accuracy_name=f"tflite_streaming_roc-{split}.txt",
+            )
 
 
 if __name__ == "__main__":
@@ -338,6 +388,12 @@ if __name__ == "__main__":
         help="Which set of weights to use when creating the model"
         "One of `best_weights`` or `last_weights`.",
     )
+    parser.add_argument(
+        "--tflite_roc_split",
+        choices=("testing", "validation", "none"),
+        default="testing",
+        help="Choose the split for TFLite ROC scoring, or convert without scoring",
+    )
 
     # Function used to parse --verbosity argument
     def verbosity_arg(value):
@@ -384,6 +440,10 @@ if __name__ == "__main__":
     parser_mixednet = subparsers.add_parser("mixednet")
     mixednet.model_parameters(parser_mixednet)
 
+    # Kizz ordered-state acoustic model settings
+    parser_ordered_state = subparsers.add_parser("ordered_state")
+    ordered_state_model.model_parameters(parser_ordered_state)
+
     flags, unparsed = parser.parse_known_args()
     if unparsed:
         raise ValueError("Unknown argument: {}".format(unparsed))
@@ -392,6 +452,8 @@ if __name__ == "__main__":
         model_module = inception
     elif flags.model_name == "mixednet":
         model_module = mixednet
+    elif flags.model_name == "ordered_state":
+        model_module = ordered_state_model
     else:
         raise ValueError("Unknown model type: {}".format(flags.model_name))
 
@@ -399,12 +461,27 @@ if __name__ == "__main__":
 
     config = load_config(flags, model_module)
 
+    if flags.model_name == "ordered_state":
+        config["ordered_state_decoder_contract"] = ordered_state_model.decoder_contract(
+            config.get("training_loss"),
+            config["stride"] * config["window_step_ms"] / 1000.0,
+        )
+
+    if training_seed := config.get("training_seed"):
+        tf.keras.utils.set_random_seed(int(training_seed))
+        if config.get("deterministic_training", True):
+            tf.config.experimental.enable_op_determinism()
+
     data_processor = input_data.FeatureHandler(config)
 
     if flags.train:
         model = model_module.model(
             flags, config["training_input_shape"], config["batch_size"]
         )
+        if flags.model_name == "ordered_state":
+            model = ordered_state_model.training_model(
+                model, config.get("training_loss")
+            )
         logging.info(model.summary())
         train_model(config, model, data_processor, flags.restore_checkpoint)
     else:
@@ -421,11 +498,29 @@ if __name__ == "__main__":
             flags, shape=config["training_input_shape"], batch_size=1
         )
 
+        if flags.model_name == "ordered_state":
+            model = ordered_state_model.training_model(
+                model, config.get("training_loss")
+            )
+
         model.load_weights(
             os.path.join(config["train_dir"], flags.use_weights) + ".weights.h5"
         )
 
         logging.info(model.summary())
+
+        if flags.model_name == "ordered_state":
+            if flags.test_tf_nonstreaming:
+                raise ValueError(
+                    "ordered_state TensorFlow evaluation requires the ordered-state "
+                    "evaluator; disable --test_tf_nonstreaming"
+                )
+            if flags.tflite_roc_split != "none":
+                raise ValueError(
+                    "ordered_state artifacts require the ordered-state streaming "
+                    "evaluator; pass --tflite_roc_split none"
+                )
+            model = ordered_state_model.acoustic_model(model)
 
         evaluate_model(
             config,
@@ -436,4 +531,5 @@ if __name__ == "__main__":
             flags.test_tflite_nonstreaming_quantized,
             flags.test_tflite_streaming,
             flags.test_tflite_streaming_quantized,
+            flags.tflite_roc_split,
         )

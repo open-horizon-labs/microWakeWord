@@ -1,0 +1,962 @@
+schema_version: 1
+id: kizz-control-cascade-v10
+phrase: Kizz Control
+description: >-
+  Rebuild the corrected three-stage Kizz Control cascade: a permissive ordered
+  detector, a full-pre-roll device-adapted INT8 DS-CNN gate, and an independent
+  ordered-state verifier. Thresholds are selected on validation only; fresh
+  device test and the locked 100-hour negative corpus remain one-way gates.
+minimum_free_gb: 100
+
+variables:
+  workspace:
+    env: KIZZ_WORKSPACE
+    default: work/kizz-control-cascade-v10
+  python:
+    env: KIZZ_PYTHON
+    default: python3
+  voice_env:
+    env: KIZZ_VOICE_ENV
+    default: ~/.config/open-horizon-labs/voice.env
+  kokoro_python:
+    env: KIZZ_KOKORO_PYTHON
+    default: python3
+  alignment_python:
+    env: KIZZ_ALIGNMENT_PYTHON
+    default: python3
+  musan_root:
+    env: KIZZ_MUSAN_ROOT
+    default: "{workspace}/public/musan"
+  musan_archive:
+    env: KIZZ_MUSAN_ARCHIVE
+    default: "{workspace}/public/archives/musan.tar.gz"
+  rir_root:
+    env: KIZZ_RIR_ROOT
+    default: "{workspace}/public/RIRS_NOISES"
+  rir_archive:
+    env: KIZZ_RIR_ARCHIVE
+    default: "{workspace}/public/archives/rirs_noises.zip"
+  librispeech_root:
+    env: KIZZ_LIBRISPEECH_ROOT
+    default: "{workspace}/public/LibriSpeech/train-clean-360"
+  librispeech_archive:
+    env: KIZZ_LIBRISPEECH_ARCHIVE
+    default: "{workspace}/public/archives/train-clean-360.tar.gz"
+  device_train_corpus:
+    env: KIZZ_DEVICE_TRAIN_CORPUS
+    default: "{workspace}/device/train-full-preroll/device-corpus.json"
+  device_train_quality:
+    env: KIZZ_DEVICE_TRAIN_QUALITY
+    default: "{workspace}/device/train-full-preroll/quality.json"
+  device_validation_corpus:
+    env: KIZZ_DEVICE_VALIDATION_CORPUS
+    default: "{workspace}/device/validation/device-corpus.json"
+  device_validation_quality:
+    env: KIZZ_DEVICE_VALIDATION_QUALITY
+    default: "{workspace}/device/validation/quality.json"
+  device_test_corpus:
+    env: KIZZ_DEVICE_TEST_CORPUS
+    default: "{workspace}/device/fresh-test/device-corpus.json"
+  device_test_evidence:
+    env: KIZZ_DEVICE_TEST_EVIDENCE
+    default: "{workspace}/device/fresh-test/qualification-evidence.json"
+  reference_dir:
+    default: "{repo_root}/recipes/kizz/reference-cascade-v10"
+
+policy:
+  voice_identity_disjoint_splits: true
+  positive_providers:
+    - assemblyai
+    - deepgram
+    - elevenlabs
+    - kokoro
+  excluded_positive_provider: macos-say
+  selection_split: validation
+  test_used_for_selection: false
+  locked_audio_used_for_tuning: false
+  minimum_fresh_device_recall: 0.95
+  minimum_continuous_negative_hours: 100
+  formal_false_wakes_per_hour_ceiling: 0.1
+  accepted_practical_false_wakes_per_hour_ceiling: 0.4
+
+reference_result:
+  detector:
+    sha256: f07d2c010fba020e923c23734e54ba8e86751dfd1b0f23a018eb5ff79b969ae3
+    threshold: -18.20059454471544
+    validation_recall: 0.9807692307692307
+    fresh_test_recall: 1.0
+  compact_verifier:
+    sha256: a28e8c8f3fe51ea3ae3fc76f0d79f2abdb06f19c71d7f26e0f08a16464025710
+    topology: compact_relu6_dscnn_24_32_48_64_96
+    parameters: 15793
+    macs_per_candidate: 2801952
+    threshold: 0.0
+  ordered_verifier:
+    sha256: 956a444d11f802e7780dcd3af6f43551a1fe4601fdacfd7b153bba8e11c48933
+    threshold: -19.326665980378795
+  fresh_device_test:
+    accepted: 12
+    total: 12
+  locked_continuous_negative:
+    exposure_hours: 100.47043628472223
+    detector_candidates: 19105
+    compact_accepts: 833
+    compact_acceptance_fraction: 0.04360115153101282
+    accepted_false_wakes: 23
+    accepted_false_wakes_per_hour: 0.2289230628482643
+    one_sided_upper_95_per_hour: 0.32432808751264414
+
+firmware_contract:
+  target: StackChan ESP32-S3 revision 0.2
+  execution: fixed AOT schedules with static arenas and ESP-NN kernels
+  candidate_feature_frames: 260
+  pre_context_feature_frames: 220
+  trigger_feature_frames: 1
+  post_context_feature_frames: 39
+  startup_aot_equivalence_required: true
+  exact_artifact_physical_qualification_required: true
+
+public_inputs:
+  musan:
+    url: https://www.openslr.org/resources/17/musan.tar.gz
+    md5: 0c472d4fc0c5141eca47ad1ffeb2a7df
+    license: CC BY 4.0 with per-subcollection notices
+  room_impulse_responses:
+    url: https://www.openslr.org/resources/28/rirs_noises.zip
+    md5: e6f48e257286e05de56413b4779d8ffb
+    sha256: 3b50cfde915b3984738169b4beb341e9f6b8062ae4c2076146c5db71c2c05dc7
+    license: Apache-2.0 with upstream component notices
+  librispeech_train_clean_360:
+    url: https://www.openslr.org/resources/12/train-clean-360.tar.gz
+    md5: c0e676e450a7ff2f54aeade5171606fa
+    license: CC BY 4.0
+
+stages:
+  - id: synthesize_assemblyai
+    phase: source_audio
+    description: Render the AssemblyAI share; safe to run in parallel with the other providers.
+    command:
+      - "{python}"
+      - tools/generate_kizz_control_c1_corpus.py
+      - --output
+      - "{workspace}/source-synthesis/assemblyai"
+      - --env-file
+      - "{voice_env}"
+      - --provider
+      - assemblyai
+    inputs:
+      - "{voice_env}"
+    outputs:
+      - "{workspace}/source-synthesis/assemblyai/manifest.json"
+    evidence:
+      - "{workspace}/source-synthesis/assemblyai/manifest.json"
+      - "{workspace}/source-synthesis/assemblyai/generation-report.json"
+    resources: [network, paid_api]
+
+  - id: synthesize_deepgram
+    phase: source_audio
+    description: Render the Deepgram share without sharing voice identities across splits.
+    command:
+      - "{python}"
+      - tools/generate_kizz_control_c1_corpus.py
+      - --output
+      - "{workspace}/source-synthesis/deepgram"
+      - --env-file
+      - "{voice_env}"
+      - --provider
+      - deepgram
+    inputs:
+      - "{voice_env}"
+    outputs:
+      - "{workspace}/source-synthesis/deepgram/manifest.json"
+    evidence:
+      - "{workspace}/source-synthesis/deepgram/manifest.json"
+      - "{workspace}/source-synthesis/deepgram/generation-report.json"
+    resources: [network, paid_api]
+
+  - id: synthesize_elevenlabs
+    phase: source_audio
+    description: Render the ElevenLabs share with persistent split-bound voices.
+    command:
+      - "{python}"
+      - tools/generate_kizz_control_c1_corpus.py
+      - --output
+      - "{workspace}/source-synthesis/elevenlabs"
+      - --env-file
+      - "{voice_env}"
+      - --provider
+      - elevenlabs
+    inputs:
+      - "{voice_env}"
+    outputs:
+      - "{workspace}/source-synthesis/elevenlabs/manifest.json"
+    evidence:
+      - "{workspace}/source-synthesis/elevenlabs/manifest.json"
+      - "{workspace}/source-synthesis/elevenlabs/generation-report.json"
+    resources: [network, paid_api]
+
+  - id: synthesize_kokoro
+    phase: source_audio
+    description: Render the local Kokoro share; macOS say is intentionally absent.
+    command:
+      - "{python}"
+      - tools/generate_kizz_control_c1_corpus.py
+      - --output
+      - "{workspace}/source-synthesis/kokoro"
+      - --provider
+      - kokoro
+      - --kokoro-python
+      - "{kokoro_python}"
+    outputs:
+      - "{workspace}/source-synthesis/kokoro/manifest.json"
+    evidence:
+      - "{workspace}/source-synthesis/kokoro/manifest.json"
+      - "{workspace}/source-synthesis/kokoro/generation-report.json"
+    resources: [gpu]
+
+  - id: merge_source_manifests
+    phase: source_audio
+    description: Merge all four families and enforce the provider-balance contract.
+    depends_on:
+      - synthesize_assemblyai
+      - synthesize_deepgram
+      - synthesize_elevenlabs
+      - synthesize_kokoro
+    command:
+      - "{python}"
+      - tools/merge_kizz_control_c1_source_manifests.py
+      - --manifest
+      - "{workspace}/source-synthesis/assemblyai/manifest.json"
+      - --manifest
+      - "{workspace}/source-synthesis/deepgram/manifest.json"
+      - --manifest
+      - "{workspace}/source-synthesis/elevenlabs/manifest.json"
+      - --manifest
+      - "{workspace}/source-synthesis/kokoro/manifest.json"
+      - --expected-provider
+      - assemblyai
+      - --expected-provider
+      - deepgram
+      - --expected-provider
+      - elevenlabs
+      - --expected-provider
+      - kokoro
+      - --output
+      - "{workspace}/manifests/source-synthesis-four-provider.json"
+    inputs:
+      - "{workspace}/source-synthesis/assemblyai/manifest.json"
+      - "{workspace}/source-synthesis/deepgram/manifest.json"
+      - "{workspace}/source-synthesis/elevenlabs/manifest.json"
+      - "{workspace}/source-synthesis/kokoro/manifest.json"
+    outputs:
+      - "{workspace}/manifests/source-synthesis-four-provider.json"
+    evidence:
+      - "{workspace}/manifests/source-synthesis-four-provider.json"
+
+  - id: audit_pronunciations
+    phase: source_audio
+    description: Reject renders that do not independently decode as Kizz Control.
+    depends_on: [merge_source_manifests]
+    command:
+      - "{python}"
+      - tools/audit_kizz_control_source_pronunciations.py
+      - --source-manifest
+      - "{workspace}/manifests/source-synthesis-four-provider.json"
+      - --output
+      - "{workspace}/manifests/source-pronunciation-audit.json"
+      - --split
+      - train
+      - --split
+      - validation
+      - --split
+      - test
+      - --gate-mode
+      - all
+    inputs:
+      - "{workspace}/manifests/source-synthesis-four-provider.json"
+    outputs:
+      - "{workspace}/manifests/source-pronunciation-audit.json"
+    evidence:
+      - "{workspace}/manifests/source-pronunciation-audit.json"
+
+  - id: curate_pronunciations
+    phase: source_audio
+    description: Quarantine failed sources and deterministically repair reserved panels.
+    depends_on: [audit_pronunciations]
+    command:
+      - "{python}"
+      - tools/curate_kizz_control_c1_pronunciations.py
+      - --source-manifest
+      - "{workspace}/manifests/source-synthesis-four-provider.json"
+      - --pronunciation-audit
+      - "{workspace}/manifests/source-pronunciation-audit.json"
+      - --output
+      - "{workspace}/manifests/source-pronunciation-curated.json"
+      - --quarantine-output
+      - "{workspace}/manifests/source-pronunciation-quarantine.json"
+      - --report-output
+      - "{workspace}/manifests/source-pronunciation-curation-report.json"
+      - --exclude-positive-provider
+      - macos-say
+    inputs:
+      - "{workspace}/manifests/source-synthesis-four-provider.json"
+      - "{workspace}/manifests/source-pronunciation-audit.json"
+    outputs:
+      - "{workspace}/manifests/source-pronunciation-curated.json"
+      - "{workspace}/manifests/source-pronunciation-quarantine.json"
+    evidence:
+      - "{workspace}/manifests/source-pronunciation-curated.json"
+      - "{workspace}/manifests/source-pronunciation-quarantine.json"
+      - "{workspace}/manifests/source-pronunciation-curation-report.json"
+
+  - id: freeze_negative_assets
+    phase: public_assets
+    description: Freeze train-only MUSAN assets and a separate untouched continuous lock.
+    command:
+      - "{python}"
+      - tools/freeze_kizz_control_c1_negative_assets.py
+      - --musan-root
+      - "{musan_root}"
+      - --musan-archive
+      - "{musan_archive}"
+      - --musan-archive-md5
+      - 0c472d4fc0c5141eca47ad1ffeb2a7df
+      - --assets-output
+      - "{workspace}/manifests/c1-negative-assets.json"
+      - --continuous-output
+      - "{workspace}/manifests/c1-continuous-negative-lock.json"
+      - --report-output
+      - "{workspace}/manifests/c1-negative-freeze-report.json"
+      - --minimum-holdout-hours
+      - "100"
+    inputs: ["{musan_root}", "{musan_archive}"]
+    outputs:
+      - "{workspace}/manifests/c1-negative-assets.json"
+      - "{workspace}/manifests/c1-continuous-negative-lock.json"
+    evidence:
+      - "{workspace}/manifests/c1-negative-assets.json"
+      - "{workspace}/manifests/c1-continuous-negative-lock.json"
+      - "{workspace}/manifests/c1-negative-freeze-report.json"
+
+  - id: align_positive_phones
+    phase: source_audio
+    description: Apply the independent pinned CTC alignment/collision gate and emit measured phone spans.
+    depends_on: [curate_pronunciations]
+    command:
+      - "{alignment_python}"
+      - tools/build_kizz_phone_alignment_v3.py
+      - --manifest
+      - "{workspace}/manifests/source-pronunciation-curated.json"
+      - --output
+      - "{workspace}/manifests/source-pronunciation-curated-aligned.json"
+      - --phrase-id
+      - kizz-control
+      - --required-provider
+      - assemblyai
+      - --required-provider
+      - deepgram
+      - --required-provider
+      - elevenlabs
+      - --required-provider
+      - kokoro
+      - --maximum-provider-share
+      - "0.30"
+      - --provider-balance-seed
+      - "231"
+    inputs:
+      - "{workspace}/manifests/source-pronunciation-curated.json"
+    outputs:
+      - "{workspace}/manifests/source-pronunciation-curated-aligned.json"
+    evidence:
+      - "{workspace}/manifests/source-pronunciation-curated-aligned.json"
+    resources: [gpu]
+
+  - id: freeze_rirs
+    phase: public_assets
+    description: Freeze the deterministic train-only OpenSLR room-response subset.
+    command:
+      - "{python}"
+      - tools/freeze_kizz_control_c1_rirs.py
+      - --rir-root
+      - "{rir_root}"
+      - --archive
+      - "{rir_archive}"
+      - --output
+      - "{workspace}/manifests/c1-rirs.json"
+      - --report-output
+      - "{workspace}/manifests/c1-rirs-report.json"
+      - --per-stratum
+      - "8"
+    inputs: ["{rir_root}", "{rir_archive}"]
+    outputs: ["{workspace}/manifests/c1-rirs.json"]
+    evidence:
+      - "{workspace}/manifests/c1-rirs.json"
+      - "{workspace}/manifests/c1-rirs-report.json"
+
+  - id: compose_training_manifest
+    phase: feature_corpus
+    description: Join curated speech with frozen negatives and create randomized train-only overlays.
+    depends_on: [align_positive_phones, freeze_negative_assets]
+    command:
+      - "{python}"
+      - tools/compose_kizz_control_c1_manifest.py
+      - --source-manifest
+      - "{workspace}/manifests/source-pronunciation-curated-aligned.json"
+      - --frozen-manifest
+      - "{workspace}/manifests/c1-negative-assets.json"
+      - --output
+      - "{workspace}/manifests/c1-training.json"
+      - --overlay-output
+      - "{workspace}/manifests/c1-train-overlays.json"
+    inputs:
+      - "{workspace}/manifests/source-pronunciation-curated-aligned.json"
+      - "{workspace}/manifests/c1-negative-assets.json"
+    outputs:
+      - "{workspace}/manifests/c1-training.json"
+      - "{workspace}/manifests/c1-train-overlays.json"
+    evidence:
+      - "{workspace}/manifests/c1-training.json"
+      - "{workspace}/manifests/c1-train-overlays.json"
+
+  - id: build_source_features
+    phase: feature_corpus
+    description: Materialize deterministic clean and randomized overlay detector inputs.
+    depends_on: [compose_training_manifest, freeze_rirs]
+    command:
+      - "{python}"
+      - tools/build_kizz_candidate_source_features.py
+      - --source-manifest
+      - "{workspace}/manifests/c1-training.json"
+      - --negative-manifest
+      - "{workspace}/manifests/c1-negative-assets.json"
+      - --rir-manifest
+      - "{workspace}/manifests/c1-rirs.json"
+      - --output
+      - "{workspace}/candidate-source-features"
+    inputs:
+      - "{workspace}/manifests/c1-training.json"
+      - "{workspace}/manifests/c1-negative-assets.json"
+      - "{workspace}/manifests/c1-rirs.json"
+    outputs:
+      - "{workspace}/candidate-source-features/source-manifest.json"
+      - "{workspace}/candidate-source-features/source-features.npy"
+    evidence:
+      - "{workspace}/candidate-source-features/source-manifest.json"
+      - "{workspace}/candidate-source-features/source-features.npy"
+
+  - id: trace_frozen_detector
+    phase: detector_conditioning
+    description: Run the frozen high-recall detector and record exact candidate geometry.
+    depends_on: [build_source_features]
+    command:
+      - "{python}"
+      - tools/trace_kizz_ordered_state_detector.py
+      - --firmware-artifact
+      - "{reference_dir}/detector.metadata.json"
+      - --model
+      - "{reference_dir}/kizz_control_detector.tflite"
+      - --source-manifest
+      - "{workspace}/candidate-source-features/source-manifest.json"
+      - --source-features
+      - "{workspace}/candidate-source-features/source-features.npy"
+      - --output
+      - "{workspace}/detector-traces"
+      - --threshold-report
+      - "{reference_dir}/detector.threshold.json"
+    inputs:
+      - "{reference_dir}/detector.metadata.json"
+      - "{reference_dir}/kizz_control_detector.tflite"
+      - "{reference_dir}/detector.threshold.json"
+      - "{workspace}/candidate-source-features/source-manifest.json"
+      - "{workspace}/candidate-source-features/source-features.npy"
+    outputs: ["{workspace}/detector-traces/detector-traces.json"]
+    evidence: ["{workspace}/detector-traces/detector-traces.json"]
+    reads_splits: [train, validation, test]
+
+  - id: build_candidate_dataset
+    phase: verifier_dataset
+    description: Build only windows that the frozen detector actually emitted.
+    depends_on: [trace_frozen_detector, freeze_negative_assets]
+    command:
+      - "{python}"
+      - tools/build_kizz_candidate_verifier_dataset.py
+      - --source-manifest
+      - "{workspace}/candidate-source-features/source-manifest.json"
+      - --source-features
+      - "{workspace}/candidate-source-features/source-features.npy"
+      - --detector-traces
+      - "{workspace}/detector-traces/detector-traces.json"
+      - --locked-holdout-manifest
+      - "{workspace}/manifests/c1-continuous-negative-lock.json"
+      - --output
+      - "{workspace}/candidate-dataset-base"
+      - --pre-context-frames
+      - "220"
+      - --post-context-frames
+      - "39"
+      - --hard-negative-top-k
+      - "66"
+      - --hard-negative-group-by
+      - source
+    inputs:
+      - "{workspace}/candidate-source-features/source-manifest.json"
+      - "{workspace}/candidate-source-features/source-features.npy"
+      - "{workspace}/detector-traces/detector-traces.json"
+      - "{workspace}/manifests/c1-continuous-negative-lock.json"
+    outputs:
+      - "{workspace}/candidate-dataset-base/corpus.json"
+      - "{workspace}/candidate-dataset-base/features.npy"
+      - "{workspace}/candidate-dataset-base/labels.npy"
+      - "{workspace}/candidate-dataset-base/detector_scores.npy"
+      - "{workspace}/candidate-dataset-base/detector_feature_frames.npy"
+      - "{workspace}/candidate-dataset-base/detector_score_frames.npy"
+    evidence:
+      - "{workspace}/candidate-dataset-base/corpus.json"
+      - "{workspace}/candidate-dataset-base/features.npy"
+      - "{workspace}/candidate-dataset-base/labels.npy"
+      - "{workspace}/candidate-dataset-base/detector_scores.npy"
+      - "{workspace}/candidate-dataset-base/detector_feature_frames.npy"
+      - "{workspace}/candidate-dataset-base/detector_score_frames.npy"
+
+  - id: extend_device_train_full_preroll
+    phase: verifier_dataset
+    description: Add quality-gated StackChan captures with at least 2.30 seconds of real pre-trigger context.
+    depends_on: [build_candidate_dataset]
+    command:
+      - "{python}"
+      - tools/extend_kizz_candidate_verifier_with_device_corpus.py
+      - --base-dataset
+      - "{workspace}/candidate-dataset-base"
+      - --base-corpus-sha256
+      - "@sha256:{workspace}/candidate-dataset-base/corpus.json"
+      - --device-corpus
+      - "{device_train_corpus}"
+      - --device-quality-report
+      - "{device_train_quality}"
+      - --detector-metadata
+      - "{reference_dir}/detector.metadata.json"
+      - --detector-model
+      - "{reference_dir}/kizz_control_detector.tflite"
+      - --detector-threshold-report
+      - "{reference_dir}/detector.threshold.json"
+      - --output
+      - "{workspace}/candidate-dataset-v10"
+      - --top-k-per-file
+      - "4"
+      - --target-phrase
+      - Kizz Control
+    inputs:
+      - "{workspace}/candidate-dataset-base/corpus.json"
+      - "{workspace}/candidate-dataset-base/features.npy"
+      - "{workspace}/candidate-dataset-base/labels.npy"
+      - "{workspace}/candidate-dataset-base/detector_scores.npy"
+      - "{workspace}/candidate-dataset-base/detector_feature_frames.npy"
+      - "{workspace}/candidate-dataset-base/detector_score_frames.npy"
+      - "{device_train_corpus}"
+      - "{device_train_quality}"
+      - "{reference_dir}/detector.metadata.json"
+      - "{reference_dir}/kizz_control_detector.tflite"
+      - "{reference_dir}/detector.threshold.json"
+    outputs:
+      - "{workspace}/candidate-dataset-v10/corpus.json"
+      - "{workspace}/candidate-dataset-v10/features.npy"
+      - "{workspace}/candidate-dataset-v10/labels.npy"
+      - "{workspace}/candidate-dataset-v10/detector_scores.npy"
+      - "{workspace}/candidate-dataset-v10/detector_feature_frames.npy"
+      - "{workspace}/candidate-dataset-v10/detector_score_frames.npy"
+    evidence:
+      - "{workspace}/candidate-dataset-v10/corpus.json"
+      - "{workspace}/candidate-dataset-v10/features.npy"
+      - "{workspace}/candidate-dataset-v10/labels.npy"
+      - "{workspace}/candidate-dataset-v10/detector_scores.npy"
+      - "{workspace}/candidate-dataset-v10/detector_feature_frames.npy"
+      - "{workspace}/candidate-dataset-v10/detector_score_frames.npy"
+    reads_splits: [train]
+
+  - id: train_compact_verifier
+    phase: model_training
+    description: Train the 15,793-parameter INT8-friendly compact verifier at pinned seed 1056.
+    depends_on: [extend_device_train_full_preroll]
+    command:
+      - "{python}"
+      - tools/train_kizz_candidate_verifier.py
+      - --dataset
+      - "{workspace}/candidate-dataset-v10"
+      - --corpus-sha256
+      - "@sha256:{workspace}/candidate-dataset-v10/corpus.json"
+      - --output
+      - "{workspace}/verifier-run-seed1056"
+      - --steps
+      - "6000"
+      - --batch-size
+      - "64"
+      - --learning-rate
+      - "0.0005"
+      - --eval-every
+      - "100"
+      - --conditional-recall-floor
+      - "1.0"
+      - --seed
+      - "1056"
+      - --model-variant
+      - compact_relu6
+      - --augmentation-profile
+      - strong
+      - --device-robustness-profile
+      - int8_lsb1
+      - --negative-sampling-share
+      - "0.75"
+      - --negative-group-sampling
+      - proportional_example
+    inputs:
+      - "{workspace}/candidate-dataset-v10/corpus.json"
+      - "{workspace}/candidate-dataset-v10/features.npy"
+    outputs:
+      - "{workspace}/verifier-run-seed1056/training-report.json"
+      - "{workspace}/verifier-run-seed1056/best.weights.h5"
+    evidence:
+      - "{workspace}/verifier-run-seed1056/training-report.json"
+      - "{workspace}/verifier-run-seed1056/artifact-manifest.json"
+      - "{workspace}/verifier-run-seed1056/best.weights.h5"
+    reads_splits: [train, validation]
+    post_selection_reads_splits: [test]
+    selection_role: model
+    resources: [gpu]
+
+  - id: convert_compact_verifier
+    phase: model_conversion
+    description: Quantize the selected compact graph and verify validation equivalence without retuning on test.
+    depends_on: [train_compact_verifier]
+    command:
+      - "{python}"
+      - tools/convert_kizz_candidate_verifier.py
+      - --training-report
+      - "{workspace}/verifier-run-seed1056/training-report.json"
+      - --weights
+      - "{workspace}/verifier-run-seed1056/best.weights.h5"
+      - --output
+      - "{workspace}/verifier-package"
+      - --calibration-examples
+      - "128"
+      - --equivalence-examples
+      - "128"
+      - --deployment-logit-bound
+      - "8"
+      - --quantization-mode
+      - int8
+      - --quantization-logit-safety-margin
+      - "0.3"
+    inputs:
+      - "{workspace}/verifier-run-seed1056/training-report.json"
+      - "{workspace}/verifier-run-seed1056/best.weights.h5"
+    outputs:
+      - "{workspace}/verifier-package/firmware-artifact.json"
+      - "{workspace}/verifier-package/kizz_control_candidate_verifier_int8.tflite"
+    evidence:
+      - "{workspace}/verifier-package/firmware-artifact.json"
+      - "{workspace}/verifier-package/kizz_control_candidate_verifier_int8.tflite"
+    reads_splits: [train, validation]
+
+  - id: freeze_device_validation_threshold
+    phase: threshold_selection
+    description: Select the compact threshold using qualified device validation captures only.
+    depends_on: [convert_compact_verifier]
+    command:
+      - "{python}"
+      - tools/score_kizz_candidate_verifier_device_validation.py
+      - --corpus
+      - "{device_validation_corpus}"
+      - --quality-report
+      - "{device_validation_quality}"
+      - --detector-metadata
+      - "{reference_dir}/detector.metadata.json"
+      - --detector-model
+      - "{reference_dir}/kizz_control_detector.tflite"
+      - --detector-threshold-report
+      - "{reference_dir}/detector.threshold.json"
+      - --verifier-metadata
+      - "{workspace}/verifier-package/firmware-artifact.json"
+      - --maximum-threshold
+      - "0"
+      - --output
+      - "{workspace}/reports/device-validation-threshold.json"
+    inputs:
+      - "{device_validation_corpus}"
+      - "{device_validation_quality}"
+      - "{workspace}/verifier-package/firmware-artifact.json"
+    outputs: ["{workspace}/reports/device-validation-threshold.json"]
+    evidence: ["{workspace}/reports/device-validation-threshold.json"]
+    reads_splits: [validation]
+    selection_role: threshold
+
+  - id: score_fresh_device_test
+    phase: one_way_test
+    description: Open the fresh device test once, after the compact threshold is frozen.
+    depends_on: [freeze_device_validation_threshold]
+    command:
+      - "{python}"
+      - tools/finalize_kizz_candidate_verifier_device_threshold.py
+      - --validation-report
+      - "{workspace}/reports/device-validation-threshold.json"
+      - --test-corpus
+      - "{device_test_corpus}"
+      - --test-evidence
+      - "{device_test_evidence}"
+      - --output
+      - "{workspace}/reports/fresh-device-test.json"
+    inputs:
+      - "{workspace}/reports/device-validation-threshold.json"
+      - "{device_test_corpus}"
+      - "{device_test_evidence}"
+    outputs: ["{workspace}/reports/fresh-device-test.json"]
+    evidence: ["{workspace}/reports/fresh-device-test.json"]
+    reads_splits: [test]
+
+  - id: freeze_final_continuous_lock
+    phase: one_way_test
+    description: Freeze a speaker-disjoint LibriSpeech lock before any final scoring.
+    depends_on: [extend_device_train_full_preroll]
+    command:
+      - "{python}"
+      - tools/freeze_kizz_librispeech_continuous_lock.py
+      - --root
+      - "{librispeech_root}"
+      - --subset
+      - train-clean-360
+      - --candidate-corpus
+      - "{workspace}/candidate-dataset-v10/corpus.json"
+      - --source-archive
+      - "{librispeech_archive}"
+      - --source-archive-md5
+      - c0e676e450a7ff2f54aeade5171606fa
+      - --output
+      - "{workspace}/manifests/final-continuous-lock.json"
+      - --minimum-hours
+      - "100"
+      - --margin-hours
+      - "0.5"
+      - --seed
+      - "231"
+    inputs:
+      - "{librispeech_root}"
+      - "{librispeech_archive}"
+      - "{workspace}/candidate-dataset-v10/corpus.json"
+    outputs: ["{workspace}/manifests/final-continuous-lock.json"]
+    evidence: ["{workspace}/manifests/final-continuous-lock.json"]
+
+  - id: evaluate_continuous_shard_0
+    phase: locked_evaluation
+    description: Locked continuous evaluation shard 0 of 8.
+    depends_on: [score_fresh_device_test, freeze_final_continuous_lock]
+    command: &continuous_shard_command_0
+      - "{python}"
+      - tools/evaluate_kizz_int8_continuous_cascade.py
+      - --locked-manifest
+      - "{workspace}/manifests/final-continuous-lock.json"
+      - --detector-metadata
+      - "{reference_dir}/detector.metadata.json"
+      - --detector-model
+      - "{reference_dir}/kizz_control_detector.tflite"
+      - --detector-threshold-report
+      - "{reference_dir}/detector.threshold.json"
+      - --verifier-metadata
+      - "{workspace}/verifier-package/firmware-artifact.json"
+      - --verifier-model
+      - "{workspace}/verifier-package/kizz_control_candidate_verifier_int8.tflite"
+      - --verifier-threshold-report
+      - "{workspace}/reports/fresh-device-test.json"
+      - --ordered-verifier-metadata
+      - "{reference_dir}/ordered-verifier.metadata.json"
+      - --ordered-verifier-model
+      - "{reference_dir}/kizz_control_ordered_verifier_int8.tflite"
+      - --ordered-verifier-threshold-report
+      - "{reference_dir}/ordered-verifier.threshold.json"
+      - --checkpoint
+      - "{workspace}/reports/continuous/shard-0.checkpoint.json"
+      - --output
+      - "{workspace}/reports/continuous/shard-0.json"
+      - --shard-count
+      - "8"
+      - --shard-index
+      - "0"
+      - --acceptance-ceiling
+      - "0.1"
+    inputs: &continuous_inputs
+      - "{workspace}/manifests/final-continuous-lock.json"
+      - "{reference_dir}/detector.metadata.json"
+      - "{reference_dir}/kizz_control_detector.tflite"
+      - "{reference_dir}/detector.threshold.json"
+      - "{workspace}/verifier-package/firmware-artifact.json"
+      - "{workspace}/verifier-package/kizz_control_candidate_verifier_int8.tflite"
+      - "{workspace}/reports/fresh-device-test.json"
+      - "{reference_dir}/ordered-verifier.metadata.json"
+      - "{reference_dir}/kizz_control_ordered_verifier_int8.tflite"
+      - "{reference_dir}/ordered-verifier.threshold.json"
+    outputs: ["{workspace}/reports/continuous/shard-0.json"]
+    evidence: ["{workspace}/reports/continuous/shard-0.json"]
+    reads_splits: [locked_test]
+    resources: [cpu_heavy]
+
+  - id: evaluate_continuous_shard_1
+    phase: locked_evaluation
+    description: Locked continuous evaluation shard 1 of 8.
+    depends_on: [score_fresh_device_test, freeze_final_continuous_lock]
+    command: ["{python}", tools/evaluate_kizz_int8_continuous_cascade.py, --locked-manifest, "{workspace}/manifests/final-continuous-lock.json", --detector-metadata, "{reference_dir}/detector.metadata.json", --detector-model, "{reference_dir}/kizz_control_detector.tflite", --detector-threshold-report, "{reference_dir}/detector.threshold.json", --verifier-metadata, "{workspace}/verifier-package/firmware-artifact.json", --verifier-model, "{workspace}/verifier-package/kizz_control_candidate_verifier_int8.tflite", --verifier-threshold-report, "{workspace}/reports/fresh-device-test.json", --ordered-verifier-metadata, "{reference_dir}/ordered-verifier.metadata.json", --ordered-verifier-model, "{reference_dir}/kizz_control_ordered_verifier_int8.tflite", --ordered-verifier-threshold-report, "{reference_dir}/ordered-verifier.threshold.json", --checkpoint, "{workspace}/reports/continuous/shard-1.checkpoint.json", --output, "{workspace}/reports/continuous/shard-1.json", --shard-count, "8", --shard-index, "1", --acceptance-ceiling, "0.1"]
+    inputs: *continuous_inputs
+    outputs: ["{workspace}/reports/continuous/shard-1.json"]
+    evidence: ["{workspace}/reports/continuous/shard-1.json"]
+    reads_splits: [locked_test]
+    resources: [cpu_heavy]
+
+  - id: evaluate_continuous_shard_2
+    phase: locked_evaluation
+    description: Locked continuous evaluation shard 2 of 8.
+    depends_on: [score_fresh_device_test, freeze_final_continuous_lock]
+    command: ["{python}", tools/evaluate_kizz_int8_continuous_cascade.py, --locked-manifest, "{workspace}/manifests/final-continuous-lock.json", --detector-metadata, "{reference_dir}/detector.metadata.json", --detector-model, "{reference_dir}/kizz_control_detector.tflite", --detector-threshold-report, "{reference_dir}/detector.threshold.json", --verifier-metadata, "{workspace}/verifier-package/firmware-artifact.json", --verifier-model, "{workspace}/verifier-package/kizz_control_candidate_verifier_int8.tflite", --verifier-threshold-report, "{workspace}/reports/fresh-device-test.json", --ordered-verifier-metadata, "{reference_dir}/ordered-verifier.metadata.json", --ordered-verifier-model, "{reference_dir}/kizz_control_ordered_verifier_int8.tflite", --ordered-verifier-threshold-report, "{reference_dir}/ordered-verifier.threshold.json", --checkpoint, "{workspace}/reports/continuous/shard-2.checkpoint.json", --output, "{workspace}/reports/continuous/shard-2.json", --shard-count, "8", --shard-index, "2", --acceptance-ceiling, "0.1"]
+    inputs: *continuous_inputs
+    outputs: ["{workspace}/reports/continuous/shard-2.json"]
+    evidence: ["{workspace}/reports/continuous/shard-2.json"]
+    reads_splits: [locked_test]
+    resources: [cpu_heavy]
+
+  - id: evaluate_continuous_shard_3
+    phase: locked_evaluation
+    description: Locked continuous evaluation shard 3 of 8.
+    depends_on: [score_fresh_device_test, freeze_final_continuous_lock]
+    command: ["{python}", tools/evaluate_kizz_int8_continuous_cascade.py, --locked-manifest, "{workspace}/manifests/final-continuous-lock.json", --detector-metadata, "{reference_dir}/detector.metadata.json", --detector-model, "{reference_dir}/kizz_control_detector.tflite", --detector-threshold-report, "{reference_dir}/detector.threshold.json", --verifier-metadata, "{workspace}/verifier-package/firmware-artifact.json", --verifier-model, "{workspace}/verifier-package/kizz_control_candidate_verifier_int8.tflite", --verifier-threshold-report, "{workspace}/reports/fresh-device-test.json", --ordered-verifier-metadata, "{reference_dir}/ordered-verifier.metadata.json", --ordered-verifier-model, "{reference_dir}/kizz_control_ordered_verifier_int8.tflite", --ordered-verifier-threshold-report, "{reference_dir}/ordered-verifier.threshold.json", --checkpoint, "{workspace}/reports/continuous/shard-3.checkpoint.json", --output, "{workspace}/reports/continuous/shard-3.json", --shard-count, "8", --shard-index, "3", --acceptance-ceiling, "0.1"]
+    inputs: *continuous_inputs
+    outputs: ["{workspace}/reports/continuous/shard-3.json"]
+    evidence: ["{workspace}/reports/continuous/shard-3.json"]
+    reads_splits: [locked_test]
+    resources: [cpu_heavy]
+
+  - id: evaluate_continuous_shard_4
+    phase: locked_evaluation
+    description: Locked continuous evaluation shard 4 of 8.
+    depends_on: [score_fresh_device_test, freeze_final_continuous_lock]
+    command: ["{python}", tools/evaluate_kizz_int8_continuous_cascade.py, --locked-manifest, "{workspace}/manifests/final-continuous-lock.json", --detector-metadata, "{reference_dir}/detector.metadata.json", --detector-model, "{reference_dir}/kizz_control_detector.tflite", --detector-threshold-report, "{reference_dir}/detector.threshold.json", --verifier-metadata, "{workspace}/verifier-package/firmware-artifact.json", --verifier-model, "{workspace}/verifier-package/kizz_control_candidate_verifier_int8.tflite", --verifier-threshold-report, "{workspace}/reports/fresh-device-test.json", --ordered-verifier-metadata, "{reference_dir}/ordered-verifier.metadata.json", --ordered-verifier-model, "{reference_dir}/kizz_control_ordered_verifier_int8.tflite", --ordered-verifier-threshold-report, "{reference_dir}/ordered-verifier.threshold.json", --checkpoint, "{workspace}/reports/continuous/shard-4.checkpoint.json", --output, "{workspace}/reports/continuous/shard-4.json", --shard-count, "8", --shard-index, "4", --acceptance-ceiling, "0.1"]
+    inputs: *continuous_inputs
+    outputs: ["{workspace}/reports/continuous/shard-4.json"]
+    evidence: ["{workspace}/reports/continuous/shard-4.json"]
+    reads_splits: [locked_test]
+    resources: [cpu_heavy]
+
+  - id: evaluate_continuous_shard_5
+    phase: locked_evaluation
+    description: Locked continuous evaluation shard 5 of 8.
+    depends_on: [score_fresh_device_test, freeze_final_continuous_lock]
+    command: ["{python}", tools/evaluate_kizz_int8_continuous_cascade.py, --locked-manifest, "{workspace}/manifests/final-continuous-lock.json", --detector-metadata, "{reference_dir}/detector.metadata.json", --detector-model, "{reference_dir}/kizz_control_detector.tflite", --detector-threshold-report, "{reference_dir}/detector.threshold.json", --verifier-metadata, "{workspace}/verifier-package/firmware-artifact.json", --verifier-model, "{workspace}/verifier-package/kizz_control_candidate_verifier_int8.tflite", --verifier-threshold-report, "{workspace}/reports/fresh-device-test.json", --ordered-verifier-metadata, "{reference_dir}/ordered-verifier.metadata.json", --ordered-verifier-model, "{reference_dir}/kizz_control_ordered_verifier_int8.tflite", --ordered-verifier-threshold-report, "{reference_dir}/ordered-verifier.threshold.json", --checkpoint, "{workspace}/reports/continuous/shard-5.checkpoint.json", --output, "{workspace}/reports/continuous/shard-5.json", --shard-count, "8", --shard-index, "5", --acceptance-ceiling, "0.1"]
+    inputs: *continuous_inputs
+    outputs: ["{workspace}/reports/continuous/shard-5.json"]
+    evidence: ["{workspace}/reports/continuous/shard-5.json"]
+    reads_splits: [locked_test]
+    resources: [cpu_heavy]
+
+  - id: evaluate_continuous_shard_6
+    phase: locked_evaluation
+    description: Locked continuous evaluation shard 6 of 8.
+    depends_on: [score_fresh_device_test, freeze_final_continuous_lock]
+    command: ["{python}", tools/evaluate_kizz_int8_continuous_cascade.py, --locked-manifest, "{workspace}/manifests/final-continuous-lock.json", --detector-metadata, "{reference_dir}/detector.metadata.json", --detector-model, "{reference_dir}/kizz_control_detector.tflite", --detector-threshold-report, "{reference_dir}/detector.threshold.json", --verifier-metadata, "{workspace}/verifier-package/firmware-artifact.json", --verifier-model, "{workspace}/verifier-package/kizz_control_candidate_verifier_int8.tflite", --verifier-threshold-report, "{workspace}/reports/fresh-device-test.json", --ordered-verifier-metadata, "{reference_dir}/ordered-verifier.metadata.json", --ordered-verifier-model, "{reference_dir}/kizz_control_ordered_verifier_int8.tflite", --ordered-verifier-threshold-report, "{reference_dir}/ordered-verifier.threshold.json", --checkpoint, "{workspace}/reports/continuous/shard-6.checkpoint.json", --output, "{workspace}/reports/continuous/shard-6.json", --shard-count, "8", --shard-index, "6", --acceptance-ceiling, "0.1"]
+    inputs: *continuous_inputs
+    outputs: ["{workspace}/reports/continuous/shard-6.json"]
+    evidence: ["{workspace}/reports/continuous/shard-6.json"]
+    reads_splits: [locked_test]
+    resources: [cpu_heavy]
+
+  - id: evaluate_continuous_shard_7
+    phase: locked_evaluation
+    description: Locked continuous evaluation shard 7 of 8.
+    depends_on: [score_fresh_device_test, freeze_final_continuous_lock]
+    command: ["{python}", tools/evaluate_kizz_int8_continuous_cascade.py, --locked-manifest, "{workspace}/manifests/final-continuous-lock.json", --detector-metadata, "{reference_dir}/detector.metadata.json", --detector-model, "{reference_dir}/kizz_control_detector.tflite", --detector-threshold-report, "{reference_dir}/detector.threshold.json", --verifier-metadata, "{workspace}/verifier-package/firmware-artifact.json", --verifier-model, "{workspace}/verifier-package/kizz_control_candidate_verifier_int8.tflite", --verifier-threshold-report, "{workspace}/reports/fresh-device-test.json", --ordered-verifier-metadata, "{reference_dir}/ordered-verifier.metadata.json", --ordered-verifier-model, "{reference_dir}/kizz_control_ordered_verifier_int8.tflite", --ordered-verifier-threshold-report, "{reference_dir}/ordered-verifier.threshold.json", --checkpoint, "{workspace}/reports/continuous/shard-7.checkpoint.json", --output, "{workspace}/reports/continuous/shard-7.json", --shard-count, "8", --shard-index, "7", --acceptance-ceiling, "0.1"]
+    inputs: *continuous_inputs
+    outputs: ["{workspace}/reports/continuous/shard-7.json"]
+    evidence: ["{workspace}/reports/continuous/shard-7.json"]
+    reads_splits: [locked_test]
+    resources: [cpu_heavy]
+
+  - id: merge_continuous_evaluation
+    phase: locked_evaluation
+    description: Revalidate and merge all eight locked shards; missing or duplicate evidence fails closed.
+    depends_on:
+      - evaluate_continuous_shard_0
+      - evaluate_continuous_shard_1
+      - evaluate_continuous_shard_2
+      - evaluate_continuous_shard_3
+      - evaluate_continuous_shard_4
+      - evaluate_continuous_shard_5
+      - evaluate_continuous_shard_6
+      - evaluate_continuous_shard_7
+    command:
+      - "{python}"
+      - tools/evaluate_kizz_int8_continuous_cascade.py
+      - --merge-shards
+      - "{workspace}/reports/continuous/shard-0.json"
+      - "{workspace}/reports/continuous/shard-1.json"
+      - "{workspace}/reports/continuous/shard-2.json"
+      - "{workspace}/reports/continuous/shard-3.json"
+      - "{workspace}/reports/continuous/shard-4.json"
+      - "{workspace}/reports/continuous/shard-5.json"
+      - "{workspace}/reports/continuous/shard-6.json"
+      - "{workspace}/reports/continuous/shard-7.json"
+      - --output
+      - "{workspace}/reports/continuous/merged-100h.json"
+    inputs:
+      - "{workspace}/reports/continuous/shard-0.json"
+      - "{workspace}/reports/continuous/shard-1.json"
+      - "{workspace}/reports/continuous/shard-2.json"
+      - "{workspace}/reports/continuous/shard-3.json"
+      - "{workspace}/reports/continuous/shard-4.json"
+      - "{workspace}/reports/continuous/shard-5.json"
+      - "{workspace}/reports/continuous/shard-6.json"
+      - "{workspace}/reports/continuous/shard-7.json"
+    outputs: ["{workspace}/reports/continuous/merged-100h.json"]
+    evidence: ["{workspace}/reports/continuous/merged-100h.json"]
+    reads_splits: [locked_test]
+
+  - id: package_firmware_handoff
+    phase: firmware_handoff
+    description: Package all three models, thresholds, reports, and the still-open hardware qualification boundary.
+    depends_on: [merge_continuous_evaluation]
+    command:
+      - "{python}"
+      - tools/package_kizz_control_cascade.py
+      - --detector-metadata
+      - "{reference_dir}/detector.metadata.json"
+      - --detector-model
+      - "{reference_dir}/kizz_control_detector.tflite"
+      - --detector-threshold
+      - "{reference_dir}/detector.threshold.json"
+      - --compact-metadata
+      - "{workspace}/verifier-package/firmware-artifact.json"
+      - --compact-model
+      - "{workspace}/verifier-package/kizz_control_candidate_verifier_int8.tflite"
+      - --compact-threshold
+      - "{workspace}/reports/fresh-device-test.json"
+      - --ordered-metadata
+      - "{reference_dir}/ordered-verifier.metadata.json"
+      - --ordered-model
+      - "{reference_dir}/kizz_control_ordered_verifier_int8.tflite"
+      - --ordered-threshold
+      - "{reference_dir}/ordered-verifier.threshold.json"
+      - --positive-report
+      - "{workspace}/reports/fresh-device-test.json"
+      - --continuous-report
+      - "{workspace}/reports/continuous/merged-100h.json"
+      - --accepted-practical-faph
+      - "0.4"
+      - --accept-observed-operating-point
+      - --output
+      - "{workspace}/firmware-handoff"
+    inputs:
+      - "{reference_dir}/detector.metadata.json"
+      - "{reference_dir}/kizz_control_detector.tflite"
+      - "{reference_dir}/detector.threshold.json"
+      - "{workspace}/verifier-package/firmware-artifact.json"
+      - "{workspace}/verifier-package/kizz_control_candidate_verifier_int8.tflite"
+      - "{workspace}/reports/fresh-device-test.json"
+      - "{reference_dir}/ordered-verifier.metadata.json"
+      - "{reference_dir}/kizz_control_ordered_verifier_int8.tflite"
+      - "{reference_dir}/ordered-verifier.threshold.json"
+      - "{workspace}/reports/continuous/merged-100h.json"
+    outputs: ["{workspace}/firmware-handoff/cascade.json"]
+    evidence: ["{workspace}/firmware-handoff/cascade.json"]

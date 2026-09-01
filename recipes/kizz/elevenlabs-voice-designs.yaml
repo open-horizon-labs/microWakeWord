@@ -1,0 +1,66 @@
+schema_version: 1
+random_seed: 231
+design_model_id: eleven_ttv_v3
+tts_model_id: eleven_multilingual_v2
+guidance_scale: 5
+preview_text: >-
+  The morning light reached the kitchen while someone made tea and opened a
+  window. They spoke casually across the room, paused for a moment, and then
+  continued in the same relaxed, everyday voice.
+
+# Voice identity, not a regenerated sample, defines the split. Train uses two
+# adult and two child voices. Validation and test use speakers absent from train
+# and from each other.
+voices:
+  - name: kizz-adult-train-a
+    split: train
+    age_group: adult
+    samples_per_phrase: 3
+    description: >-
+      Warm conversational American adult female voice, relaxed delivery, medium
+      pitch, natural pace, and clear diction.
+  - name: kizz-adult-train-b
+    split: train
+    age_group: adult
+    samples_per_phrase: 3
+    description: >-
+      Natural conversational American adult male voice, relaxed delivery,
+      medium-low pitch, ordinary pace, and clear diction.
+  - name: kizz-child-train-a
+    split: train
+    age_group: child
+    samples_per_phrase: 3
+    description: >-
+      Natural conversational American teenage boy voice, youthful pitch,
+      relaxed delivery, ordinary pace, and clear diction.
+  - name: kizz-child-train-b
+    split: train
+    age_group: child
+    samples_per_phrase: 3
+    description: >-
+      Natural conversational American teenage girl voice, youthful pitch,
+      relaxed delivery, ordinary pace, and clear diction.
+  - name: kizz-adult-validation
+    split: validation
+    age_group: adult
+    description: >-
+      Natural conversational Canadian adult female voice, steady pace, medium
+      pitch, relaxed delivery, and clear diction.
+  - name: kizz-child-validation
+    split: validation
+    age_group: child
+    description: >-
+      Natural conversational American teenage boy voice, youthful pitch, casual
+      delivery, slightly quick pace, and clear diction.
+  - name: kizz-adult-test
+    split: test
+    age_group: adult
+    description: >-
+      Natural conversational British adult male voice, light accent, relaxed
+      delivery, ordinary pace, and clear diction.
+  - name: kizz-child-test
+    split: test
+    age_group: child
+    description: >-
+      Natural conversational American teenage girl voice, youthful pitch,
+      casual delivery, slightly quick pace, and clear diction.

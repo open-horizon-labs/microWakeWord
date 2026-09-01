@@ -1,0 +1,58 @@
+schema_version: 1
+name: hiphi_kizz_teacher_c_v3_batch_mixture
+
+# Count unique source recordings before augmentation. A generator/provider may
+# not dominate the train split or either checkpoint-selection split. This
+# would have rejected v8's 94% Kokoro parent mix before training.
+positive_source_guard:
+  splits:
+    train:
+      minimum_families: 4
+      maximum_family_share: 0.50
+    validation:
+      minimum_families: 3
+      maximum_family_share: 0.60
+    test:
+      minimum_families: 3
+      maximum_family_share: 0.60
+
+# Half of every batch is acoustically-qualified canonical positive audio.
+# Negative source probabilities are normalized inside that negative half, so
+# the all-sample group shares below are one half of their CLI probabilities.
+mixture_guard:
+  schema_version: 1
+  require_all_active_groups: true
+  minimum_realized_samples: 1000
+  tolerances:
+    sample_share: 0.02
+    weighted_pressure_share: 0.02
+  expected:
+    classes:
+      positive:
+        sample_share: 0.50
+        weighted_pressure_share: 0.50
+      negative:
+        sample_share: 0.50
+        weighted_pressure_share: 0.50
+    groups:
+      canonical_positive:
+        sample_share: 0.50
+        weighted_pressure_share: 0.50
+      phonetic_collision:
+        sample_share: 0.075
+        weighted_pressure_share: 0.075
+      device_collision:
+        sample_share: 0.025
+        weighted_pressure_share: 0.025
+      far_field_speech:
+        sample_share: 0.125
+        weighted_pressure_share: 0.125
+      household_speech:
+        sample_share: 0.10
+        weighted_pressure_share: 0.10
+      music:
+        sample_share: 0.075
+        weighted_pressure_share: 0.075
+      background_noise:
+        sample_share: 0.10
+        weighted_pressure_share: 0.10

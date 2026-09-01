@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "date": "2026-08-24",
+  "manifest_examples": 4706,
+  "test": {
+    "positive": 252,
+    "negative": 560,
+    "negative_exposure_seconds": 26646.6455625,
+    "heldout_false_wakes": 15
+  },
+  "C": {
+    "recipe": "microfrontend_ordered_state_teacher",
+    "steps": 3000,
+    "hidden_size": 128,
+    "recurrent_layers": 7,
+    "frame_weight": 0.0,
+    "sequence_weight": 1.0,
+    "recall": 0.9007936507936508,
+    "false_accepts_per_hour": 0.0,
+    "heldout_false_wake_accepts": 0,
+    "qualified_fixed_window": true,
+    "ambient_hours_qualification": false
+  },
+  "D": {
+    "recipe": "wavlm_base_plus_waveform_teacher",
+    "steps": 1000,
+    "batch_size": 8,
+    "learning_rate": 0.0002,
+    "recall_floor": 0.9007936507936508,
+    "false_accepts_per_hour_at_recall_floor": 72.68457095123715,
+    "heldout_false_wake_accepts_at_recall_floor": 13,
+    "qualified_fixed_window": false
+  },
+  "decision": "proceed_with_C_only"
+}
