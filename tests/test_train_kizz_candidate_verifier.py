@@ -72,7 +72,9 @@ class CandidateDatasetFixture:
         labels = np.zeros(len(definitions), dtype=np.int8)
         detector_scores = np.linspace(0.55, 0.99, len(definitions), dtype=np.float32)
         rows = []
-        for index, (name, split, label, family, first, second) in enumerate(definitions):
+        for index, (name, split, label, family, first, second) in enumerate(
+            definitions
+        ):
             features[index, 0, 0] = first
             features[index, 0, 1] = second
             labels[index] = label
@@ -285,9 +287,7 @@ class TrainCandidateVerifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture = CandidateDatasetFixture(Path(directory))
             with self.assertRaisesRegex(ValueError, "corpus hash drift"):
-                load_verified_dataset(
-                    fixture.dataset, expected_corpus_sha256="0" * 64
-                )
+                load_verified_dataset(fixture.dataset, expected_corpus_sha256="0" * 64)
 
         with tempfile.TemporaryDirectory() as directory:
             fixture = CandidateDatasetFixture(Path(directory))
@@ -394,8 +394,9 @@ class TrainCandidateVerifierTests(unittest.TestCase):
             )
 
             for invalid in (0.49, 0.76, math.nan):
-                with self.subTest(invalid=invalid), self.assertRaisesRegex(
-                    ValueError, "negative_sampling_share"
+                with (
+                    self.subTest(invalid=invalid),
+                    self.assertRaisesRegex(ValueError, "negative_sampling_share"),
                 ):
                     BalancedCandidateBatcher(
                         dataset,
@@ -451,9 +452,7 @@ class TrainCandidateVerifierTests(unittest.TestCase):
             self.assertEqual(
                 report["mode"], "bounded_negative_emphasis_proportional_example"
             )
-            self.assertEqual(
-                report["negative_group_sampling"], "proportional_example"
-            )
+            self.assertEqual(report["negative_group_sampling"], "proportional_example")
             # The fixture has one collision and one noise train negative, so the
             # proportional sampler remains approximately even without forcing
             # exact per-batch group balance.
@@ -468,6 +467,58 @@ class TrainCandidateVerifierTests(unittest.TestCase):
                     batch_size=8,
                     seed=31,
                     negative_group_sampling="bogus",
+                )
+
+    def test_physical_hard_negative_share_is_bounded_and_deterministic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = CandidateDatasetFixture(Path(directory))
+            dataset = load_verified_dataset(
+                fixture.dataset, expected_corpus_sha256=sha256_file(fixture.corpus_path)
+            )
+            dataset.rows[2]["capture_id"] = "hardneg-fixture"
+            first = BalancedCandidateBatcher(
+                dataset,
+                batch_size=8,
+                seed=37,
+                negative_group_sampling="proportional_example",
+                physical_hard_negative_share=0.5,
+            )
+            second = BalancedCandidateBatcher(
+                dataset,
+                batch_size=8,
+                seed=37,
+                negative_group_sampling="proportional_example",
+                physical_hard_negative_share=0.5,
+            )
+            for step in range(20):
+                first_features, first_labels = first.batch(step)
+                second_features, second_labels = second.batch(step)
+                np.testing.assert_array_equal(first_features, second_features)
+                np.testing.assert_array_equal(first_labels, second_labels)
+            report = first.report()
+            self.assertEqual(
+                report["configured_physical_hard_negative_share_within_negatives"],
+                0.5,
+            )
+            self.assertEqual(
+                report["negative_group_samples"]["noise"]["share_within_class"],
+                0.5,
+            )
+            with self.assertRaisesRegex(ValueError, "requires proportional_example"):
+                BalancedCandidateBatcher(
+                    dataset,
+                    batch_size=8,
+                    seed=37,
+                    negative_group_sampling="uniform_group",
+                    physical_hard_negative_share=0.1,
+                )
+            with self.assertRaisesRegex(ValueError, "within"):
+                BalancedCandidateBatcher(
+                    dataset,
+                    batch_size=8,
+                    seed=37,
+                    negative_group_sampling="proportional_example",
+                    physical_hard_negative_share=0.51,
                 )
 
     def test_feature_augmentation_is_training_only_seeded_and_nonnegative(self):
@@ -622,7 +673,9 @@ class TrainCandidateVerifierTests(unittest.TestCase):
             if layer["op"] == "Conv2D" and layer["kernel"] == (1, 1)
         ]
         self.assertEqual(len(pointwise), 4)
-        self.assertEqual(dscnn_spec()[-1], {"name": "verifier_logit", "op": "Dense", "units": 1})
+        self.assertEqual(
+            dscnn_spec()[-1], {"name": "verifier_logit", "op": "Dense", "units": 1}
+        )
         cost = estimate_dscnn_cost()
         self.assertEqual(cost["parameter_estimate"], 15793)
         self.assertEqual(cost["mac_estimate"], 2801952)
@@ -631,7 +684,9 @@ class TrainCandidateVerifierTests(unittest.TestCase):
         self.assertEqual(DEFAULT_MODEL_VARIANT, "compact")
         self.assertEqual(MODEL_VARIANT_CHANNELS["compact"], (24, 32, 48, 64, 96))
         self.assertEqual(dscnn_spec(), dscnn_spec("compact"))
-        self.assertEqual(estimate_dscnn_cost(), estimate_dscnn_cost(model_variant="compact"))
+        self.assertEqual(
+            estimate_dscnn_cost(), estimate_dscnn_cost(model_variant="compact")
+        )
 
         from tools.convert_kizz_candidate_verifier import _model_topology_sha256
 
@@ -683,11 +738,7 @@ class TrainCandidateVerifierTests(unittest.TestCase):
         self.assertEqual(MODEL_VARIANT_CHANNELS["wide"], (32, 48, 64, 80, 112))
         self.assertEqual(wide, dscnn_spec("wide"))
         self.assertEqual(
-            [
-                layer["filters"]
-                for layer in wide
-                if layer["op"] == "Conv2D"
-            ],
+            [layer["filters"] for layer in wide if layer["op"] == "Conv2D"],
             [32, 48, 64, 80, 112],
         )
         self.assertEqual(
@@ -701,22 +752,20 @@ class TrainCandidateVerifierTests(unittest.TestCase):
         self.assertGreaterEqual(
             wide_cost["mac_estimate"] / compact_cost["mac_estimate"], 1.5
         )
-        self.assertLess(
-            wide_cost["mac_estimate"] / compact_cost["mac_estimate"], 2.0
-        )
+        self.assertLess(wide_cost["mac_estimate"] / compact_cost["mac_estimate"], 2.0)
 
     def test_compact_relu6_keeps_compact_cost_and_bounds_all_convolutions(self):
         spec = dscnn_spec("compact_relu6")
         convolutions = [
-            layer
-            for layer in spec
-            if layer["op"] in {"Conv2D", "DepthwiseConv2D"}
+            layer for layer in spec if layer["op"] in {"Conv2D", "DepthwiseConv2D"}
         ]
         self.assertTrue(convolutions)
         self.assertTrue(all(layer["activation"] == "relu6" for layer in convolutions))
         relu6_cost = estimate_dscnn_cost(model_variant="compact_relu6")
         compact_cost = estimate_dscnn_cost(model_variant="compact")
-        self.assertEqual(relu6_cost["parameter_estimate"], compact_cost["parameter_estimate"])
+        self.assertEqual(
+            relu6_cost["parameter_estimate"], compact_cost["parameter_estimate"]
+        )
         self.assertEqual(relu6_cost["mac_estimate"], compact_cost["mac_estimate"])
         backend = TensorFlowVerifierBackend()
         model = backend.build_model(
@@ -753,7 +802,9 @@ class TrainCandidateVerifierTests(unittest.TestCase):
             self.assertEqual(architecture["input_shape"], [260, 40, 1])
             self.assertEqual(architecture["parameter_count"], 24081)
             self.assertEqual(architecture["mac_estimate"], 4310512)
-            self.assertEqual(architecture["dscnn_spec"], json.loads(json.dumps(dscnn_spec("wide"))))
+            self.assertEqual(
+                architecture["dscnn_spec"], json.loads(json.dumps(dscnn_spec("wide")))
+            )
             model_json = json.loads((output / "model.json").read_text(encoding="utf-8"))
             self.assertEqual(model_json["model_variant"], "wide")
             model_provenance = model_json[MODEL_JSON_PROVENANCE_KEY]
@@ -778,9 +829,7 @@ class TrainCandidateVerifierTests(unittest.TestCase):
 
     def test_temporal_variant_preserves_time_resolution_with_esp_nn_ops(self):
         temporal = dscnn_spec("temporal")
-        depthwise = [
-            layer for layer in temporal if layer["op"] == "DepthwiseConv2D"
-        ]
+        depthwise = [layer for layer in temporal if layer["op"] == "DepthwiseConv2D"]
         self.assertEqual(
             [layer["strides"] for layer in depthwise],
             [(2, 2), (2, 2), (2, 2), (2, 2)],
@@ -791,7 +840,10 @@ class TrainCandidateVerifierTests(unittest.TestCase):
             {"Conv2D", "DepthwiseConv2D", "Flatten", "Dense"},
         )
         cost = estimate_dscnn_cost(model_variant="temporal")
-        self.assertGreater(cost["mac_estimate"], estimate_dscnn_cost(model_variant="wide")["mac_estimate"])
+        self.assertGreater(
+            cost["mac_estimate"],
+            estimate_dscnn_cost(model_variant="wide")["mac_estimate"],
+        )
         self.assertLess(cost["mac_estimate"], 12_000_000)
         backend = TensorFlowVerifierBackend()
         model = backend.build_model(

@@ -31,6 +31,7 @@ SPLITS = ("train", "validation", "test")
 DEFAULT_CONDITIONAL_RECALL_FLOOR = 0.98
 DEFAULT_NEGATIVE_SAMPLING_SHARE = 0.75
 DEFAULT_NEGATIVE_GROUP_SAMPLING = "uniform_group"
+DEFAULT_PHYSICAL_HARD_NEGATIVE_SHARE = 0.0
 NEGATIVE_GROUP_SAMPLING_MODES = ("proportional_example", "uniform_group")
 MIN_NEGATIVE_SAMPLING_SHARE = 0.50
 MAX_NEGATIVE_SAMPLING_SHARE = 0.75
@@ -158,8 +159,7 @@ def sha256_file(path: Path) -> str:
 
 def _canonical_bytes(value: Any) -> bytes:
     return (
-        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        + "\n"
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
     ).encode("utf-8")
 
 
@@ -194,7 +194,9 @@ def bind_model_json_provenance(
     try:
         payload = json.loads(serialized)
     except json.JSONDecodeError as error:
-        raise ValueError(f"backend model architecture is not valid JSON: {error}") from error
+        raise ValueError(
+            f"backend model architecture is not valid JSON: {error}"
+        ) from error
     if not isinstance(payload, dict):
         raise ValueError("backend model architecture must be a JSON object")
     topology_sha256 = model_topology_sha256(serialized)
@@ -319,17 +321,14 @@ def _verify_transitive_bindings(
 
     visit(value, label)
     unique = {
-        (entry["label"], entry["path"], entry["sha256"]): entry
-        for entry in verified
+        (entry["label"], entry["path"], entry["sha256"]): entry for entry in verified
     }
     return tuple(unique[key] for key in sorted(unique))
 
 
 def _identity_values(row: Mapping[str, Any]) -> set[str]:
     values = {
-        str(row[key])
-        for key in IDENTITY_FIELDS
-        if row.get(key) not in (None, "")
+        str(row[key]) for key in IDENTITY_FIELDS if row.get(key) not in (None, "")
     }
     for key in ("ancestry_ids", "parent_source_ids"):
         raw = row.get(key, [])
@@ -386,8 +385,16 @@ def _positive_provider(row: Mapping[str, Any]) -> str:
 def _negative_group(row: Mapping[str, Any]) -> str:
     group = row.get("source_group") or row.get("semantic_label")
     if not isinstance(group, str) or not group:
-        raise ValueError(f"negative candidate {row.get('candidate_id')} lacks source_group")
+        raise ValueError(
+            f"negative candidate {row.get('candidate_id')} lacks source_group"
+        )
     return group
+
+
+def _is_physical_hard_negative(row: Mapping[str, Any]) -> bool:
+    return int(row.get("label", -1)) == 0 and str(row.get("capture_id", "")).startswith(
+        "hardneg-"
+    )
 
 
 def _verify_hard_negative_policy(
@@ -431,9 +438,7 @@ def _verify_hard_negative_policy(
         if not isinstance(split_counts, Mapping):
             raise ValueError(f"missing held-out count evidence for {split}")
         selected = sum(
-            1
-            for row in rows
-            if row["split"] == split and int(row["label"]) == 0
+            1 for row in rows if row["split"] == split and int(row["label"]) == 0
         )
         raw = split_counts.get("raw_negative_candidates")
         declared_selected = split_counts.get("selected_negative_candidates")
@@ -476,7 +481,9 @@ def load_verified_dataset(
             raise FileNotFoundError(path)
         observed = sha256_file(path)
         if observed != expected_array:
-            raise ValueError(f"{name} hash drift: expected {expected_array}, got {observed}")
+            raise ValueError(
+                f"{name} hash drift: expected {expected_array}, got {observed}"
+            )
         array_bindings[name] = {
             "path": str(path),
             "sha256": observed,
@@ -492,15 +499,23 @@ def load_verified_dataset(
         root / "detector_scores.npy", mmap_mode="r", allow_pickle=False
     )
     rows = corpus.get("examples")
-    if not isinstance(rows, list) or not rows or not all(isinstance(r, dict) for r in rows):
+    if (
+        not isinstance(rows, list)
+        or not rows
+        or not all(isinstance(r, dict) for r in rows)
+    ):
         raise ValueError("corpus requires nonempty examples")
     if features.ndim != 3 or tuple(features.shape[1:]) != INPUT_SHAPE:
-        raise ValueError(f"features must have shape [N,{INPUT_SHAPE[0]},{INPUT_SHAPE[1]}]")
+        raise ValueError(
+            f"features must have shape [N,{INPUT_SHAPE[0]},{INPUT_SHAPE[1]}]"
+        )
     if labels.shape != (len(rows),) or detector_scores.shape != (len(rows),):
         raise ValueError("feature, label, detector-score, and corpus counts differ")
     if len(features) != len(rows):
         raise ValueError("feature and corpus counts differ")
-    if not np.issubdtype(features.dtype, np.number) or not np.all(np.isfinite(features)):
+    if not np.issubdtype(features.dtype, np.number) or not np.all(
+        np.isfinite(features)
+    ):
         raise ValueError("features must be finite numeric values")
     if not np.all(np.isfinite(detector_scores)):
         raise ValueError("detector scores must be finite")
@@ -511,7 +526,11 @@ def load_verified_dataset(
     split_class_counts: Counter[tuple[str, int]] = Counter()
     for index, row in enumerate(rows):
         candidate_id = row.get("candidate_id")
-        if not isinstance(candidate_id, str) or not candidate_id or candidate_id in seen_candidates:
+        if (
+            not isinstance(candidate_id, str)
+            or not candidate_id
+            or candidate_id in seen_candidates
+        ):
             raise ValueError("candidate_id values must be unique nonempty strings")
         seen_candidates.add(candidate_id)
         if row.get("detector_conditioned") is not True:
@@ -611,6 +630,7 @@ class BalancedCandidateBatcher:
         augmentation_profile: str = "none",
         negative_sampling_share: float = DEFAULT_NEGATIVE_SAMPLING_SHARE,
         negative_group_sampling: str = DEFAULT_NEGATIVE_GROUP_SAMPLING,
+        physical_hard_negative_share: float = DEFAULT_PHYSICAL_HARD_NEGATIVE_SHARE,
     ):
         positive_count, negative_count = _batch_class_counts(
             batch_size, negative_sampling_share
@@ -626,6 +646,19 @@ class BalancedCandidateBatcher:
                 f"{list(NEGATIVE_GROUP_SAMPLING_MODES)}"
             )
         self.negative_group_sampling = negative_group_sampling
+        if (
+            not math.isfinite(physical_hard_negative_share)
+            or not 0.0 <= physical_hard_negative_share <= 0.5
+        ):
+            raise ValueError("physical_hard_negative_share must be within [0,0.5]")
+        if (
+            physical_hard_negative_share
+            and negative_group_sampling != "proportional_example"
+        ):
+            raise ValueError(
+                "physical_hard_negative_share requires proportional_example sampling"
+            )
+        self.physical_hard_negative_share = float(physical_hard_negative_share)
         self.negative_samples_per_batch = negative_count
         self.positive_samples_per_batch = positive_count
         if augmentation_profile not in FEATURE_AUGMENTATION_PROFILES:
@@ -658,6 +691,29 @@ class BalancedCandidateBatcher:
         self.negative_indexes = np.concatenate(
             [self.negative_groups[key] for key in sorted(self.negative_groups)]
         )
+        self.physical_hard_negative_indexes = np.asarray(
+            [
+                int(index)
+                for index in self.negative_indexes
+                if _is_physical_hard_negative(dataset.rows[int(index)])
+            ],
+            dtype=np.int64,
+        )
+        self.background_negative_indexes = np.asarray(
+            [
+                int(index)
+                for index in self.negative_indexes
+                if not _is_physical_hard_negative(dataset.rows[int(index)])
+            ],
+            dtype=np.int64,
+        )
+        if self.physical_hard_negative_share and (
+            not len(self.physical_hard_negative_indexes)
+            or not len(self.background_negative_indexes)
+        ):
+            raise ValueError(
+                "physical hard-negative emphasis requires both physical and background negatives"
+            )
         self.realized_positive: Counter[str] = Counter()
         self.realized_negative: Counter[str] = Counter()
 
@@ -676,9 +732,7 @@ class BalancedCandidateBatcher:
             selected_groups.append(group)
         return np.asarray(selected, dtype=np.int64), selected_groups
 
-    def _augment(
-        self, features: np.ndarray, rng: np.random.Generator
-    ) -> np.ndarray:
+    def _augment(self, features: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         if self.augmentation_profile == "none":
             return features
         output = np.asarray(features, dtype=np.float32).copy()
@@ -691,9 +745,7 @@ class BalancedCandidateBatcher:
             if level_offset:
                 sample += np.float32(rng.uniform(-level_offset, level_offset))
             if noise_stddev:
-                sample += rng.normal(0.0, noise_stddev, sample.shape).astype(
-                    np.float32
-                )
+                sample += rng.normal(0.0, noise_stddev, sample.shape).astype(np.float32)
             if max_shift:
                 shift = int(rng.integers(-max_shift, max_shift + 1))
                 if shift > 0:
@@ -726,13 +778,32 @@ class BalancedCandidateBatcher:
                 self.negative_groups, self.negative_samples_per_batch, rng
             )
         else:
-            negatives = self.negative_indexes[
-                rng.integers(
-                    0,
-                    len(self.negative_indexes),
-                    size=self.negative_samples_per_batch,
+            physical_count = int(
+                round(
+                    self.negative_samples_per_batch * self.physical_hard_negative_share
                 )
+            )
+            if self.physical_hard_negative_share and physical_count == 0:
+                physical_count = 1
+            background_count = self.negative_samples_per_batch - physical_count
+            background_pool = (
+                self.background_negative_indexes
+                if physical_count
+                else self.negative_indexes
+            )
+            background = background_pool[
+                rng.integers(0, len(background_pool), size=background_count)
             ]
+            physical = (
+                self.physical_hard_negative_indexes[
+                    rng.integers(
+                        0, len(self.physical_hard_negative_indexes), size=physical_count
+                    )
+                ]
+                if physical_count
+                else np.empty(0, dtype=np.int64)
+            )
+            negatives = np.concatenate([background, physical])
             negative_groups = [
                 _negative_group(self.dataset.rows[int(index)]) for index in negatives
             ]
@@ -770,6 +841,7 @@ class BalancedCandidateBatcher:
             "candidate_condition": "frozen_detector_trigger_only",
             "sampling_split": "train",
             "configured_negative_sampling_share": self.negative_sampling_share,
+            "configured_physical_hard_negative_share_within_negatives": self.physical_hard_negative_share,
             "negative_sampling_share_bounds": {
                 "minimum": MIN_NEGATIVE_SAMPLING_SHARE,
                 "maximum": MAX_NEGATIVE_SAMPLING_SHARE,
@@ -793,7 +865,9 @@ class BalancedCandidateBatcher:
             "positive_provider_samples": group_rows(
                 self.realized_positive, positive_total
             ),
-            "negative_group_samples": group_rows(self.realized_negative, negative_total),
+            "negative_group_samples": group_rows(
+                self.realized_negative, negative_total
+            ),
         }
 
 
@@ -811,12 +885,12 @@ def dscnn_spec(
     model_variant: str = DEFAULT_MODEL_VARIANT,
 ) -> tuple[dict[str, Any], ...]:
     """Return a deterministic ESP32-friendly verifier topology."""
-    stem, pointwise_1, pointwise_2, pointwise_3, pointwise_4 = (
-        MODEL_VARIANT_CHANNELS[_model_variant(model_variant)]
-    )
-    stem_stride, ds1_stride, ds2_stride, ds3_stride, ds4_stride = (
-        MODEL_VARIANT_STRIDES[model_variant]
-    )
+    stem, pointwise_1, pointwise_2, pointwise_3, pointwise_4 = MODEL_VARIANT_CHANNELS[
+        _model_variant(model_variant)
+    ]
+    stem_stride, ds1_stride, ds2_stride, ds3_stride, ds4_stride = MODEL_VARIANT_STRIDES[
+        model_variant
+    ]
     activation = "relu6" if model_variant == "compact_relu6" else "relu"
     return (
         {
@@ -834,13 +908,59 @@ def dscnn_spec(
             "strides": ds1_stride,
             "activation": activation,
         },
-        {"name": "ds1_pointwise", "op": "Conv2D", "filters": pointwise_1, "kernel": (1, 1), "strides": (1, 1), "activation": activation},
-        {"name": "ds2_depthwise", "op": "DepthwiseConv2D", "kernel": (3, 3), "strides": ds2_stride, "activation": activation},
-        {"name": "ds2_pointwise", "op": "Conv2D", "filters": pointwise_2, "kernel": (1, 1), "strides": (1, 1), "activation": activation},
-        {"name": "ds3_depthwise", "op": "DepthwiseConv2D", "kernel": (3, 3), "strides": ds3_stride, "activation": activation},
-        {"name": "ds3_pointwise", "op": "Conv2D", "filters": pointwise_3, "kernel": (1, 1), "strides": (1, 1), "activation": activation},
-        {"name": "ds4_depthwise", "op": "DepthwiseConv2D", "kernel": (3, 3), "strides": ds4_stride, "activation": activation},
-        {"name": "ds4_pointwise", "op": "Conv2D", "filters": pointwise_4, "kernel": (1, 1), "strides": (1, 1), "activation": activation},
+        {
+            "name": "ds1_pointwise",
+            "op": "Conv2D",
+            "filters": pointwise_1,
+            "kernel": (1, 1),
+            "strides": (1, 1),
+            "activation": activation,
+        },
+        {
+            "name": "ds2_depthwise",
+            "op": "DepthwiseConv2D",
+            "kernel": (3, 3),
+            "strides": ds2_stride,
+            "activation": activation,
+        },
+        {
+            "name": "ds2_pointwise",
+            "op": "Conv2D",
+            "filters": pointwise_2,
+            "kernel": (1, 1),
+            "strides": (1, 1),
+            "activation": activation,
+        },
+        {
+            "name": "ds3_depthwise",
+            "op": "DepthwiseConv2D",
+            "kernel": (3, 3),
+            "strides": ds3_stride,
+            "activation": activation,
+        },
+        {
+            "name": "ds3_pointwise",
+            "op": "Conv2D",
+            "filters": pointwise_3,
+            "kernel": (1, 1),
+            "strides": (1, 1),
+            "activation": activation,
+        },
+        {
+            "name": "ds4_depthwise",
+            "op": "DepthwiseConv2D",
+            "kernel": (3, 3),
+            "strides": ds4_stride,
+            "activation": activation,
+        },
+        {
+            "name": "ds4_pointwise",
+            "op": "Conv2D",
+            "filters": pointwise_4,
+            "kernel": (1, 1),
+            "strides": (1, 1),
+            "activation": activation,
+        },
         # Candidate windows are causally aligned: the detector event is always
         # the final frame. Preserve coarse temporal position instead of turning
         # the verifier into a bag-of-phonemes classifier via global averaging.
@@ -868,8 +988,12 @@ def estimate_dscnn_cost(
             kernel_h, kernel_w = layer["kernel"]
             if operation == "Conv2D":
                 out_channels = int(layer["filters"])
-                layer_params = kernel_h * kernel_w * channels * out_channels + out_channels
-                layer_macs = out_h * out_w * kernel_h * kernel_w * channels * out_channels
+                layer_params = (
+                    kernel_h * kernel_w * channels * out_channels + out_channels
+                )
+                layer_macs = (
+                    out_h * out_w * kernel_h * kernel_w * channels * out_channels
+                )
             else:
                 out_channels = channels
                 layer_params = kernel_h * kernel_w * channels + channels
@@ -970,7 +1094,7 @@ class TensorFlowVerifierBackend:
                     int(layer["units"]),
                     activation=str(layer.get("activation", "linear")),
                     kernel_regularizer=regularizer,
-                    name=str(layer["name"])
+                    name=str(layer["name"]),
                 )(value)
             else:  # pragma: no cover - guarded by the fixed local specification.
                 raise AssertionError(f"unsupported operation {operation}")
@@ -994,7 +1118,9 @@ class TensorFlowVerifierBackend:
             shape=INPUT_SHAPE + (1,), name="robust_log_mel_window"
         )
         training_value = training_inputs
-        spec_by_name = {str(layer["name"]): layer for layer in dscnn_spec(model_variant)}
+        spec_by_name = {
+            str(layer["name"]): layer for layer in dscnn_spec(model_variant)
+        }
         for layer_index, keras_layer in enumerate(model.layers[1:]):
             training_value = keras_layer(training_value)
             layer_spec = spec_by_name[keras_layer.name]
@@ -1115,7 +1241,9 @@ def _metrics_at_threshold(
     accepted = probabilities >= threshold
     positive = labels == 1
     negative = labels == 0
-    positive_units = {_positive_unit(row) for row, label in zip(rows, labels) if label == 1}
+    positive_units = {
+        _positive_unit(row) for row, label in zip(rows, labels) if label == 1
+    }
     accepted_units = {
         _positive_unit(row)
         for row, label, is_accepted in zip(rows, labels, accepted)
@@ -1279,7 +1407,11 @@ def _save_weights_atomic(backend: Any, model: Any, path: Path) -> dict[str, Any]
         except FileNotFoundError:
             pass
         raise
-    return {"path": str(path.resolve()), "sha256": sha256_file(path), "bytes": path.stat().st_size}
+    return {
+        "path": str(path.resolve()),
+        "sha256": sha256_file(path),
+        "bytes": path.stat().st_size,
+    }
 
 
 def _verify_output_bindings(bindings: Mapping[str, Mapping[str, Any]]) -> None:
@@ -1311,9 +1443,7 @@ def _build_backend_model(
         for parameter in parameters
     )
     if device_robustness_profile != "none" and not accepts_robustness:
-        raise ValueError(
-            "training backend does not support device robustness profiles"
-        )
+        raise ValueError("training backend does not support device robustness profiles")
     if accepts_variant:
         kwargs: dict[str, Any] = {
             "learning_rate": learning_rate,
@@ -1344,6 +1474,7 @@ def train_candidate_verifier(
     augmentation_profile: str = "none",
     negative_sampling_share: float = DEFAULT_NEGATIVE_SAMPLING_SHARE,
     negative_group_sampling: str = DEFAULT_NEGATIVE_GROUP_SAMPLING,
+    physical_hard_negative_share: float = DEFAULT_PHYSICAL_HARD_NEGATIVE_SHARE,
     model_variant: str = DEFAULT_MODEL_VARIANT,
     device_robustness_profile: str = "none",
     seed: int = 248,
@@ -1366,10 +1497,16 @@ def train_candidate_verifier(
         raise ValueError("learning_rate must be finite and positive")
     if not 0 < conditional_recall_floor <= 1:
         raise ValueError("conditional_recall_floor must be within (0,1]")
-    if validation_logit_safety_margin < 0 or not math.isfinite(validation_logit_safety_margin):
-        raise ValueError("validation_logit_safety_margin must be finite and nonnegative")
+    if validation_logit_safety_margin < 0 or not math.isfinite(
+        validation_logit_safety_margin
+    ):
+        raise ValueError(
+            "validation_logit_safety_margin must be finite and nonnegative"
+        )
     if augmentation_profile not in FEATURE_AUGMENTATION_PROFILES:
-        raise ValueError(f"unknown feature augmentation profile: {augmentation_profile}")
+        raise ValueError(
+            f"unknown feature augmentation profile: {augmentation_profile}"
+        )
     dataset = load_verified_dataset(
         dataset_root, expected_corpus_sha256=expected_corpus_sha256
     )
@@ -1414,13 +1551,16 @@ def train_candidate_verifier(
         augmentation_profile=augmentation_profile,
         negative_sampling_share=negative_sampling_share,
         negative_group_sampling=negative_group_sampling,
+        physical_hard_negative_share=physical_hard_negative_share,
     )
     validation_indexes = _indexes(dataset, "validation")
     test_indexes = _indexes(dataset, "test")
     validation_features = np.asarray(
         dataset.features[validation_indexes], dtype=np.float32
     )[..., None]
-    test_features = np.asarray(dataset.features[test_indexes], dtype=np.float32)[..., None]
+    test_features = np.asarray(dataset.features[test_indexes], dtype=np.float32)[
+        ..., None
+    ]
     validation_labels = np.asarray(dataset.labels[validation_indexes], dtype=np.int8)
     test_labels = np.asarray(dataset.labels[test_indexes], dtype=np.int8)
     validation_rows = [dataset.rows[int(index)] for index in validation_indexes]
@@ -1456,7 +1596,9 @@ def train_candidate_verifier(
                 threshold=None,
             )
             if validation.get("selection_performed") is not True:
-                raise ValueError("validation evaluator did not perform threshold selection")
+                raise ValueError(
+                    "validation evaluator did not perform threshold selection"
+                )
             item = {
                 "step": step + 1,
                 "validation_loss": loss,
@@ -1674,7 +1816,9 @@ def train_candidate_verifier(
         },
         "bindings": manifest_bindings,
     }
-    _atomic_bytes(output / "artifact-manifest.json", _canonical_bytes(artifact_manifest))
+    _atomic_bytes(
+        output / "artifact-manifest.json", _canonical_bytes(artifact_manifest)
+    )
     return report
 
 
@@ -1732,6 +1876,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             "individual detector candidates in proportion to the observed corpus"
         ),
     )
+    parser.add_argument(
+        "--physical-hard-negative-share",
+        type=float,
+        default=DEFAULT_PHYSICAL_HARD_NEGATIVE_SHARE,
+        help=(
+            "Reserve this fraction of negative batch slots for train-only "
+            "StackChan captures whose capture_id starts with hardneg-; requires "
+            "proportional_example sampling (0 to 0.5)"
+        ),
+    )
     args = parser.parse_args(argv)
     report = train_candidate_verifier(
         args.dataset,
@@ -1746,6 +1900,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         augmentation_profile=args.augmentation_profile,
         negative_sampling_share=args.negative_sampling_share,
         negative_group_sampling=args.negative_group_sampling,
+        physical_hard_negative_share=args.physical_hard_negative_share,
         model_variant=args.model_variant,
         device_robustness_profile=args.device_robustness_profile,
         seed=args.seed,

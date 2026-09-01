@@ -1,5 +1,10 @@
 # Kizz Control three-stage cascade v10
 
+> This document preserves the 100.47-hour v10 reference. For the later
+> physical-hard-negative training, exact StackChan flash, and fresh hardware
+> qualification workflow, use
+> [the v15 refinement](CASCADE_V15_HARDWARE_REFINEMENT.md).
+
 This is the shortest reproducible path we know for the **Kizz Control** wake
 phrase. It preserves the useful teacher/student work without replaying every
 rejected experiment.
