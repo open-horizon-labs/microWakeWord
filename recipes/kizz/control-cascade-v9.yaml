@@ -32,7 +32,7 @@ variables:
     default: "{workspace}/public/archives/musan.tar.gz"
   rir_root:
     env: KIZZ_RIR_ROOT
-    default: "{workspace}/public/rir"
+    default: "{workspace}/public/RIRS_NOISES"
   rir_archive:
     env: KIZZ_RIR_ARCHIVE
     default: "{workspace}/public/archives/rirs_noises.zip"
@@ -121,6 +121,21 @@ firmware_contract:
   post_context_feature_frames: 39
   startup_aot_equivalence_required: true
   exact_artifact_physical_qualification_required: true
+
+public_inputs:
+  musan:
+    url: https://www.openslr.org/resources/17/musan.tar.gz
+    md5: 0c472d4fc0c5141eca47ad1ffeb2a7df
+    license: CC BY 4.0 with per-subcollection notices
+  room_impulse_responses:
+    url: https://www.openslr.org/resources/28/rirs_noises.zip
+    md5: e6f48e257286e05de56413b4779d8ffb
+    sha256: 3b50cfde915b3984738169b4beb341e9f6b8062ae4c2076146c5db71c2c05dc7
+    license: Apache-2.0 with upstream component notices
+  librispeech_train_clean_360:
+    url: https://www.openslr.org/resources/12/train-clean-360.tar.gz
+    md5: c0e676e450a7ff2f54aeade5171606fa
+    license: CC BY 4.0
 
 stages:
   - id: synthesize_assemblyai
@@ -310,6 +325,8 @@ stages:
       - "{musan_root}"
       - --musan-archive
       - "{musan_archive}"
+      - --musan-archive-md5
+      - 0c472d4fc0c5141eca47ad1ffeb2a7df
       - --assets-output
       - "{workspace}/manifests/c1-negative-assets.json"
       - --continuous-output
@@ -769,6 +786,8 @@ stages:
       - "{workspace}/candidate-dataset-v9/corpus.json"
       - --source-archive
       - "{librispeech_archive}"
+      - --source-archive-md5
+      - c0e676e450a7ff2f54aeade5171606fa
       - --output
       - "{workspace}/manifests/final-continuous-lock.json"
       - --minimum-hours

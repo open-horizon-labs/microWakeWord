@@ -1,9 +1,17 @@
 import unittest
+import tempfile
+from pathlib import Path
 
-from tools.freeze_kizz_control_c1_negative_assets import partition_rows
+from tools.freeze_kizz_control_c1_negative_assets import md5_file, partition_rows
 
 
 class FreezeKizzControlC1NegativeAssetsTests(unittest.TestCase):
+    def test_archive_md5_uses_standard_digest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "musan.tar.gz"
+            archive.write_bytes(b"musan")
+            self.assertEqual(md5_file(archive), "6a8efccbf58fca9121ee2d161224206b")
+
     def rows(self):
         rows = []
         # 109.5 hours total. Music has two files per artist group so the test

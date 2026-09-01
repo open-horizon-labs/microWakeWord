@@ -14,6 +14,7 @@ import soundfile as sf
 
 
 FAMILIES = ("speech", "music", "noise")
+MUSAN_ARCHIVE_MD5 = "0c472d4fc0c5141eca47ad1ffeb2a7df"
 SOURCE_GROUPS = {
     "speech": "public_speech",
     "music": "music",
@@ -23,6 +24,14 @@ SOURCE_GROUPS = {
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def md5_file(path: Path) -> str:
+    digest = hashlib.md5(usedforsecurity=False)
     with path.open("rb") as source:
         for block in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(block)
@@ -209,10 +218,19 @@ def freeze(
     report_output: Path,
     *,
     background_manifest: Path | None = None,
+    expected_archive_md5: str | None = None,
     minimum_holdout_hours: float = 100.0,
     train_target_hours_per_family: float = 3.0,
     seed: int = 231,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    archive_md5 = md5_file(musan_archive)
+    if expected_archive_md5 is not None:
+        expected_archive_md5 = expected_archive_md5.strip().lower()
+        if archive_md5 != expected_archive_md5:
+            raise ValueError(
+                "MUSAN archive MD5 mismatch: "
+                f"expected {expected_archive_md5}, got {archive_md5}"
+            )
     inventory = inventory_musan(musan_root)
     train, holdout = partition_rows(
         inventory,
@@ -230,6 +248,8 @@ def freeze(
         "musan_root": str(musan_root.resolve()),
         "musan_archive": str(musan_archive.resolve()),
         "musan_archive_sha256": sha256_file(musan_archive),
+        "musan_archive_md5": archive_md5,
+        "musan_archive_expected_md5": expected_archive_md5,
         "background_manifest": str(background_manifest.resolve())
         if background_manifest
         else None,
@@ -324,6 +344,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--musan-root", type=Path, required=True)
     parser.add_argument("--musan-archive", type=Path, required=True)
+    parser.add_argument(
+        "--musan-archive-md5",
+        default=MUSAN_ARCHIVE_MD5,
+        help="official OpenSLR SLR17 archive MD5",
+    )
     parser.add_argument("--background-manifest", type=Path)
     parser.add_argument("--assets-output", type=Path, required=True)
     parser.add_argument("--continuous-output", type=Path, required=True)
@@ -339,6 +364,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.continuous_output,
         args.report_output,
         background_manifest=args.background_manifest,
+        expected_archive_md5=args.musan_archive_md5,
         minimum_holdout_hours=args.minimum_holdout_hours,
         train_target_hours_per_family=args.train_target_hours_per_family,
         seed=args.seed,

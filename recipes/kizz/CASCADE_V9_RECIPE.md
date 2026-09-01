@@ -65,16 +65,67 @@ Create the environment in the durable checkout, not in `/tmp`:
 python3.12 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -e .
+
+python3.12 -m venv .alignment-venv
+.alignment-venv/bin/pip install --upgrade pip
+.alignment-venv/bin/pip install -r requirements-kizz-teacher.txt
+
+python3.12 -m venv .kokoro-venv
+.kokoro-venv/bin/pip install --upgrade pip
+.kokoro-venv/bin/pip install 'kokoro>=0.9.4' soundfile 'misaki[en]'
 ```
 
-Set the workspace and external credential/runtime locations:
+Install `ffmpeg` and `espeak-ng` with the host operating system's package
+manager. The separate environments keep TensorFlow training, Torch alignment,
+and Kokoro synthesis from forcing one incompatible dependency solve.
+
+Choose the durable data workspace before downloading anything:
 
 ```sh
 export KIZZ_WORKSPACE=/Volumes/Training/kizz-control-cascade-v9
-export KIZZ_VOICE_ENV="$HOME/.config/open-horizon-labs/voice.env"
-export KIZZ_KOKORO_PYTHON=/path/to/kokoro-venv/bin/python
-export KIZZ_ALIGNMENT_PYTHON=/path/to/torch-2.8-alignment-venv/bin/python
 ```
+
+Download the three public inputs from their official OpenSLR locations. The
+commands are resumable; the freeze stages reject an archive whose official MD5
+does not match, and the RIR stage also checks its pinned SHA-256:
+
+```sh
+mkdir -p "$KIZZ_WORKSPACE/public/archives" "$KIZZ_WORKSPACE/public"
+
+curl -fL --retry 5 -C - \
+  -o "$KIZZ_WORKSPACE/public/archives/musan.tar.gz" \
+  https://www.openslr.org/resources/17/musan.tar.gz
+curl -fL --retry 5 -C - \
+  -o "$KIZZ_WORKSPACE/public/archives/rirs_noises.zip" \
+  https://www.openslr.org/resources/28/rirs_noises.zip
+curl -fL --retry 5 -C - \
+  -o "$KIZZ_WORKSPACE/public/archives/train-clean-360.tar.gz" \
+  https://www.openslr.org/resources/12/train-clean-360.tar.gz
+
+tar -xzf "$KIZZ_WORKSPACE/public/archives/musan.tar.gz" \
+  -C "$KIZZ_WORKSPACE/public"
+unzip -q -o "$KIZZ_WORKSPACE/public/archives/rirs_noises.zip" \
+  -d "$KIZZ_WORKSPACE/public"
+tar -xzf "$KIZZ_WORKSPACE/public/archives/train-clean-360.tar.gz" \
+  -C "$KIZZ_WORKSPACE/public"
+```
+
+This produces the default roots `public/musan`, `public/RIRS_NOISES`, and
+`public/LibriSpeech/train-clean-360`. Their URLs, licenses, and expected
+checksums are also recorded under `public_inputs` in the machine recipe.
+
+Set the external credential and specialist-runtime locations:
+
+```sh
+export KIZZ_VOICE_ENV="$HOME/.config/open-horizon-labs/voice.env"
+export KIZZ_KOKORO_PYTHON="$PWD/.kokoro-venv/bin/python"
+export KIZZ_ALIGNMENT_PYTHON="$PWD/.alignment-venv/bin/python"
+```
+
+`KIZZ_VOICE_ENV` is a local dotenv file. Paid synthesis requires
+`ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY`, and either `ELEVEN_LABS_API_KEY` or
+`ELEVENLABS_API_KEY`. Do not commit that file. The runner refuses paid stages
+unless `--allow-paid` is also present.
 
 The recipe accepts environment variables or `--set NAME=VALUE` for MUSAN,
 room responses, LibriSpeech, and device corpora. Inspect the resolved graph

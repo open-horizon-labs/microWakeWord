@@ -37,6 +37,18 @@ class KizzCascadeRecipeTests(unittest.TestCase):
         self.assertEqual(
             recipe.raw["policy"]["excluded_positive_provider"], "macos-say"
         )
+        self.assertEqual(
+            recipe.raw["public_inputs"]["musan"]["md5"],
+            "0c472d4fc0c5141eca47ad1ffeb2a7df",
+        )
+        self.assertEqual(
+            recipe.raw["public_inputs"]["librispeech_train_clean_360"]["md5"],
+            "c0e676e450a7ff2f54aeade5171606fa",
+        )
+        freeze_musan = recipe.by_id["freeze_negative_assets"]
+        self.assertIn("--musan-archive-md5", freeze_musan.command)
+        freeze_librispeech = recipe.by_id["freeze_final_continuous_lock"]
+        self.assertIn("--source-archive-md5", freeze_librispeech.command)
         threshold = recipe.by_id["freeze_device_validation_threshold"]
         self.assertEqual(threshold.selection_role, "threshold")
         self.assertEqual(threshold.reads_splits, {"validation"})
