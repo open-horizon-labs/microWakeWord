@@ -547,7 +547,7 @@ def print_plan(recipe: Recipe, variables: Mapping[str, str], selected: set[str])
 
 
 def build_parser() -> argparse.ArgumentParser:
-    default_recipe = Path(__file__).resolve().parents[1] / "recipes/kizz/control-cascade-v9.yaml"
+    default_recipe = Path(__file__).resolve().parents[1] / "recipes/kizz/control-cascade-v10.yaml"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("plan", "preflight", "run", "status"))
     parser.add_argument("--recipe", type=Path, default=default_recipe)

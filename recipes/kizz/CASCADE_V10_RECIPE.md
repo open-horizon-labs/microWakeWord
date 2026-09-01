@@ -1,9 +1,4 @@
-# Kizz Control three-stage cascade v9
-
-> Historical recipe. V9's short device-capture lead created zero-padded
-> positive windows that do not occur in continuous firmware. Use
-> [v10](CASCADE_V10_RECIPE.md), which removes those rows and requires full
-> pre-roll.
+# Kizz Control three-stage cascade v10
 
 This is the shortest reproducible path we know for the **Kizz Control** wake
 phrase. It preserves the useful teacher/student work without replaying every
@@ -28,32 +23,39 @@ accept or reject "Kizz Control"
 ```
 
 The detector and ordered verifier are frozen, provenance-bound students from
-the earlier distillation lineage. V9 retrains the middle verifier with the
-actual StackChan microphone channel. Retraining all three networks together
-was not the winning approach.
+the earlier distillation lineage. V10 retrains only the middle verifier with
+the actual StackChan microphone channel and correct full pre-roll. Retraining
+all three networks together was not the winning approach: the stages have
+different jobs and useful independent decision boundaries.
 
 ## Measured reference result
 
 | Evidence | Result |
 | --- | ---: |
 | Detector validation recall | 51/52 (98.08%) |
-| Fresh StackChan-channel detector/compact recall | 12/12 |
+| Frozen validation detector/compact recall | 12/12 |
+| Fresh held-out StackChan detector/compact recall | 12/12 |
+| Exact firmware physical speaker replay | 12/12 accepted |
+| Continuous detector p99 on ESP32-S3 | about 8 ms per 10 ms hop |
+| Compact verifier physical latency | 95–123 ms per candidate |
+| Ordered verifier physical latency | 296–432 ms when reached |
+| Audio-ring overflow / partial feature reads | 0 / 0 |
 | Locked continuous-negative exposure | 100.47 hours |
 | Detector candidates | 19,105 |
-| Candidates forwarded by compact verifier | 991 (5.19%) |
-| Full-cascade false wakes | 39 |
-| Observed false wakes/hour | 0.388 (about one per 2.6 hours) |
-| One-sided 95% upper bound | 0.507/hour |
+| Candidates forwarded by compact verifier | 833 (4.36%) |
+| Full-cascade false wakes | 23 |
+| Observed false wakes/hour | 0.229 (about one per 4.4 hours) |
+| One-sided 95% upper bound | 0.324/hour |
 
-The maintainer accepted `0.388` false wakes/hour as the practical operating
+V10 improves the v9 predecessor's `0.388` false wakes/hour while preserving
+12/12 physical replay recall. The maintainer accepts this practical operating
 point. The stricter formal gate—one-sided 95% upper bound at or below
-`0.1/hour`—did **not** pass. Both facts are recorded. Host replay also does not
-establish ESP32-S3 latency, memory, thermal, power, or soak behavior.
+`0.1/hour`—still does **not** pass; both facts remain explicit.
 
 The exact models are in
-[`reference-cascade-v9`](reference-cascade-v9/README.md). Their hashes and the
+[`reference-cascade-v10`](reference-cascade-v10/README.md). Their hashes and the
 reference metrics are machine-readable in
-[`control-cascade-v9.yaml`](control-cascade-v9.yaml).
+[`control-cascade-v10.yaml`](control-cascade-v10.yaml).
 
 ## Storage and installation
 
@@ -87,7 +89,7 @@ and Kokoro synthesis from forcing one incompatible dependency solve.
 Choose the durable data workspace before downloading anything:
 
 ```sh
-export KIZZ_WORKSPACE=/Volumes/Training/kizz-control-cascade-v9
+export KIZZ_WORKSPACE=/Volumes/Training/kizz-control-cascade-v10
 ```
 
 Download the three public inputs from their official OpenSLR locations. The
@@ -195,18 +197,19 @@ firmware, microphone gain, and hardware cannot be reproduced by a blind build
 command. The tools automate capture; a person or hardware-capable agent must
 establish and record the fixture.
 
-Start the independent enrollment service on a LAN-reachable host:
+Start the independent enrollment service on a LAN-reachable host. The corpus
+argument is the durable destination for uploaded captures:
 
 ```sh
 .venv/bin/python tools/run_enrollment_service.py \
-  --corpus "$KIZZ_WORKSPACE/device/train-vol060" \
+  --corpus "$KIZZ_WORKSPACE/device/train-full-preroll" \
   --host 0.0.0.0 --port 8091 \
   --public-base-url http://TRAINING_HOST_IP:8091
 ```
 
-Capture each provider through StackChan at volume `0.60`, then in a separate
-session at `0.80`. The reference selected nine train examples per provider per
-session and retained 54 captures after quality gates:
+Capture each provider through StackChan at the documented fixture level. The
+v10 reference used host output level 0.55 and selected nine train examples per
+provider, producing 36 attempts and 31 quality-qualified captures.
 
 The capture tools deliberately wait 2.50 seconds before playback. The verifier
 uses 2.20 seconds of pre-trigger context, so a shorter lead creates zero-padded
@@ -226,23 +229,23 @@ for provider in assemblyai deepgram elevenlabs kokoro; do
   .venv/bin/python tools/capture_kizz_control_adaptation_replays.py \
     --aligned-manifest "$KIZZ_WORKSPACE/manifests/source-pronunciation-curated-aligned.json" \
     --qualification-evidence "$KIZZ_WORKSPACE/device/fresh-test/qualification-evidence.json" \
-    --corpus "$KIZZ_WORKSPACE/device/train-vol060" \
-    --selection "$KIZZ_WORKSPACE/device/train-vol060/selection.json" \
+    --corpus "$KIZZ_WORKSPACE/device/train-full-preroll" \
+    --selection "$KIZZ_WORKSPACE/device/train-full-preroll/selection.json" \
     --service-url http://TRAINING_HOST_IP:8091 \
     --device-id stackchan-DEVICE_ID --device-profile stackchan-v0.2 \
-    --provider "$provider" --per-provider 9 --volume 0.60
+    --provider "$provider" --per-provider 9 --volume 0.55 \
+    --lead-seconds 2.50
 done
 ```
 
-Repeat into `train-vol080` with `--volume 0.80`. Audit rather than hand-edit
-rejected rows:
+Audit rather than hand-edit rejected rows:
 
 ```sh
 .venv/bin/python tools/audit_kizz_control_adaptation_replays.py \
-  --corpus "$KIZZ_WORKSPACE/device/train-vol060/device-corpus.json" \
-  --selection "$KIZZ_WORKSPACE/device/train-vol060/selection.json" \
+  --corpus "$KIZZ_WORKSPACE/device/train-full-preroll/device-corpus.json" \
+  --selection "$KIZZ_WORKSPACE/device/train-full-preroll/selection.json" \
   --qualification-evidence "$KIZZ_WORKSPACE/device/fresh-test/qualification-evidence.json" \
-  --output "$KIZZ_WORKSPACE/device/train-vol060/quality.json" \
+  --output "$KIZZ_WORKSPACE/device/train-full-preroll/quality.json" \
   --expected-split train
 ```
 
@@ -282,14 +285,16 @@ It has 15,793 parameters and about 2.80 million MACs per candidate. Training
 uses seed `1056`, 6,000 steps, 75% detector-triggered negatives, proportional
 negative sampling, strong augmentation, ReLU6, and training-only INT8 fake
 quantization/noise. Conversion emits fully INT8 TFLite and checks validation
-equivalence. Device validation freezes the deployed threshold at `0.0`; test
-and continuous audio cannot retune it.
+equivalence. Device validation first computes the highest observed full-recall
+threshold, then `--maximum-threshold 0` deliberately caps deployment at `0.0`
+to preserve margin for physical variation. Test and continuous audio cannot
+retune it.
 
 ## Firmware handoff and ESP-NN
 
 `package_firmware_handoff` emits three models, metadata, thresholds, reports,
-and `cascade.json`. It intentionally records
-`physical_hardware_qualified: false`.
+and `cascade.json`. Host packaging stays conservative about hardware status;
+the firmware repository records exact-artifact physical evidence separately.
 
 StackChan firmware uses fixed C execution schedules, static arenas, and ESP-NN
 kernels. The topology is fixed while weights and quantization parameters come
@@ -306,6 +311,13 @@ Promotion requires the exact firmware artifact to pass:
 6. arena, heap, queue, ring, and audio-drop telemetry;
 7. at least 30 minutes of soak without reboot, lockout, or thermal trouble.
 
+The v10 exact artifact has passed items 1–6 during a 12/12 accepted-path replay.
+Its compact arena used 82,480 of 98,304 PSRAM bytes, detector and ordered arenas
+used 12,316 bytes each, the audio queue high-water mark was 2,048 of 16,384
+bytes, and no ring overflow or partial feature read occurred. Samples counted
+as dropped immediately after a wake are from the intentional microphone
+stop/reset transition; the same PCM is separately fed into the AFE/STT path.
+
 Host simulation proves geometry, decisions, sharding, and false-wake rate. It
 cannot replace these hardware checks.
 
@@ -321,8 +333,10 @@ later stages for rejection.
 
 The v6 compact host threshold rejected all 13 physical calibration attempts.
 Lowering it restored 12/12 recall but forwarded 95.9% of candidates and yielded
-2.18 false wakes/hour. Device-channel training at two playback levels reduced
-forwarding to 5.19% while retaining 12/12 fresh recall.
+2.18 false wakes/hour. Device-channel training created a sparse middle gate,
+but v9's short capture lead introduced impossible zero padding. V10 removed all
+54 padded v9 positives, rebuilt a clean 26,986-row candidate corpus (568
+positive, 26,418 negative), and retrained from full-pre-roll captures.
 
 ### Rejection-only timing hid the expensive path
 
@@ -360,7 +374,7 @@ durable checkout with tests. Keep code in Git and bulk data under
 ## Exact reproduction versus a new run
 
 The checked-in outer models reproduce the frozen detector and ordered verifier;
-the compact reference reproduces the accepted v9 handoff. A new run reproduces
+the compact reference reproduces the physically tested v10 handoff. A new run reproduces
 the **method and gates**, not necessarily the compact bytes, unless every WAV,
 quality decision, device capture, public archive, package version, and input
 hash matches the original lineage.

@@ -1,19 +1,19 @@
 # Kizz wake-word research and Kizz Control recipe
 
 The current implementation is the
-[Kizz Control three-stage cascade v9](CASCADE_V9_RECIPE.md). It combines a
+[Kizz Control three-stage cascade v10](CASCADE_V10_RECIPE.md). It combines a
 high-recall ordered detector, a device-adapted compact verifier, and an
 independent ordered verifier. The checked-in
-[machine recipe](control-cascade-v9.yaml),
+[machine recipe](control-cascade-v10.yaml),
 [`run_kizz_control_cascade_recipe.py`](../../tools/run_kizz_control_cascade_recipe.py),
-and [reference artifacts](reference-cascade-v9/README.md) are the starting
+and [reference artifacts](reference-cascade-v10/README.md) are the starting
 point for a new run.
 
-The accepted reference point retained 12/12 fresh StackChan-channel positives
-and produced 39 false wakes over 100.47 locked hours (`0.388/hour`). Only 5.19%
-of detector candidates reached the expensive final verifier. This is a
-maintainer-accepted practical point, not a pass of the formal `0.1/hour`
-upper-confidence gate and not yet exact-artifact physical performance proof.
+The v10 exact firmware retained 12/12 fresh held-out StackChan-channel
+positives. It passed all three startup AOT/reference equivalence checks and ran
+the continuous detector at about 8 ms p99 without ring overflow. On the locked
+100.47-hour negative corpus it produced 23 false wakes (`0.229/hour`), with only
+4.36% of detector candidates reaching the expensive ordered verifier.
 
 The older **HiPhi Kizz** phrase remains stopped under phonetic-identifiability
 evidence: intended positives and observed false wakes overlap with “Hi-Fi
@@ -38,11 +38,11 @@ is the restart contract.
 
 ### Current disposition
 
-V9 is the active Kizz Control training and firmware-handoff recipe. Its host
-false-wake result and device-channel replay meet the maintainer's practical
-bar. Exact StackChan startup equivalence, accepted-path timing, duty cycle,
-audio-drop telemetry, and physical soak remain required before claiming full
-hardware qualification. Do not treat v19, v34, the clean-slate C teacher, or
+V10 is the active Kizz Control training and firmware-handoff recipe. Its
+full-pre-roll device-channel replay and exact-artifact performance checks meet
+the current recall and responsiveness bars. Extended physical soak and normal
+voice-command coexistence remain required before claiming complete product
+qualification. Do not treat v19, v34, the clean-slate C teacher, or
 the earlier single-student score as current evidence.
 
 The later canonical-v3 C teacher reached only 9/22 held-out positives and

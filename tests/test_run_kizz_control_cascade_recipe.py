@@ -20,7 +20,7 @@ from tools.run_kizz_control_cascade_recipe import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RECIPE = ROOT / "recipes/kizz/control-cascade-v9.yaml"
+RECIPE = ROOT / "recipes/kizz/control-cascade-v10.yaml"
 
 
 class KizzCascadeRecipeTests(unittest.TestCase):
@@ -52,6 +52,11 @@ class KizzCascadeRecipeTests(unittest.TestCase):
         threshold = recipe.by_id["freeze_device_validation_threshold"]
         self.assertEqual(threshold.selection_role, "threshold")
         self.assertEqual(threshold.reads_splits, {"validation"})
+        self.assertIn("--maximum-threshold", threshold.command)
+        self.assertEqual(
+            threshold.command[threshold.command.index("--maximum-threshold") + 1],
+            "0",
+        )
         test = recipe.by_id["score_fresh_device_test"]
         self.assertIn(threshold.id, test.depends_on)
         self.assertEqual(test.reads_splits, {"test"})
@@ -72,17 +77,24 @@ class KizzCascadeRecipeTests(unittest.TestCase):
 
     def test_reference_models_match_declared_hashes(self):
         payload = yaml.safe_load(RECIPE.read_text(encoding="utf-8"))
-        reference = ROOT / "recipes/kizz/reference-cascade-v9"
+        reference = ROOT / "recipes/kizz/reference-cascade-v10"
         bindings = {
             "detector": reference / "kizz_control_detector.tflite",
             "compact_verifier": reference
-            / "kizz_control_compact_verifier_int8_v9.tflite",
+            / "kizz_control_candidate_verifier_int8.tflite",
             "ordered_verifier": reference
             / "kizz_control_ordered_verifier_int8.tflite",
         }
         for role, path in bindings.items():
             actual = hashlib.sha256(path.read_bytes()).hexdigest()
             self.assertEqual(actual, payload["reference_result"][role]["sha256"])
+
+        compact_metadata = json.loads(
+            (reference / "compact-verifier.metadata.json").read_text(encoding="utf-8")
+        )
+        declared_model = compact_metadata["artifact"]["filename"]
+        self.assertEqual(declared_model, "kizz_control_candidate_verifier_int8.tflite")
+        self.assertTrue((reference / declared_model).is_file())
 
     def test_schema_rejects_test_access_during_threshold_selection(self):
         with tempfile.TemporaryDirectory() as temporary:

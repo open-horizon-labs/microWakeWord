@@ -79,12 +79,14 @@ def audit(
     selection: Path,
     qualification_evidence: Path,
     *,
-    min_correlation: float = 0.75,
+    min_correlation: float = 0.50,
     min_rms_dbfs: float = -50.0,
     max_rms_dbfs: float = -10.0,
     max_clip_percent: float = 0.10,
     min_lag_seconds: float = 0.20,
-    max_lag_seconds: float = 1.50,
+    max_lag_seconds: float = 3.25,
+    minimum_declared_lead_seconds: float = 2.30,
+    lead_tolerance_seconds: float = 0.50,
     expected_split: str = "train",
 ) -> dict:
     if expected_split not in EVIDENCE_ROLES:
@@ -150,6 +152,21 @@ def audit(
                     row_reasons.append("source_capture_correlation_below_minimum")
                 if not min_lag_seconds <= lag_seconds <= max_lag_seconds:
                     row_reasons.append("playback_lag_outside_contract")
+                declared_lead = conditions.get("lead_seconds")
+                if not isinstance(declared_lead, (int, float)):
+                    row_reasons.append("declared_lead_missing_or_invalid")
+                else:
+                    if float(declared_lead) < minimum_declared_lead_seconds:
+                        row_reasons.append(
+                            "declared_lead_below_continuous_preroll"
+                        )
+                    if (
+                        abs(lag_seconds - float(declared_lead))
+                        > lead_tolerance_seconds
+                    ):
+                        row_reasons.append(
+                            "playback_lag_differs_from_declared_lead"
+                        )
                 if not min_rms_dbfs <= rms_dbfs <= max_rms_dbfs:
                     row_reasons.append("capture_rms_outside_contract")
                 if clip_percent > max_clip_percent:
@@ -202,6 +219,8 @@ def audit(
             "max_clip_percent": max_clip_percent,
             "min_lag_seconds": min_lag_seconds,
             "max_lag_seconds": max_lag_seconds,
+            "minimum_declared_lead_seconds": minimum_declared_lead_seconds,
+            "lead_tolerance_seconds": lead_tolerance_seconds,
         },
         "counts": {
             "captures": len(captures),

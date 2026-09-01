@@ -32,7 +32,7 @@ class AuditKizzControlAdaptationReplaysTests(unittest.TestCase):
                 source_hash = sha256_file(source_path)
                 capture_path = audio / f"capture-{provider}-{variant}.wav"
                 captured = np.concatenate(
-                    (np.zeros(4800, dtype=np.float32), source_values, np.zeros(4800, dtype=np.float32))
+                    (np.zeros(40000, dtype=np.float32), source_values, np.zeros(4800, dtype=np.float32))
                 )
                 sf.write(capture_path, captured, 16000, subtype="PCM_16")
                 source_rows.append(
@@ -55,6 +55,7 @@ class AuditKizzControlAdaptationReplaysTests(unittest.TestCase):
                             "source_provider": provider,
                             "source_voice": voice,
                             "source_audio_sha256": source_hash,
+                            "lead_seconds": 2.5,
                         },
                     }
                 )
@@ -141,6 +142,44 @@ class AuditKizzControlAdaptationReplaysTests(unittest.TestCase):
             self.assertFalse(
                 audit(corpus, selection, qualification)["qualified"]
             )
+
+    def test_declared_full_preroll_is_checked_against_observed_lag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            corpus, selection, qualification = self._fixture(
+                Path(directory), per_provider=3
+            )
+            payload = json.loads(corpus.read_text())
+            for capture in payload["captures"]:
+                capture["conditions"]["lead_seconds"] = 3.1
+            corpus.write_text(json.dumps(payload))
+
+            report = audit(corpus, selection, qualification)
+            self.assertFalse(report["qualified"])
+            self.assertTrue(
+                any(
+                    "playback_lag_differs_from_declared_lead" in reason
+                    for reason in report["failure_reasons"]
+                )
+            )
+
+    def test_missing_or_short_declared_preroll_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            corpus, selection, qualification = self._fixture(
+                Path(directory), per_provider=3
+            )
+            payload = json.loads(corpus.read_text())
+            payload["captures"][0]["conditions"].pop("lead_seconds")
+            payload["captures"][1]["conditions"]["lead_seconds"] = 0.55
+            corpus.write_text(json.dumps(payload))
+
+            report = audit(corpus, selection, qualification)
+            reasons = {
+                reason
+                for row in report["results"]
+                for reason in row["failure_reasons"]
+            }
+            self.assertIn("declared_lead_missing_or_invalid", reasons)
+            self.assertIn("declared_lead_below_continuous_preroll", reasons)
 
 
 if __name__ == "__main__":

@@ -34,11 +34,18 @@ from tools.trace_kizz_ordered_state_detector import _threshold_from_report, _val
 from tools.evaluate_kizz_int8_continuous_cascade import TFLiteRuntime
 
 
-def select_full_recall_threshold(scores: Sequence[float]) -> float:
+def select_full_recall_threshold(
+    scores: Sequence[float], *, maximum_threshold: float | None = None
+) -> float:
     values = np.asarray(scores, dtype=np.float64)
     if values.ndim != 1 or not len(values) or not np.all(np.isfinite(values)):
         raise ValueError("validation verifier scores must be nonempty and finite")
-    return float(np.min(values))
+    threshold = float(np.min(values))
+    if maximum_threshold is not None:
+        if not math.isfinite(maximum_threshold):
+            raise ValueError("maximum threshold must be finite")
+        threshold = min(threshold, float(maximum_threshold))
+    return threshold
 
 
 def _load_object(path: Path, label: str) -> dict[str, Any]:
@@ -116,6 +123,8 @@ def score_validation(
     detector_model: Path,
     detector_threshold_report: Path,
     verifier_metadata: Path,
+    *,
+    maximum_threshold: float | None = None,
 ) -> dict[str, Any]:
     corpus_path = corpus_path.expanduser().resolve()
     quality_path = quality_path.expanduser().resolve()
@@ -203,7 +212,10 @@ def score_validation(
         )
     if len(scores) != len(qualified_ids):
         raise ValueError("detector missed a qualified device validation positive")
-    threshold = select_full_recall_threshold(scores)
+    observed_full_recall_threshold = select_full_recall_threshold(scores)
+    threshold = select_full_recall_threshold(
+        scores, maximum_threshold=maximum_threshold
+    )
     accepted = sum(score >= threshold for score in scores)
     artifact = verifier_config["artifact"]
     return {
@@ -216,6 +228,8 @@ def score_validation(
             "test_used_for_selection": False,
             "minimum_recall": 1.0,
             "threshold": threshold,
+            "observed_full_recall_threshold": observed_full_recall_threshold,
+            "maximum_threshold": maximum_threshold,
             "detector_candidates": len(scores),
             "accepted_candidates": accepted,
             "meets_minimum_recall": accepted == len(scores),
@@ -255,6 +269,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--detector-model", type=Path, required=True)
     parser.add_argument("--detector-threshold-report", type=Path, required=True)
     parser.add_argument("--verifier-metadata", type=Path, required=True)
+    parser.add_argument(
+        "--maximum-threshold",
+        type=float,
+        help=(
+            "optional threshold ceiling fixed before test audio is opened; "
+            "use it to retain validation recall margin"
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     report = score_validation(
@@ -264,6 +286,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.detector_model,
         args.detector_threshold_report,
         args.verifier_metadata,
+        maximum_threshold=args.maximum_threshold,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

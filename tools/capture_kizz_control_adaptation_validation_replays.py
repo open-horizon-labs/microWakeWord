@@ -23,6 +23,8 @@ from typing import Any, Iterable, Sequence
 
 try:
     from tools.capture_kizz_control_device_replays import (
+        DEFAULT_CONTINUOUS_PREROLL_SECONDS,
+        MIN_CONTINUOUS_PREROLL_SECONDS,
         PROVIDERS,
         _canonical_json,
         _json_request,
@@ -33,6 +35,8 @@ try:
     )
 except ModuleNotFoundError:  # direct ``python tools/...`` execution
     from capture_kizz_control_device_replays import (  # type: ignore[no-redef]
+        DEFAULT_CONTINUOUS_PREROLL_SECONDS,
+        MIN_CONTINUOUS_PREROLL_SECONDS,
         PROVIDERS,
         _canonical_json,
         _json_request,
@@ -386,13 +390,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--device-id", default="kizz-1")
     parser.add_argument("--device-profile", default="m5stack_stackchan_k151_cores3_room_scale_v2")
     parser.add_argument("--duration-ms", type=int, default=5000)
-    parser.add_argument("--lead-seconds", type=float, default=0.55)
+    parser.add_argument(
+        "--lead-seconds", type=float, default=DEFAULT_CONTINUOUS_PREROLL_SECONDS
+    )
     parser.add_argument("--volume", type=float, default=0.45)
     parser.add_argument("--persist-timeout", type=float, default=180.0)
     parser.add_argument("--capture-attempts", type=int, default=3)
     parser.add_argument("--inter-capture-seconds", type=float, default=1.0)
     args = parser.parse_args(argv)
-    if not 500 <= args.duration_ms <= 5000 or not 0 < args.volume <= 1 or args.lead_seconds < 0 or args.persist_timeout <= 0 or not 1 <= args.capture_attempts <= 10 or args.inter_capture_seconds < 0:
+    if (
+        not 500 <= args.duration_ms <= 5000
+        or not 0 < args.volume <= 1
+        or not MIN_CONTINUOUS_PREROLL_SECONDS <= args.lead_seconds <= 3
+        or args.persist_timeout <= 0
+        or not 1 <= args.capture_attempts <= 10
+        or args.inter_capture_seconds < 0
+    ):
         parser.error("invalid validation replay settings")
     devices = _json_request(args.service_url.rstrip("/") + "/v1/devices").get("devices", [])
     connected = next((item for item in devices if item.get("device_id") == args.device_id and item.get("device_profile") == args.device_profile), None)

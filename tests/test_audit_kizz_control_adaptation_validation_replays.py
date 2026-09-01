@@ -34,10 +34,10 @@ class AuditKizzControlAdaptationValidationReplaysTests(unittest.TestCase):
                     row = {"provider": provider, "voice": voice, "voice_id": f"tts:{provider}:{voice}", "source_id": f"source:{provider}:{voice}", "speaker_id": f"speaker:{provider}:{voice}", "session_id": f"session:{provider}:{voice}", "descriptor_sha256": f"descriptor-{provider}-{index}", "audio_sha256": source_hash, "path": str(source_path), "label": 1, "split": "validation", "target_id": "kizz-control", "training_eligible": True, "target_phones": ["k", "ɪ", "z"], "alignment": {"method": "wav2vec2_ipa_ctc_forced_alignment", "pronunciation_decision": {"accepted": True}}}
                     aligned_rows.append(row)
                     selected.append(row)
-                    captured = np.concatenate((np.zeros(4800, dtype=np.float32), source_values, np.zeros(4800, dtype=np.float32)))
+                    captured = np.concatenate((np.zeros(40000, dtype=np.float32), source_values, np.zeros(4800, dtype=np.float32)))
                     capture_path = audio_dir / f"capture-{provider}-{index}.wav"
                     sf.write(capture_path, captured, 16000, subtype="PCM_16")
-                    captures.append({"capture_id": f"capture-{provider}-{index}", "speaker_id": f"replay-validation-{provider}-tts-{provider}-{voice}", "session_id": f"kc-adaptation-validation-{provider}-{voice}-v1", "truth": "positive", "split": "validation", "path": str(capture_path.relative_to(corpus)), "sha256": hashlib.sha256(capture_path.read_bytes()).hexdigest(), "conditions": {"evidence_role": "teacher_adaptation_target_channel_validation_positive", "source_provider": provider, "source_voice": voice, "source_audio_sha256": source_hash}})
+                    captures.append({"capture_id": f"capture-{provider}-{index}", "speaker_id": f"replay-validation-{provider}-tts-{provider}-{voice}", "session_id": f"kc-adaptation-validation-{provider}-{voice}-v1", "truth": "positive", "split": "validation", "path": str(capture_path.relative_to(corpus)), "sha256": hashlib.sha256(capture_path.read_bytes()).hexdigest(), "conditions": {"evidence_role": "teacher_adaptation_target_channel_validation_positive", "source_provider": provider, "source_voice": voice, "source_audio_sha256": source_hash, "lead_seconds": 2.5}})
             aligned = root / "aligned.json"
             aligned.write_text(json.dumps({"examples": aligned_rows}))
             target = root / "target.json"
@@ -51,12 +51,25 @@ class AuditKizzControlAdaptationValidationReplaysTests(unittest.TestCase):
             (corpus / "device-corpus.json").write_text(json.dumps({"corpus_id": "kizz-control-teacher-adaptation-validation-device-replays-v1", "captures": captures}))
             report = audit(corpus, selection, target, train_corpus, train_selection)
             self.assertTrue(report["qualified"], report["failure_reasons"])
+            self.assertEqual(report["expected_split"], "validation")
             self.assertEqual(report["expected_voice_counts"], providers)
             captures[0]["sha256"] = "wrong"
             (corpus / "device-corpus.json").write_text(json.dumps({"corpus_id": "kizz-control-teacher-adaptation-validation-device-replays-v1", "captures": captures}))
             failed = audit(corpus, selection, target, train_corpus, train_selection)
             self.assertFalse(failed["qualified"])
             self.assertIn("capture_audio_hash_drift", failed["results"][0]["failure_reasons"])
+
+            captures[0]["sha256"] = hashlib.sha256(
+                (corpus / captures[0]["path"]).read_bytes()
+            ).hexdigest()
+            captures[0]["conditions"].pop("lead_seconds")
+            (corpus / "device-corpus.json").write_text(json.dumps({"corpus_id": "kizz-control-teacher-adaptation-validation-device-replays-v1", "captures": captures}))
+            missing = audit(corpus, selection, target, train_corpus, train_selection)
+            self.assertFalse(missing["qualified"])
+            self.assertIn(
+                "declared_lead_missing_or_invalid",
+                missing["results"][0]["failure_reasons"],
+            )
 
 
 if __name__ == "__main__":

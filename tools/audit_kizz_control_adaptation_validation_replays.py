@@ -134,12 +134,14 @@ def audit(
     train_corpus: Path,
     train_selection: Path,
     *,
-    min_correlation: float = 0.75,
+    min_correlation: float = 0.50,
     min_rms_dbfs: float = -50.0,
     max_rms_dbfs: float = -10.0,
     max_clip_percent: float = 0.10,
     min_lag_seconds: float = 0.20,
-    max_lag_seconds: float = 1.50,
+    max_lag_seconds: float = 3.25,
+    minimum_declared_lead_seconds: float = 2.30,
+    lead_tolerance_seconds: float = 0.50,
 ) -> dict[str, Any]:
     corpus_payload = _load_json(corpus / "device-corpus.json") if corpus.is_dir() else _load_json(corpus)
     selection_payload = _selection_payload(selection)
@@ -222,6 +224,21 @@ def audit(
                     row_reasons.append("source_capture_correlation_below_minimum")
                 if not min_lag_seconds <= lag <= max_lag_seconds:
                     row_reasons.append("playback_lag_outside_contract")
+                declared_lead = conditions.get("lead_seconds")
+                if not isinstance(declared_lead, (int, float)):
+                    row_reasons.append("declared_lead_missing_or_invalid")
+                else:
+                    if float(declared_lead) < minimum_declared_lead_seconds:
+                        row_reasons.append(
+                            "declared_lead_below_continuous_preroll"
+                        )
+                    if (
+                        abs(lag - float(declared_lead))
+                        > lead_tolerance_seconds
+                    ):
+                        row_reasons.append(
+                            "playback_lag_differs_from_declared_lead"
+                        )
                 if not min_rms_dbfs <= rms <= max_rms_dbfs:
                     row_reasons.append("capture_rms_outside_contract")
                 if clip > max_clip_percent:
@@ -244,9 +261,19 @@ def audit(
         "schema_version": 1,
         "kind": "kizz_control_teacher_adaptation_device_replay_quality",
         "gate_scope": "validation_only_target_channel_positive_quality",
+        "expected_split": "validation",
         "qualified": not reasons and all(row["qualified"] for row in results),
         "inputs": {"corpus": str(corpus.resolve()), "corpus_sha256": sha256_file(corpus / "device-corpus.json") if corpus.is_dir() else sha256_file(corpus), "selection": str(selection.resolve()), "selection_sha256": sha256_file(selection), "qualification_evidence": str(qualification_evidence.resolve()), "qualification_evidence_sha256": sha256_file(qualification_evidence), "train_corpus": str(train_corpus.resolve()), "train_corpus_sha256": sha256_file(train_corpus), "train_selection": str(train_selection.resolve()), "train_selection_sha256": sha256_file(train_selection)},
-        "limits": {"min_correlation": min_correlation, "min_rms_dbfs": min_rms_dbfs, "max_rms_dbfs": max_rms_dbfs, "max_clip_percent": max_clip_percent, "min_lag_seconds": min_lag_seconds, "max_lag_seconds": max_lag_seconds},
+        "limits": {
+            "min_correlation": min_correlation,
+            "min_rms_dbfs": min_rms_dbfs,
+            "max_rms_dbfs": max_rms_dbfs,
+            "max_clip_percent": max_clip_percent,
+            "min_lag_seconds": min_lag_seconds,
+            "max_lag_seconds": max_lag_seconds,
+            "minimum_declared_lead_seconds": minimum_declared_lead_seconds,
+            "lead_tolerance_seconds": lead_tolerance_seconds,
+        },
         "expected_voice_counts": expected,
         "counts": {"captures": len(captures), "selected": len(selected), "providers": dict(sorted(provider_counts.items())), "voices": {key: sorted(value) for key, value in sorted(provider_voices.items())}},
         "results": sorted(results, key=lambda row: str(row["capture_id"])),

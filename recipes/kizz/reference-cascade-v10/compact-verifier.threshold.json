@@ -1,0 +1,245 @@
+{
+  "bindings": {
+    "artifact": {
+      "bytes": 38688,
+      "path": "/Users/muness1/Training/kizz-control-c1-rebuild/verifier-packages-v10-full-preroll/compact-relu6-lsb1-strong-seed1056-int8-bound8-margin030/kizz_control_candidate_verifier_int8.tflite",
+      "sha256": "a28e8c8f3fe51ea3ae3fc76f0d79f2abdb06f19c71d7f26e0f08a16464025710"
+    },
+    "config": {
+      "bytes": 2276856,
+      "path": "/Users/muness1/Training/kizz-control-c1-rebuild/verifier-packages-v10-full-preroll/compact-relu6-lsb1-strong-seed1056-int8-bound8-margin030/firmware-artifact.json",
+      "sha256": "80de317492e61d4151e9a42e35959b7cec5704c09854b9ccb3327fde70c89493"
+    },
+    "test_corpus": {
+      "bytes": 17311,
+      "path": "/Users/muness1/Training/kizz-control-device-mic-corpus-v3-full-preroll-test/device-corpus.json",
+      "sha256": "f12d9417c70d6fb22810b255cdbc44059fd26daef8c6801c2956409fb82ded58"
+    },
+    "test_evidence": {
+      "bytes": 19988,
+      "path": "/Users/muness1/Training/kizz-control-device-mic-corpus-v3-full-preroll-test/qualification-evidence-v3.json",
+      "sha256": "02c5fcddf51f386f1d78af3ad92a34ea07886ae7c95009bd1d5f47d25750d843"
+    },
+    "validation_report": {
+      "bytes": 9021,
+      "path": "/Users/muness1/Training/kizz-control-c1-rebuild/reports/v10-full-preroll-device-validation-threshold-zero.json",
+      "sha256": "77a1df2ade4eda160a5e066b74bdc7c9635b5e177a8d843c06f1477352753018"
+    }
+  },
+  "deployment_qualification": false,
+  "detector_threshold": {
+    "provenance": {
+      "fit_split": "validation",
+      "mode": "validation_only_report",
+      "path": "/Users/muness1/Training/kizz-control-c1-rebuild/detector-traces-v2-threshold.json",
+      "sha256": "089def64219ac3180d1b474602d3b290237f27bd49c79649d426fdda273fe336",
+      "test_used_for_selection": false
+    },
+    "value": -18.20059454471544
+  },
+  "kind": "kizz_control_candidate_verifier_physical_recall_threshold",
+  "limitations": [
+    "Threshold fitting used synthesized speech replayed through the target microphone path.",
+    "Continuous-negative precision is evaluated separately on the locked 100-hour corpus."
+  ],
+  "locked_audio_used_for_tuning": false,
+  "physical_replay": {
+    "distinct_held_out_test_captures": 12,
+    "test_compact_accepts": 12,
+    "test_detector_candidates": 12,
+    "transport": "recorded StackChan ESP32-S3 microphone captures",
+    "validation_captures": 12,
+    "validation_compact_accepts": 12
+  },
+  "schema_version": 1,
+  "selection": {
+    "accepted_candidates": 12,
+    "detector_candidates": 12,
+    "fit_split": "physical_microphone_replay",
+    "fit_subset": "voice_disjoint_device_validation",
+    "meets_minimum_recall": true,
+    "qualified": true,
+    "test_used_for_selection": false,
+    "threshold": 0.0
+  },
+  "test": {
+    "accepted_candidates": 12,
+    "detector_candidates": 12,
+    "detector_recall": 1.0,
+    "meets_full_recall_gate": true,
+    "recall": 1.0,
+    "results": [
+      {
+        "accepted": true,
+        "audio_sha256": "3e1b3fba2481548cfd9a8b6ba2de6d38a845fce746b316430361828eed49c669",
+        "capture_id": "kc-replay-assemblyai-083064f79cea7e80",
+        "detector_candidate": true,
+        "detector_feature_frame": 349,
+        "detector_hops": 166,
+        "detector_score": 9.972911138419802,
+        "duration_seconds": 5.0,
+        "frontend_feature_frames": 498,
+        "provider": "assemblyai",
+        "verifier_logit": 5.787939790636301,
+        "voice": "eleanor"
+      },
+      {
+        "accepted": true,
+        "audio_sha256": "fa2f46dec41cc8d72501e7b4d09f99c8112db950a65f9e71c975581011c7f37c",
+        "capture_id": "kc-replay-assemblyai-80105a56d1363916",
+        "detector_candidate": true,
+        "detector_feature_frame": 367,
+        "detector_hops": 166,
+        "detector_score": 17.661812899426227,
+        "duration_seconds": 5.0,
+        "frontend_feature_frames": 498,
+        "provider": "assemblyai",
+        "verifier_logit": 5.787939790636301,
+        "voice": "tyler"
+      },
+      {
+        "accepted": true,
+        "audio_sha256": "c6d88090f1da6f6513d75903a1d384bfad5cfd89b12a49b37509fd91505ccf94",
+        "capture_id": "kc-replay-assemblyai-e3c9eacbda47522d",
+        "detector_candidate": true,
+        "detector_feature_frame": 379,
+        "detector_hops": 166,
+        "detector_score": 19.506340173964475,
+        "duration_seconds": 5.0,
+        "frontend_feature_frames": 498,
+        "provider": "assemblyai",
+        "verifier_logit": 5.787939790636301,
+        "voice": "victor"
+      },
+      {
+        "accepted": true,
+        "audio_sha256": "5c277419d718ddfa30e9093656d0aa5046eb2cfa6e4f33ef1f68307e909945e6",
+        "capture_id": "kc-replay-deepgram-0b6e3d3662ebfd40",
+        "detector_candidate": true,
+        "detector_feature_frame": 388,
+        "detector_hops": 166,
+        "detector_score": 23.41984108530909,
+        "duration_seconds": 5.0,
+        "frontend_feature_frames": 498,
+        "provider": "deepgram",
+        "verifier_logit": 5.787939790636301,
+        "voice": "aura-2-helena-en"
+      },
+      {
+        "accepted": true,
+        "audio_sha256": "9d832fa3dd5745b19cd025d125e0622c096dc78674c5170088ce1bd942e2e526",
+        "capture_id": "kc-replay-deepgram-dab9c7d7193ad072",
+        "detector_candidate": true,
+        "detector_feature_frame": 358,
+        "detector_hops": 166,
+        "detector_score": 23.881297848102264,
+        "duration_seconds": 5.0,
+        "frontend_feature_frames": 498,
+        "provider": "deepgram",
+        "verifier_logit": 4.3815245144069195,
+        "voice": "aura-2-pandora-en"
+      },
+      {
+        "accepted": true,
+        "audio_sha256": "f3bd83bc029527143990be596104565edc93632bb6ce4f9c50d0afda16d288f0",
+        "capture_id": "kc-replay-deepgram-df71e5e5ebe013d4",
+        "detector_candidate": true,
+        "detector_feature_frame": 352,
+        "detector_hops": 166,
+        "detector_score": 17.79181042718441,
+        "duration_seconds": 5.0,
+        "frontend_feature_frames": 498,
+        "provider": "deepgram",
+        "verifier_logit": 5.787939790636301,
+        "voice": "aura-2-helena-en"
+      },
+      {
+        "accepted": true,
+        "audio_sha256": "c5ca906019fa72bc376eb0e8a3efe323471d40dfd5d0069f415a4a6e6c78a8d6",
+        "capture_id": "kc-replay-elevenlabs-b109cc2bb01dda53",
+        "detector_candidate": true,
+        "detector_feature_frame": 364,
+        "detector_hops": 166,
+        "detector_score": 14.68710588925801,
+        "duration_seconds": 5.0,
+        "frontend_feature_frames": 498,
+        "provider": "elevenlabs",
+        "verifier_logit": 5.787939790636301,
+        "voice": "kizz-adult-test"
+      },
+      {
+        "accepted": true,
+        "audio_sha256": "9d12e3e2bccb9a28b15ddcbb5a5519061cdfb2a09c2487a79a4f69e693ccdaa7",
+        "capture_id": "kc-replay-elevenlabs-b357216e8f8e532c",
+        "detector_candidate": true,
+        "detector_feature_frame": 349,
+        "detector_hops": 166,
+        "detector_score": 37.20664338357285,
+        "duration_seconds": 5.0,
+        "frontend_feature_frames": 498,
+        "provider": "elevenlabs",
+        "verifier_logit": 5.787939790636301,
+        "voice": "kizz-child-test"
+      },
+      {
+        "accepted": true,
+        "audio_sha256": "f9e6ee08347fb9a6d9dfae29623ba6cab476176c68222eb119a79fde6f775132",
+        "capture_id": "kc-replay-elevenlabs-f8840caa5b44226b",
+        "detector_candidate": true,
+        "detector_feature_frame": 352,
+        "detector_hops": 166,
+        "detector_score": 6.957624131553066,
+        "duration_seconds": 5.0,
+        "frontend_feature_frames": 498,
+        "provider": "elevenlabs",
+        "verifier_logit": 5.787939790636301,
+        "voice": "kizz-adult-test"
+      },
+      {
+        "accepted": true,
+        "audio_sha256": "bbed6aa120ffe615df84e8f62bd687f48131dfef3eb07b0337f9369951327a46",
+        "capture_id": "kc-replay-kokoro-a06b57b3c245377c",
+        "detector_candidate": true,
+        "detector_feature_frame": 340,
+        "detector_hops": 166,
+        "detector_score": 0.0349981179494806,
+        "duration_seconds": 5.0,
+        "frontend_feature_frames": 498,
+        "provider": "kokoro",
+        "verifier_logit": 5.787939790636301,
+        "voice": "am_onyx"
+      },
+      {
+        "accepted": true,
+        "audio_sha256": "03cec73eb191e34222aa06e9daf873693ec7c42a765928f64b5c18c5eca32399",
+        "capture_id": "kc-replay-kokoro-c88b2ef2afee22af",
+        "detector_candidate": true,
+        "detector_feature_frame": 361,
+        "detector_hops": 166,
+        "detector_score": 19.637840913848578,
+        "duration_seconds": 5.0,
+        "frontend_feature_frames": 498,
+        "provider": "kokoro",
+        "verifier_logit": 5.787939790636301,
+        "voice": "af_river"
+      },
+      {
+        "accepted": true,
+        "audio_sha256": "554575debe905cb8824d07de802e77150c75208a95d77cbab1da4e9fcc4e3e5d",
+        "capture_id": "kc-replay-kokoro-e4017071af59fb09",
+        "detector_candidate": true,
+        "detector_feature_frame": 370,
+        "detector_hops": 166,
+        "detector_score": 30.7971827648864,
+        "duration_seconds": 5.0,
+        "frontend_feature_frames": 498,
+        "provider": "kokoro",
+        "verifier_logit": 4.489710304886103,
+        "voice": "bf_isabella"
+      }
+    ],
+    "threshold_frozen_before_audio_access": true
+  },
+  "test_scored_after_threshold_frozen": true,
+  "threshold": 0.0
+}

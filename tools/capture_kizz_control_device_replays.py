@@ -24,6 +24,13 @@ from typing import Any, Sequence
 
 PROVIDERS = ("assemblyai", "deepgram", "elevenlabs", "kokoro")
 
+# The deployed verifier window contains 2.20 seconds of pre-trigger context.
+# Captures with a shorter lead produce zero-padded positive windows that cannot
+# occur once the firmware has been listening continuously.  Keep a small margin
+# for capture/enrollment scheduling jitter.
+MIN_CONTINUOUS_PREROLL_SECONDS = 2.30
+DEFAULT_CONTINUOUS_PREROLL_SECONDS = 2.50
+
 SELECTION_SCHEMA_VERSION = 1
 SELECTION_ALGORITHM = "provider_voice_round_robin_v1"
 
@@ -409,7 +416,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--source-pronunciation-audit", type=Path, required=True)
     parser.add_argument("--duration-ms", type=int, default=5000)
-    parser.add_argument("--lead-seconds", type=float, default=0.55)
+    parser.add_argument(
+        "--lead-seconds", type=float, default=DEFAULT_CONTINUOUS_PREROLL_SECONDS
+    )
     parser.add_argument("--volume", type=float, default=0.55)
     # The current firmware deliberately resumes a segmented upload one KiB at a
     # time.  On a busy 2.4 GHz network a five-second capture can therefore take
@@ -429,7 +438,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if (
         args.per_provider < 1
         or not 500 <= args.duration_ms <= 5000
-        or not 0 <= args.lead_seconds <= 2
+        or not MIN_CONTINUOUS_PREROLL_SECONDS <= args.lead_seconds <= 3
         or not 0 < args.volume <= 1
         or args.persist_timeout <= 0
         or args.inter_capture_seconds < 0

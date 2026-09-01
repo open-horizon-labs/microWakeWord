@@ -9,6 +9,14 @@ class ScoreKizzCandidateVerifierDeviceValidationTests(unittest.TestCase):
     def test_full_recall_threshold_is_lowest_validation_score(self):
         self.assertEqual(select_full_recall_threshold([2.5, -1.25, 0.0]), -1.25)
 
+    def test_predeclared_ceiling_retains_validation_recall_margin(self):
+        self.assertEqual(
+            select_full_recall_threshold(
+                [4.1, 5.2, 5.8], maximum_threshold=0.0
+            ),
+            0.0,
+        )
+
     def test_threshold_rejects_empty_or_nonfinite_scores(self):
         for values in ([], [float("nan")], [float("inf")]):
             with self.subTest(values=values):

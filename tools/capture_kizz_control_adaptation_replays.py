@@ -20,6 +20,8 @@ from typing import Any, Sequence
 
 try:
     from tools.capture_kizz_control_device_replays import (
+        DEFAULT_CONTINUOUS_PREROLL_SECONDS,
+        MIN_CONTINUOUS_PREROLL_SECONDS,
         PROVIDERS,
         _canonical_json,
         _capture_id,
@@ -33,6 +35,8 @@ try:
     )
 except ModuleNotFoundError:  # direct ``python tools/...`` execution
     from capture_kizz_control_device_replays import (  # type: ignore[no-redef]
+        DEFAULT_CONTINUOUS_PREROLL_SECONDS,
+        MIN_CONTINUOUS_PREROLL_SECONDS,
         PROVIDERS,
         _canonical_json,
         _capture_id,
@@ -260,7 +264,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--provider", action="append", choices=PROVIDERS)
     parser.add_argument("--per-provider", type=int, default=4)
     parser.add_argument("--duration-ms", type=int, default=5000)
-    parser.add_argument("--lead-seconds", type=float, default=0.55)
+    parser.add_argument(
+        "--lead-seconds", type=float, default=DEFAULT_CONTINUOUS_PREROLL_SECONDS
+    )
     parser.add_argument("--volume", type=float, default=0.45)
     parser.add_argument("--persist-timeout", type=float, default=180.0)
     parser.add_argument("--capture-attempts", type=int, default=3)
@@ -268,7 +274,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if (
         args.per_provider < 1
         or not 500 <= args.duration_ms <= 5000
-        or not 0 <= args.lead_seconds <= 2
+        or not MIN_CONTINUOUS_PREROLL_SECONDS <= args.lead_seconds <= 3
         or not 0 < args.volume <= 1
         or args.persist_timeout <= 0
         or not 1 <= args.capture_attempts <= 10
