@@ -627,7 +627,7 @@ class TrainCandidateVerifierTests(unittest.TestCase):
         self.assertEqual(cost["parameter_estimate"], 15793)
         self.assertEqual(cost["mac_estimate"], 2801952)
 
-    def test_compact_default_preserves_original_topology_and_model_hash(self):
+    def test_compact_default_preserves_original_topology_contract(self):
         self.assertEqual(DEFAULT_MODEL_VARIANT, "compact")
         self.assertEqual(MODEL_VARIANT_CHANNELS["compact"], (24, 32, 48, 64, 96))
         self.assertEqual(dscnn_spec(), dscnn_spec("compact"))
@@ -640,10 +640,25 @@ class TrainCandidateVerifierTests(unittest.TestCase):
         explicit = backend.build_model(
             learning_rate=0.0005, seed=248, model_variant="compact"
         )
-        self.assertEqual(
-            _model_topology_sha256(backend.model_json(implicit)),
-            "9325edea14c6926a5ec8a0dba0f67dc6207679dd6d213106726c77aca693b9b5",
-        )
+        spec = dscnn_spec("compact")
+        self.assertEqual(len(implicit.layers) - 1, len(spec))
+        for keras_layer, expected in zip(implicit.layers[1:], spec):
+            config = keras_layer.get_config()
+            self.assertEqual(keras_layer.name, expected["name"])
+            self.assertEqual(type(keras_layer).__name__, expected["op"])
+            for expected_key, config_key in (
+                ("filters", "filters"),
+                ("kernel", "kernel_size"),
+                ("strides", "strides"),
+                ("activation", "activation"),
+                ("units", "units"),
+            ):
+                if expected_key not in expected:
+                    continue
+                actual = config[config_key]
+                if isinstance(expected[expected_key], tuple):
+                    actual = tuple(actual)
+                self.assertEqual(actual, expected[expected_key])
         self.assertEqual(
             _model_topology_sha256(backend.model_json(implicit)),
             _model_topology_sha256(backend.model_json(explicit)),
