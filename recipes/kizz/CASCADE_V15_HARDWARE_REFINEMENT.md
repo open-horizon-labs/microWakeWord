@@ -47,6 +47,30 @@ converted into a normal-world false-accepts-per-hour claim. The 32-byte heap
 low-water is a real qualification risk even though the run had no reboot,
 overflow, or audio corruption.
 
+### Production voice-coexistence correction
+
+The 32-byte result was not accepted as a model limitation. A later full
+wake/STT/command run reached 16 bytes and one socket allocation failed. The
+cause was the optional enrollment client reconnecting in the production
+firmware while the voice WebSocket, Wi-Fi, audio frontend, and cascade were all
+active. The production StackChan profile now leaves enrollment disabled;
+directed-training builds opt in with an explicit enrollment URI.
+
+The corrected ESP-IDF 5.5.5 firmware binary has SHA-256
+`91f8c6162628d1f3823800e35d52ba8f27a350e092c0f1e87e30452d958a0a59`.
+On exact StackChan ESP32-S3 MAC `7c:4f:ad:af:e7:38`, a 12-source physical
+positive replay accepted 11/12 wakes and kept at least 11,896 bytes of internal
+heap. A subsequent event-gated physical turn accepted “Kizz Control,” streamed
+all 267,776 captured command bytes, transcribed “Set the kitchen volume to
+38%,” executed the Roon action, and independently read Kitchen back at 38%.
+That run kept 12,944 bytes of internal heap and had zero socket-allocation
+failures, reboots, ring overflows, partial writes, or partial feature reads.
+
+The physical command report is intentionally stricter than a timed playlist.
+The command segment can start only after the serial log contains `Kizz command
+armed`; a rejected wake therefore times out without playing the command and
+cannot create a false end-to-end pass.
+
 ## Durable workspace and immutable guards
 
 Use local SSD or directly attached NVMe. Do not put corpora, features,
@@ -202,6 +226,22 @@ Run three provenance-bound physical schedules against the flashed artifact:
   --output-dir "$KIZZ_WORKSPACE/reports/unseen-guard-final"
 ```
 
+For wake-then-command tests, bind the command to a real device transition:
+
+```json
+{
+  "label": "wake-gated",
+  "duration_seconds": 3.0,
+  "sources": ["/absolute/path/to/kizz-control.wav"],
+  "wait_for_serial": "Kizz command armed",
+  "wait_timeout_seconds": 3.0
+}
+```
+
+Place the command as the following segment. `wait_timeout_seconds` is mandatory
+when `wait_for_serial` is set. The runner records the exact matched line in the
+report and aborts before the next segment if the marker is not observed.
+
 The runner counts the platform-level `Kizz wake detected on-device:` event as
 end-to-end acceptance and records detector, compact, ordered, load, heap, queue,
 drop, overflow, crash, and reboot telemetry. Positive schedules are mandatory:
@@ -221,6 +261,8 @@ record:
 7. a still-untouched negative guard;
 8. accepted-path latency, duty, arena, heap, queue, drop, and overflow evidence.
 
-V15 satisfies those gates for wake-path replay. It does not yet establish
-multi-human recall, normal STT/command-handler coexistence, or comfortable
-internal-heap margin; those remain product-level qualification work.
+V15 satisfies those gates for wake-path replay. The corrected production
+profile also establishes one complete physical wake→STT→Roon command and a
+repeatable event-gated test with roughly 12 KiB of internal-heap margin. It does
+not yet establish multi-human, multi-room recall or long-duration command-heavy
+soak behavior; those remain product-level qualification work.

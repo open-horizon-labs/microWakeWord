@@ -87,11 +87,22 @@ def _schedule(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
                 "gap_seconds": float(raw.get("gap_seconds", 0)),
                 "volume": float(raw.get("volume", 0.42)),
                 "loop": bool(raw.get("loop", True)),
+                "wait_for_serial": str(raw.get("wait_for_serial") or ""),
+                "wait_timeout_seconds": float(
+                    raw.get("wait_timeout_seconds", 0)
+                ),
                 "sources": paths,
             }
         )
         if normalized[-1]["duration_seconds"] <= 0:
             raise ValueError(f"segment[{index}] duration must be positive")
+        if (
+            normalized[-1]["wait_for_serial"]
+            and normalized[-1]["wait_timeout_seconds"] <= 0
+        ):
+            raise ValueError(
+                f"segment[{index}] wait_timeout_seconds must be positive"
+            )
     return value, normalized
 
 
@@ -163,6 +174,8 @@ def run(
     ready = threading.Event()
     events: list[dict[str, Any]] = []
     load_rows: list[dict[str, Any]] = []
+    segment_lines: list[str] = []
+    observed = threading.Condition()
 
     connection = serial.Serial(serial_port, 115200, timeout=0.2)
     connection.dtr = False
@@ -181,6 +194,9 @@ def run(
                 elapsed = time.monotonic() - opened_at
                 raw_output.write(f"{elapsed:10.3f} {line}\n")
                 raw_output.flush()
+                with observed:
+                    segment_lines.append(line)
+                    observed.notify_all()
                 if "Kizz cascade ready:" in line:
                     ready.set()
                 kind = classify(line)
@@ -220,9 +236,34 @@ def run(
             active["test_started"] = test_started
         played_segments = []
         for row in rows:
+            with observed:
+                segment_lines.clear()
             with lock:
                 active["label"] = row["label"]
             played = _play(row)
+            matched_line = None
+            wait_for_serial = str(row["wait_for_serial"])
+            if wait_for_serial:
+                deadline = time.monotonic() + float(row["wait_timeout_seconds"])
+                with observed:
+                    while matched_line is None:
+                        matched_line = next(
+                            (
+                                line
+                                for line in segment_lines
+                                if wait_for_serial in line
+                            ),
+                            None,
+                        )
+                        remaining = deadline - time.monotonic()
+                        if matched_line is not None or remaining <= 0:
+                            break
+                        observed.wait(timeout=remaining)
+                if matched_line is None:
+                    raise TimeoutError(
+                        f"segment {row['label']} did not observe serial marker: "
+                        f"{wait_for_serial}"
+                    )
             played_segments.append(
                 {
                     **{
@@ -233,8 +274,11 @@ def run(
                             "gap_seconds",
                             "volume",
                             "loop",
+                            "wait_for_serial",
+                            "wait_timeout_seconds",
                         )
                     },
+                    "matched_serial_line": matched_line,
                     "sources": played,
                 }
             )

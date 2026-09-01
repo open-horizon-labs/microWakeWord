@@ -1,6 +1,9 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from tools.run_kizz_physical_playback import classify, parse_load
+from tools.run_kizz_physical_playback import _schedule, classify, parse_load
 
 
 class PhysicalPlaybackTests(unittest.TestCase):
@@ -27,6 +30,36 @@ class PhysicalPlaybackTests(unittest.TestCase):
         self.assertEqual(value["verifier_runs"], 11)
         self.assertEqual(value["audio_dropped"], 512)
         self.assertNotIn("compact", value)
+
+    def test_schedule_requires_positive_serial_wait_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "wake.wav"
+            audio.write_bytes(b"not decoded by schedule validation")
+            schedule = root / "schedule.json"
+            schedule.write_text(
+                json.dumps(
+                    {
+                        "segments": [
+                            {
+                                "label": "wake",
+                                "duration_seconds": 1,
+                                "sources": [str(audio)],
+                                "wait_for_serial": "Kizz command armed",
+                            }
+                        ]
+                    }
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "wait_timeout_seconds"):
+                _schedule(schedule)
+
+            value = json.loads(schedule.read_text())
+            value["segments"][0]["wait_timeout_seconds"] = 4
+            schedule.write_text(json.dumps(value))
+            _, rows = _schedule(schedule)
+            self.assertEqual(rows[0]["wait_for_serial"], "Kizz command armed")
+            self.assertEqual(rows[0]["wait_timeout_seconds"], 4)
 
 
 if __name__ == "__main__":

@@ -44,10 +44,14 @@ V10 is the long-duration Kizz Control reference and v15 is the active
 hardware-refined middle-verifier method. The exact v15 firmware accepted 12/12
 post-flash wake replays, reduced false accepts from 17 to 5 on the same
 adversarial 25-minute schedule, and accepted 0/20 candidates on a fresh unseen
-guard. Extended multi-human, heap-pressure, and normal voice-command
-coexistence tests remain required before claiming complete product
-qualification. Do not treat v19, v34, the clean-slate C teacher, or the earlier
-single-student score as current evidence.
+guard. A later production-profile correction disabled the optional enrollment
+connection during normal use. The corrected firmware retained 11/12 physical
+wakes with the live gateway and completed an event-gated physical
+wake→STT→Roon volume command while preserving about 12 KiB of internal-heap
+low-water. Extended multi-human, multi-room, and command-heavy soak tests remain
+required before claiming complete product qualification. Do not treat v19,
+v34, the clean-slate C teacher, or the earlier single-student score as current
+evidence.
 
 The later canonical-v3 C teacher reached only 9/22 held-out positives and
 accepted 2/62 quarantined false wakes. A pinned pretrained IPA/CTC teacher then
