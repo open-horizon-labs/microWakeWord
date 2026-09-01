@@ -11,6 +11,12 @@ independent ordered verifier. The checked-in
 and [reference artifacts](reference-cascade-v10/README.md) are the starting
 point for a new run.
 
+For the exact counterexample loop—quarantine and review a false-wake recording,
+capture a locked physical replay matrix, mine frozen-detector candidates, apply
+bounded hard-negative emphasis, repair physical recall, quantize, flash, and
+retest—use the
+[physical false-wake retraining runbook](FALSE_WAKE_RETRAINING.md).
+
 The v10 exact firmware retained 12/12 fresh held-out StackChan-channel
 positives. It passed all three startup AOT/reference equivalence checks and ran
 the continuous detector at about 8 ms p99 without ring overflow. On the locked

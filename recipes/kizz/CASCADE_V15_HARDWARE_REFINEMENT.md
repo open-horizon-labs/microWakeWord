@@ -95,6 +95,11 @@ used to choose a model, call it a regression suite rather than a fresh test.
 
 ## 1. Capture physical hard negatives
 
+For the complete false-wake observation, human-review, replay, dataset
+extension, failed-attempt, and leakage-control procedure, follow
+[Retraining from physical false wakes](FALSE_WAKE_RETRAINING.md). This section
+is the compact v15 command summary.
+
 Start the device enrollment service described by the v10 recipe, connect the
 exact StackChan target, and replay a locked mix of near phrases, ordinary
 speech, music, and ambient audio. Vary playback level and preserve at least 2.3
@@ -112,18 +117,25 @@ seconds of real pre-roll.
   --repeats 2 --lead-seconds 2.5
 ```
 
-Add only qualified train captures to the train source manifest/features and
-detector traces described in the v10 recipe. Never add the sealed guard. Build
-the detector-conditioned 260-frame candidate corpus:
+When adapting an existing v10 corpus, do not rebuild all source features or
+train on arbitrary windows from every recording. Extend the immutable candidate
+dataset with only the 260-frame windows emitted by the exact frozen detector.
+The extension tool opens train audio only and quarantines validation, test, and
+locked rows:
 
 ```sh
-.venv/bin/python tools/build_kizz_candidate_verifier_dataset.py \
-  --source-manifest "$KIZZ_WORKSPACE/manifests/candidate-sources-v15.json" \
-  --source-features "$KIZZ_WORKSPACE/features/candidate-sources-v15" \
-  --detector-traces "$KIZZ_WORKSPACE/traces/detector-v15" \
-  --locked-holdout-manifest "$KIZZ_WORKSPACE/manifests/locked-holdouts.json" \
+BASE_DATASET="$KIZZ_WORKSPACE/candidate-verifier-dataset-v10"
+BASE_SHA256=$(shasum -a 256 "$BASE_DATASET/corpus.json" | awk '{print $1}')
+
+.venv/bin/python tools/extend_kizz_candidate_verifier_with_device_corpus.py \
+  --base-dataset "$BASE_DATASET" \
+  --base-corpus-sha256 "$BASE_SHA256" \
+  --device-corpus "$KIZZ_WORKSPACE/device/hard-negatives-train/device-corpus.json" \
+  --detector-metadata "$KIZZ_WORKSPACE/models/detector/firmware-artifact.json" \
+  --detector-model "$KIZZ_WORKSPACE/models/detector/detector.tflite" \
+  --detector-threshold-report "$KIZZ_WORKSPACE/models/detector/threshold.json" \
   --output "$KIZZ_WORKSPACE/candidate-verifier-dataset-v15" \
-  --pre-context-frames 220 --post-context-frames 39
+  --top-k-per-file 4 --target-phrase "Kizz Control"
 ```
 
 V15 also added six qualified room-captured positive variants from a weak voice,
@@ -147,6 +159,7 @@ for seed in 1157 1258 1359 1460 1561 1662 1763 1864 1965 2066; do
     --corpus-sha256 "$CORPUS_SHA256" \
     --output "$KIZZ_WORKSPACE/runs/v15-seed-$seed" \
     --steps 6000 --seed "$seed" \
+    --conditional-recall-floor 1.0 \
     --model-variant compact_relu6 \
     --augmentation-profile strong \
     --device-robustness-profile int8_lsb1 \
