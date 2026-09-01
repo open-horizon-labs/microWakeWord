@@ -53,26 +53,35 @@ Record rejected candidates; aggregate scores never satisfy a release gate.
 
 ## Worked recipe: Kizz Control
 
-The current [Kizz Control cascade recipe](recipes/kizz/CASCADE_V9_RECIPE.md)
+The current [Kizz Control cascade recipe](recipes/kizz/CASCADE_V10_RECIPE.md)
 is a reproducible three-stage path for StackChan: a permissive ordered INT8
 detector, a compact device-adapted INT8 DS-CNN verifier, and an independent
 ordered verifier. The machine-readable graph and resumable runner parallelize
 source synthesis and locked continuous evaluation while enforcing validation-
 only selection, frozen fresh test, evidence hashes, and explicit paid-call
-authority.
+authority. The
+[v15 hardware refinement](recipes/kizz/CASCADE_V15_HARDWARE_REFINEMENT.md)
+shows how to retrain only the compact verifier from reviewed physical false
+wakes without changing the detector or final verifier.
 
-The reference cascade retained 12/12 fresh StackChan-channel positives. Over a
-locked 100.47-hour negative corpus it accepted 39 false wakes (`0.388/hour`,
-about one every 2.6 hours), and only 5.19% of detector candidates reached the
-expensive ordered stage. The maintainer accepted this practical operating
-point. It does not pass the stricter formal `0.1/hour` upper-confidence gate,
-and host evidence is not physical ESP32-S3 performance qualification.
+The v10 reference retained 12/12 fresh StackChan-channel positives. Over a
+locked 100.47-hour negative corpus it accepted 23 false wakes (`0.229/hour`),
+and only 4.36% of detector candidates reached the expensive ordered stage. The
+v15 compact verifier then retained 12/12 post-flash physical wakes, reduced
+false accepts from 17 to 5 on the same adversarial 25-minute playback, and
+accepted 0/20 candidates on a sealed unseen guard. A corrected production
+profile also completed one physical wake-to-STT-to-Roon command with about
+12 KiB of internal-heap margin. These results meet the maintainer's practical
+operating point, but not the stricter formal `0.1/hour` upper-confidence gate
+or broad multi-human, multi-room product qualification.
 
-Exact reference models and hashes are checked in under
-[`recipes/kizz/reference-cascade-v9`](recipes/kizz/reference-cascade-v9/README.md).
-Earlier HiPhi Kizz and single-student attempts remain as failure evidence in
-the [experiment ledger](recipes/kizz/EXPERIMENTS.md); they are not the current
-recipe.
+Exact v10 reference models and hashes are checked in under
+[`recipes/kizz/reference-cascade-v10`](recipes/kizz/reference-cascade-v10/README.md).
+The [physical false-wake runbook](recipes/kizz/FALSE_WAKE_RETRAINING.md) records
+the capture, review, retraining, optimized-firmware handoff, flash, and retest
+loop. Earlier v9, HiPhi Kizz, and single-student attempts remain as failure
+evidence in the [experiment ledger](recipes/kizz/EXPERIMENTS.md); they are not
+the current recipe.
 
 ## Start here
 

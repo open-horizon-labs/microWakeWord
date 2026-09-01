@@ -209,6 +209,59 @@ TFLite reference outputs and separately bind the deterministic exact-hardware
 AOT fingerprint; random stress vectors can amplify ESP-NN integer-rounding
 differences even when silence, saturation, and physical decisions agree.
 
+### Exact optimized firmware handoff
+
+The tested AOT/ESP-NN integration is public in
+[`muness/roon-knob@19ec30a2`](https://github.com/muness/roon-knob/tree/19ec30a2c4761cdb5ab3728acaa76959eaecf980/components/kizz_wake_word)
+([firmware PR #247](https://github.com/muness/roon-knob/pull/247)). Pin that
+commit when reproducing the result; a branch name alone is not provenance.
+
+This is not a generic TFLite-to-C generator. The checked-in
+`kizz_detector_aot.cpp` and `kizz_verifier_aot.cpp` implement fixed execution
+schedules for the supported detector, compact ReLU6 DS-CNN, and ordered
+verifier topologies. Model weights and quantization parameters are read from
+the embedded TFLite files, while eligible operations use ESP-NN kernels and
+the compact verifier reuses one statically planned 96 KiB PSRAM arena. A newly
+trained compact model can use this path only while its topology and tensor
+geometry remain compatible.
+
+For a compatible replacement compact verifier:
+
+1. copy the frozen INT8 TFLite artifact into
+   `components/kizz_wake_word/models/` under a new versioned name;
+2. update `components/kizz_wake_word/CMakeLists.txt` to embed that exact file;
+3. update the compact threshold and SHA-256 in
+   `components/kizz_wake_word/kizz_wake_word.cpp`;
+4. add a versioned provenance JSON beside the model with corpus, model,
+   threshold, conversion, schedule, report, firmware binary, and ELF hashes;
+5. verify the AOT parser accepts every tensor/operator and compare decisions
+   with the TFLite reference before changing any startup golden value;
+6. obtain the deterministic compact hardware fingerprint on the exact
+   ESP32-S3 revision, bind it as a startup check, then use physical replay—not
+   the fingerprint alone—to qualify decisions.
+
+The selected v15 files and constants are visible at that pinned revision:
+
+- `models/kizz_control_compact_verifier_int8_v15.tflite`;
+- `models/kizz_control_cascade_v15.provenance.json`;
+- `KIZZ_COMPACT_VERIFIER_RAW_SCORE_THRESHOLD` and
+  `KIZZ_COMPACT_VERIFIER_MODEL_SHA256` in `kizz_wake_word.cpp`;
+- `kExpectedOutputs` in `run_compact_aot_equivalence_self_test()`.
+
+Confirm the package and firmware copy are byte-identical before building:
+
+```sh
+export KIZZ_FIRMWARE=/absolute/path/to/roon-knob
+export KIZZ_COMPACT_MODEL="$KIZZ_WORKSPACE/models/seed2066/kizz_control_candidate_verifier_int8.tflite"
+
+test "$(shasum -a 256 "$KIZZ_COMPACT_MODEL" | awk '{print $1}')" = \
+  9b8a8963f5619b045cf724d6ce0dacedbc71b1dbc7448e5a089bbc99667246f5
+test "$(shasum -a 256 \
+  "$KIZZ_FIRMWARE/components/kizz_wake_word/models/kizz_control_compact_verifier_int8_v15.tflite" \
+  | awk '{print $1}')" = \
+  9b8a8963f5619b045cf724d6ce0dacedbc71b1dbc7448e5a089bbc99667246f5
+```
+
 ## 4. Build, flash, and qualify the exact artifact
 
 Build and flash the release profile, then record the binary and ELF hashes. Do
@@ -216,9 +269,18 @@ not qualify a model file separately from the flashed firmware that contains it.
 
 ```sh
 source "$IDF_PATH/export.sh"
-idf.py -B build-stackchan build
-idf.py -B build-stackchan -p "$KIZZ_PORT" flash
+cd "$KIZZ_FIRMWARE/m5_beta_app"
+idf.py -B build-stackchan -D HIPHI_M5_TARGET=stackchan build
+idf.py -B build-stackchan -D HIPHI_M5_TARGET=stackchan \
+  -p "$KIZZ_PORT" flash
 ```
+
+The explicit target argument is required on a clean checkout because the
+firmware project's CMake default is `sticks3`. Before calling the binary a
+production artifact, confirm `sdkconfig.stackchan.defaults` leaves
+`CONFIG_M5_PLATFORM_ENROLLMENT_WS_URI` empty; directed capture builds are
+separate artifacts and previously exhausted socket/internal-heap headroom when
+used during normal voice operation.
 
 Run three provenance-bound physical schedules against the flashed artifact:
 

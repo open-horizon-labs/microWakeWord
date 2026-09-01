@@ -31,6 +31,57 @@ export KIZZ_DEVICE_CORPUS="$KIZZ_WORKSPACE/device/hard-negatives-train"
 mkdir -p "$KIZZ_WORKSPACE"/{device,manifests,models,reports,runs}
 ```
 
+## Temporary capture firmware sketch
+
+Capture support may be a disposable patch rather than a permanent product
+feature. Keep it in one isolated firmware commit so another agent can apply it
+for collection and remove it cleanly afterward. The tested implementation can
+be studied at
+[`muness/roon-knob@19ec30a2`](https://github.com/muness/roon-knob/tree/19ec30a2c4761cdb5ab3728acaa76959eaecf980),
+primarily in `components/m5_platform/m5_platform.cpp` and its
+`M5_PLATFORM_ENROLLMENT_WS_URI` Kconfig option.
+
+The temporary patch should do only this:
+
+1. Continuously retain at least three seconds of mono 16 kHz microphone PCM in
+   a bounded PSRAM ring while the production detector is armed.
+2. On a **final cascade acceptance**, atomically snapshot the pre-trigger PCM,
+   append bounded post-trigger audio, and attach the detector/verifier scores,
+   thresholds, model hashes, device/profile IDs, timing, RMS, clipping, and
+   overflow/drop counters. A detector candidate rejected by a verifier is not
+   a false wake, though its stage scores may be useful telemetry.
+3. Give the capture to one lower-priority bounded upload worker. Never block
+   the microphone or inference task, write repeated audio to ESP flash, or
+   change the production decision because capture is enabled. If the worker is
+   busy, increment an explicit `dropped_busy` counter.
+4. Upload PCM and metadata to the external enrollment service as a quarantined
+   observation. Do not label it or append it to `device-corpus.json` on-device.
+   Human review remains the only promotion path.
+5. Log enough resource evidence to compare capture and production builds:
+   detector/compact/ordered latency, queue high-water, ring/partial-I/O errors,
+   internal-heap low-water, socket failures, crashes, and reboots.
+
+Before shipping the post-training firmware:
+
+1. disable the enrollment URI in the production target profile (the tested
+   StackChan profile uses `CONFIG_M5_PLATFORM_ENROLLMENT_WS_URI=""`);
+2. remove the capture-only WebSocket, upload task, large observation buffer,
+   directed-capture handler, and automatic observation hook—or revert the
+   isolated capture commit;
+3. keep only pre-roll state that the production wake-to-command handoff itself
+   requires;
+4. rebuild from a clean build directory and verify the boot log contains no
+   enrollment connection or worker;
+5. repeat positive wake, negative soak, and wake/STT/command coexistence tests
+   against that exact production binary. Capture-build performance is not
+   release evidence.
+
+The reference firmware leaves the capture implementation compiled but allocates
+its enrollment buffers, workers, and WebSocket only when the explicit enrollment
+URI is non-empty. A disposable integration may remove the code completely; the
+observable production requirement is the same: no enrollment connection,
+worker, or large capture buffer during ordinary voice operation.
+
 ## 1. Preserve the failure before changing anything
 
 There are two supported inputs. A spontaneous wake observation is quarantined
@@ -286,6 +337,9 @@ the same 25-minute adversarial schedule from 17 to 5 accepted false wakes, and
 accepted 0/20 candidates from the sealed guard. That is the evidence for this
 method; the consumed 71-candidate training set is not an unbiased precision
 test and must never be reported as one.
+
+For the exact optimized firmware integration, build, and flash commands, use
+the [v15 firmware handoff](CASCADE_V15_HARDWARE_REFINEMENT.md#exact-optimized-firmware-handoff).
 
 ## Stop conditions
 

@@ -115,4 +115,3 @@ not a reason to weaken the current gate.
 **Recommendation:** RECONSIDER the student objective and evaluation design
 before another training tournament. Keep E2 as the best CTC baseline; do not
 quantize or flash E3.
-
